@@ -621,6 +621,7 @@ class ServiceController extends Controller
                     'telefono_cliente' => $client ? $client->phone : null,
                     'direccion' => $property ? $property->address : 'Dirección no registrada',
                     'coordenadas' => $property ? $property->coordinates : null,
+                    'coordinates' => $property ? $property->coordinates : null,
                     'tipoPropiedad' => $property ? strtoupper($property->type) : 'N/A',
                     'propiedad_nombre' => $property ? $property->property_name : 'Propiedad Sin Nombre',
                     'foto_fachada' => $property ? $property->facade_photo_path : null,
@@ -653,6 +654,7 @@ class ServiceController extends Controller
                     'telefono_cliente' => $client ? $client->phone : null,
                     'direccion' => $property ? $property->address : 'Dirección no registrada',
                     'coordenadas' => $property ? $property->coordinates : null,
+                    'coordinates' => $property ? $property->coordinates : null,
                     'tipoPropiedad' => $property ? strtoupper($property->type) : 'N/A',
                     'propiedad_nombre' => $property ? $property->property_name : 'Propiedad Sin Nombre',
                     'foto_fachada' => $property ? $property->facade_photo_path : null,
@@ -778,10 +780,15 @@ class ServiceController extends Controller
                     'services.arrival_status',
                     'services.arrived_at',
                     'services.property_id',
+                    'services.priority',
+                    'services.supervisor_name',
                     'services.created_at',
                     'services.updated_at',
                     'properties.property_name',
                     'properties.address',
+                    'properties.coordinates',
+                    'properties.custom_curp',
+                    'properties.facade_photo_path as facade_photo',
                     'clients.name as client_name',
                     'clients.phone as client_phone'
                 )
@@ -808,10 +815,14 @@ class ServiceController extends Controller
                     'work_orders.arrival_status',
                     'work_orders.arrived_at',
                     'work_orders.property_id',
+                    'work_orders.priority',
                     'work_orders.created_at',
                     'work_orders.updated_at',
                     'properties.property_name',
                     'properties.address',
+                    'properties.coordinates',
+                    'properties.custom_curp',
+                    'properties.facade_photo_path as facade_photo',
                     'clients.name as client_name',
                     'clients.phone as client_phone'
                 )
@@ -826,12 +837,14 @@ class ServiceController extends Controller
             $unificados = $servicios->map(function($s) {
                 $s->composite_id = "servicio-{$s->id}";
                 $s->tipo_registro = 'servicio';
+                $s->coordenadas = $s->coordinates;
                 return $s;
             })->concat($workOrders->map(function($w) {
                 $w->composite_id = "work_order-{$w->id}";
                 $w->tipo_registro = 'work_order';
                 $w->assigned_to = $w->tecnico_id;
                 $w->scheduled_start = $w->scheduled_at;
+                $w->coordenadas = $w->coordinates;
                 // Generar título si no existe
                 $w->title = ($w->type ?? 'Trabajo') . ' - ' . ($w->zone ?? 'General');
                 return $w;
