@@ -173,9 +173,9 @@ class UserController extends Controller
     {
         $realId = str_replace('u_', '', $id);
 
-        // Incluir role_id 5 (Autónomo Personal) en los permitidos
+        // Permitir todos los roles del sistema (0=Root, 1=Admin, 2=Tecnico, 3=Cliente, 4=Aut.Empresarial, 5=Aut.Personal, 6=Contratista, 7=Admin Propiedades, 8=Tecnico Red)
         $request->validate([
-            'role_id' => 'required|integer|in:0,1,2,3,4,5'
+            'role_id' => 'required|integer|in:0,1,2,3,4,5,6,7,8'
         ]);
 
         $user = null;
@@ -198,21 +198,19 @@ class UserController extends Controller
             return response()->json(['success' => false, 'message' => 'Usuario no encontrado'], 404);
         }
 
-        if ($user->role_id === 0 && $request->role_id !== 0) {
+        // SEGURIDAD: Nunca quitarle el rol de ROOT a un usuario Root
+        if ((int)$user->role_id === 0 && (int)$request->role_id !== 0) {
             return response()->json(['success' => false, 'message' => 'No puedes quitarle el rango de ROOT a este usuario.'], 403);
         }
 
-        // A PRUEBA DE BALAS: Asegurar roles 4 y 5 en la tabla roles
-        foreach ([4, 5] as $rId) {
-            DB::table('roles')->insertOrIgnore(['id' => $rId, 'created_at' => now(), 'updated_at' => now()]);
-        }
-        DB::table('roles')->insertOrIgnore(['id' => $request->role_id, 'created_at' => now(), 'updated_at' => now()]);
+        // A PRUEBA DE BALAS: Asegurar que el rol exista en la tabla roles
+        DB::table('roles')->insertOrIgnore(['id' => (int)$request->role_id, 'created_at' => now(), 'updated_at' => now()]);
 
-        $user->role_id = $request->role_id;
+        $user->role_id = (int)$request->role_id;
 
-        // Si se cambia a Autónomo Empresarial (4) o Personal (5) o Fundador, crear/activar Tenant
-        if (in_array($request->role_id, [4, 5])) {
-            $isPersonal     = ($request->role_id == 5);
+        // Si se cambia a Autónomo Empresarial (4) o Personal (5), crear/activar Tenant
+        if (in_array((int)$request->role_id, [4, 5])) {
+            $isPersonal     = ((int)$request->role_id === 5);
             $membershipType = $request->membership_type ?? ($isPersonal ? 'autonomo_personal' : 'autonomo_empresarial');
             
             if ($membershipType === 'autonomo_fundador') {
@@ -267,7 +265,7 @@ class UserController extends Controller
             }
             $user->tenant_id  = $tenant->id;
             $user->is_active  = 1;
-        } elseif ($request->role_id == 2) {
+        } elseif ((int)$request->role_id === 2 || (int)$request->role_id === 8) {
             // Técnico: si es externo de Agente Solutions, tiene 1 año gratis, luego $99/mes
             $tenantObj = $user->tenant_id ? Tenant::find($user->tenant_id) : null;
             $isAgenteSolutionsTech = ($user->tenant_id == 1 || ($tenantObj && ($tenantObj->code === 'AUT_01' || stripos($tenantObj->name, 'Agente Solutions') !== false)));
