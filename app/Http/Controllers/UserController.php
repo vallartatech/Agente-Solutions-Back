@@ -175,7 +175,7 @@ class UserController extends Controller
 
         // Permitir todos los roles del sistema (0=Root, 1=Admin, 2=Tecnico, 3=Cliente, 4=Aut.Empresarial, 5=Aut.Personal, 6=Contratista, 7=Admin Propiedades, 8=Tecnico Red)
         $request->validate([
-            'role_id' => 'required|integer|in:0,1,2,3,4,5,6,7,8'
+            'role_id' => 'required|numeric|in:0,1,2,3,4,5,6,7,8'
         ]);
 
         $user = null;
