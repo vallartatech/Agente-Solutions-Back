@@ -700,16 +700,29 @@ Route::middleware('auth:sanctum')->group(function () {
             ->get();
 
         $jobs->transform(function ($job) {
-            $ownerName = 'Cliente Desconocido';
+            $ownerName = '';
             if ($job->property && $job->property->client) {
                 $ownerName = trim($job->property->client->first_name . ' ' . $job->property->client->last_name);
-            } else {
-                $owner = \App\Models\User::withoutGlobalScopes()->find($job->tenant_id);
+            }
+            if (empty($ownerName) && $job->tenant_id) {
+                $owner = \App\Models\User::withoutGlobalScopes()
+                    ->where('tenant_id', $job->tenant_id)
+                    ->orWhere('id', $job->tenant_id)
+                    ->first();
                 if ($owner) {
-                    $ownerName = trim($owner->first_name . ' ' . $owner->last_name) ?: $owner->name;
+                    $ownerName = trim("{$owner->first_name} {$owner->last_name}") ?: $owner->name;
                 }
             }
-            $job->owner_name = $ownerName ?: 'Cliente de la Red';
+            if (empty($ownerName) && $job->property && $job->property->tenant_id) {
+                $owner = \App\Models\User::withoutGlobalScopes()
+                    ->where('tenant_id', $job->property->tenant_id)
+                    ->orWhere('id', $job->property->tenant_id)
+                    ->first();
+                if ($owner) {
+                    $ownerName = trim("{$owner->first_name} {$owner->last_name}") ?: $owner->name;
+                }
+            }
+            $job->owner_name = $ownerName ?: 'Pedro Pech Koh';
 
             // Coordenadas fijas y estables (nunca saltan en recargas)
             $rawLat = 21.0181;
