@@ -678,15 +678,20 @@ Route::middleware('auth:sanctum')->group(function () {
         $jobs = \App\Models\WorkOrder::withoutGlobalScopes()
             ->with([
                 'property' => function ($q) {
-                    $q->withoutGlobalScopes(); },
+                    $q->withoutGlobalScopes();
+                },
                 'property.client' => function ($q) {
-                    $q->withoutGlobalScopes(); },
+                    $q->withoutGlobalScopes();
+                },
                 'networkQuotes' => function ($q) {
-                    $q->withoutGlobalScopes(); },
+                    $q->withoutGlobalScopes();
+                },
                 'networkQuotes.technician' => function ($q) {
-                    $q->withoutGlobalScopes(); },
+                    $q->withoutGlobalScopes();
+                },
                 'networkQuotes.technician.specialties' => function ($q) {
-                    $q->withoutGlobalScopes(); }
+                    $q->withoutGlobalScopes();
+                }
             ])
             ->withCount('networkQuotes')
             ->where('publish_network', 1)
