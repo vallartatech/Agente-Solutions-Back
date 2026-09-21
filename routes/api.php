@@ -454,7 +454,7 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
 
         // 2. Procesar las imágenes con Cloudinary
-        $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+        $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
         $path1 = null;
         if ($request->hasFile('evidence_1')) {

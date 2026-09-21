@@ -78,7 +78,7 @@ class PropertyController extends Controller
         // --- SUBIDA A CLOUDINARY (Fachadas) ---
         $uploadedFileUrl = null;
         if ($request->hasFile('facade_photo')) {
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
             $respuestaNube = $cloudinary->uploadApi()->upload($request->file('facade_photo')->getRealPath(), [
                 'folder' => 'agente_propiedades' // Guardamos las casas en su propia carpeta en la nube
             ]);
@@ -110,15 +110,15 @@ class PropertyController extends Controller
             if ($tenant && !$tenant->canAddProperty()) {
                 if ($tenant->membership_type === 'autonomo_personal') {
                     return response()->json([
-                        'error'                   => 'Has alcanzado el límite de ' . (($tenant->max_properties ?? 3) + ($tenant->extra_properties_count ?? 0)) . ' propiedades en tu Plan Personal. Adquiere una propiedad extra por $79.99 MXN para continuar.',
-                        'limit_reached'           => true,
+                        'error' => 'Has alcanzado el límite de ' . (($tenant->max_properties ?? 3) + ($tenant->extra_properties_count ?? 0)) . ' propiedades en tu Plan Personal. Adquiere una propiedad extra por $79.99 MXN para continuar.',
+                        'limit_reached' => true,
                         'requires_extra_property' => true,
-                        'extra_cost'              => 79.99,
-                        'tenant_id'               => $tenant->id
+                        'extra_cost' => 79.99,
+                        'tenant_id' => $tenant->id
                     ], 403);
                 } else {
                     return response()->json([
-                        'error'         => 'Has alcanzado el límite máximo de ' . ($tenant->max_properties ?? 30) . ' propiedades en tu Plan Empresarial.',
+                        'error' => 'Has alcanzado el límite máximo de ' . ($tenant->max_properties ?? 30) . ' propiedades en tu Plan Empresarial.',
                         'limit_reached' => true
                     ], 403);
                 }
@@ -171,7 +171,7 @@ class PropertyController extends Controller
                     $sharedPropertyIds = DB::table('property_shares')->where('client_id', $cliente->id)->pluck('property_id');
                     $query->where(function ($q) use ($cliente, $sharedPropertyIds) {
                         $q->where('client_id', $cliente->id)
-                          ->orWhereIn('id', $sharedPropertyIds);
+                            ->orWhereIn('id', $sharedPropertyIds);
                     });
                 } else {
                     // Si el usuario no tiene perfil, le devolvemos una lista vacía
@@ -181,17 +181,17 @@ class PropertyController extends Controller
                 // Autónomo: solo ve las propiedades de su empresa (o creadas por sus clientes)
                 $query->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
-                      ->orWhereHas('client', function ($qc) use ($user) {
-                          $qc->where('tenant_id', $user->tenant_id);
-                      });
+                        ->orWhereHas('client', function ($qc) use ($user) {
+                            $qc->where('tenant_id', $user->tenant_id);
+                        });
                 });
             } elseif ($user->role_id !== 0 && $user->tenant_id) {
                 // Admin o técnico de un tenant
                 $query->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
-                      ->orWhereHas('client', function ($qc) use ($user) {
-                          $qc->where('tenant_id', $user->tenant_id);
-                      });
+                        ->orWhereHas('client', function ($qc) use ($user) {
+                            $qc->where('tenant_id', $user->tenant_id);
+                        });
                 });
             }
 
@@ -217,7 +217,7 @@ class PropertyController extends Controller
 
                 // Un levantamiento está realizado SOLO SI tiene zonas registradas
                 $realizado = $tieneZonas;
-                
+
                 \Log::info("Propiedad {$p->id} ({$p->property_name}): Zonas detectadas = " . ($tieneZonas ? 'SI' : 'NO'));
 
                 $is_shared_with_me = false;
@@ -305,7 +305,8 @@ class PropertyController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado.'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado.'], 401);
 
             $property = Property::findOrFail($id);
 
@@ -322,7 +323,7 @@ class PropertyController extends Controller
 
             // 2. Actualizar Foto
             if ($request->hasFile('facade_photo')) {
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('facade_photo')->getRealPath(), [
                     'folder' => 'agente_propiedades'
                 ]);
@@ -334,7 +335,7 @@ class PropertyController extends Controller
             return response()->json([
                 'message' => 'Propiedad actualizada con éxito',
                 'property' => $property,
-                'foto_url' => $property->facade_photo_path 
+                'foto_url' => $property->facade_photo_path
             ], 200);
 
         } catch (\Exception $e) {
@@ -379,12 +380,12 @@ class PropertyController extends Controller
                 ->leftJoin('work_orders', 'quotes.work_order_id', '=', 'work_orders.id')
                 ->where(function ($query) use ($id) {
                     $query->where('services.property_id', $id)
-                          ->orWhere('work_orders.property_id', $id);
+                        ->orWhere('work_orders.property_id', $id);
                 })
                 ->where(function ($q) {
                     $q->where('quotes.status', 'Pendiente')
-                      ->orWhere('quotes.status', 'En proceso')
-                      ->orWhere('quotes.status', 'like', '%Admin%');
+                        ->orWhere('quotes.status', 'En proceso')
+                        ->orWhere('quotes.status', 'like', '%Admin%');
                 })
                 ->count();
 
@@ -518,7 +519,7 @@ class PropertyController extends Controller
 
             $workOrder = WorkOrder::withoutGlobalScopes()->with('property')->findOrFail($id);
             $oldStatus = $workOrder->status;
-            
+
             $workOrder->status = $request->status;
             $workOrder->updated_at = now();
             $workOrder->save();
@@ -544,7 +545,7 @@ class PropertyController extends Controller
                         Notification::send($tecnicos, new WorkOrderCancelledNotification($workOrder, 'technician'));
                         \Log::info("Notificación de trabajo cancelado enviada a técnicos (relación N:M).");
                     }
-                    
+
                     if ($workOrder->tecnico_id) {
                         $tecnicoSolo = User::find($workOrder->tecnico_id);
                         if ($tecnicoSolo && (!$tecnicos || !$tecnicos->contains($tecnicoSolo->id))) {
@@ -562,12 +563,12 @@ class PropertyController extends Controller
                 try {
                     $user = auth('sanctum')->user();
                     $technicianName = $user ? ($user->first_name . ' ' . $user->last_name) : 'Un técnico';
-                    
+
                     $propertyName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad desconocida';
-                    
+
                     // Obtenemos administradores (rol 1 y 0) independientemente de tenant_id
                     $admins = User::withoutGlobalScopes()->whereIn('role_id', [0, 1])->get();
-                    
+
                     Notification::send($admins, new \App\Notifications\WorkOrderFinishedNotification($workOrder, $technicianName, $propertyName));
                     \Log::info("Notificación de trabajo finalizado enviada a admins.");
                 } catch (\Exception $e) {
@@ -589,9 +590,9 @@ class PropertyController extends Controller
         try {
             // Normalización extrema: quitamos espacios y guiones tanto de la búsqueda como de la BD
             $curpLimpio = str_replace([' ', '-'], '', $curp);
-            
+
             $property = Property::whereRaw("REPLACE(REPLACE(custom_curp, ' ', ''), '-', '') = ?", [$curpLimpio])
-                                ->first();
+                ->first();
 
             if (!$property) {
                 return response()->json([
@@ -625,9 +626,9 @@ class PropertyController extends Controller
             ]);
 
             $workOrder = WorkOrder::with('property')->findOrFail($id);
-            
+
             $isRescheduling = false;
-            
+
             if ($request->has('tecnicos_ids') && is_array($request->tecnicos_ids)) {
                 $workOrder->technicians()->sync($request->tecnicos_ids);
                 if (count($request->tecnicos_ids) > 0) {
@@ -639,16 +640,16 @@ class PropertyController extends Controller
                 $workOrder->tecnico_id = $request->tecnico_id;
                 $workOrder->technicians()->sync([$request->tecnico_id]);
             }
-            
+
             if ($request->has('custom_checklist')) {
                 $workOrder->custom_checklist = $request->custom_checklist;
             }
-            
+
             if ($request->has('scheduled_at')) {
                 $isRescheduling = $workOrder->technicians()->count() > 0 && !$request->has('tecnicos_ids') && !$request->has('tecnico_id');
                 $workOrder->scheduled_at = $request->scheduled_at;
             }
-            
+
             // Reset arrival status if the job is rescheduled or reassigned
             if ($request->has('scheduled_at') || $request->has('tecnicos_ids') || $request->has('tecnico_id')) {
                 $workOrder->arrival_status = 'PENDIENTE';
@@ -656,7 +657,7 @@ class PropertyController extends Controller
                 $workOrder->arrived_latitude = null;
                 $workOrder->arrived_longitude = null;
             }
-            
+
             $workOrder->save();
 
             // 1. Notificación a los Técnicos
@@ -666,17 +667,17 @@ class PropertyController extends Controller
             } else if ($request->has('tecnico_id')) {
                 $techIdsToNotify = [$request->tecnico_id];
             } else if ($request->has('scheduled_at') && $workOrder->technicians()->count() > 0) {
-                 $techIdsToNotify = $workOrder->technicians()->pluck('users.id')->toArray();
+                $techIdsToNotify = $workOrder->technicians()->pluck('users.id')->toArray();
             }
 
             foreach ($techIdsToNotify as $tId) {
                 $tecnico = User::find($tId);
                 if ($tecnico) {
                     if ($isRescheduling) {
-                         $adminName = auth()->user() ? (auth()->user()->first_name . ' ' . auth()->user()->last_name) : 'El administrador';
-                         Notification::send($tecnico, new WorkOrderRescheduledTechnician($workOrder, $adminName));
+                        $adminName = auth()->user() ? (auth()->user()->first_name . ' ' . auth()->user()->last_name) : 'El administrador';
+                        Notification::send($tecnico, new WorkOrderRescheduledTechnician($workOrder, $adminName));
                     } else {
-                         Notification::send($tecnico, new WorkOrderAssigned($workOrder));
+                        Notification::send($tecnico, new WorkOrderAssigned($workOrder));
                     }
                 }
             }
@@ -689,9 +690,9 @@ class PropertyController extends Controller
                     if ($workOrder->technicians()->count() > 1) {
                         $tecnicoName .= ' y equipo';
                     }
-                    
+
                     $propertyName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Tu propiedad';
-                    
+
                     // Obtener el usuario del cliente
                     $client = \App\Models\Client::find($workOrder->property->client_id);
                     if ($client && $client->user_id) {
@@ -798,7 +799,7 @@ class PropertyController extends Controller
                 $subareas = DB::table('property_areas')
                     ->where('parent_id', $area->id)
                     ->get();
-                
+
                 $subareaIds = $subareas->pluck('id')->toArray();
                 $allAreaIds = array_merge([$area->id], $subareaIds);
 
@@ -806,7 +807,7 @@ class PropertyController extends Controller
                 $components = DB::table('property_components')
                     ->whereIn('property_area_id', $allAreaIds)
                     ->get()
-                    ->map(function($comp) {
+                    ->map(function ($comp) {
                         return [
                             'id' => $comp->id,
                             'nombre' => $comp->sub_category,
@@ -851,7 +852,7 @@ class PropertyController extends Controller
                 $parentComponents = DB::table('property_components')
                     ->where('property_area_id', $area->id)
                     ->get()
-                    ->map(function($comp) {
+                    ->map(function ($comp) {
                         return [
                             'id' => $comp->id,
                             'nombre' => $comp->sub_category,
@@ -902,7 +903,7 @@ class PropertyController extends Controller
                     $subComponents = DB::table('property_components')
                         ->where('property_area_id', $sub->id)
                         ->get()
-                        ->map(function($comp) {
+                        ->map(function ($comp) {
                             return [
                                 'id' => $comp->id,
                                 'nombre' => $comp->sub_category,
@@ -967,14 +968,16 @@ class PropertyController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $query = DB::table('work_orders');
 
             if ($user->role_id == 3) {
                 $cliente = DB::table('clients')->where('user_id', $user->id)->first();
-                if (!$cliente) return response()->json(['sos' => 0, 'todo' => 0, 'progress' => 0, 'done' => 0]);
-                
+                if (!$cliente)
+                    return response()->json(['sos' => 0, 'todo' => 0, 'progress' => 0, 'done' => 0]);
+
                 $propertyIds = DB::table('properties')->where('client_id', $cliente->id)->pluck('id');
                 $query->whereIn('property_id', $propertyIds);
             }
@@ -995,7 +998,7 @@ class PropertyController extends Controller
                     $sosCount = 0;
                 }
             }
-            
+
             if (!isset($sosCount)) {
                 $sosCount = $sosQuery->count();
             }
@@ -1108,8 +1111,9 @@ class PropertyController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado.'], 401);
-            
+            if (!$user)
+                return response()->json(['error' => 'No autorizado.'], 401);
+
             $request->validate([
                 'email' => 'required|email'
             ]);
@@ -1162,13 +1166,15 @@ class PropertyController extends Controller
             // Al dueño
             if ($property->client && $property->client->user_id) {
                 $ownerUser = User::find($property->client->user_id);
-                if ($ownerUser) Notification::send($ownerUser, new \App\Notifications\PropertySharedNotification($ownerName, $guestName, $propName, 'owner'));
+                if ($ownerUser)
+                    Notification::send($ownerUser, new \App\Notifications\PropertySharedNotification($ownerName, $guestName, $propName, 'owner'));
             }
-            
+
             // Al invitado
             if ($clienteInvitado->user_id) {
                 $guestUser = User::find($clienteInvitado->user_id);
-                if ($guestUser) Notification::send($guestUser, new \App\Notifications\PropertySharedNotification($ownerName, $guestName, $propName, 'guest'));
+                if ($guestUser)
+                    Notification::send($guestUser, new \App\Notifications\PropertySharedNotification($ownerName, $guestName, $propName, 'guest'));
             }
 
             // A los admins
@@ -1186,7 +1192,8 @@ class PropertyController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado.'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado.'], 401);
 
             $property = Property::findOrFail($id);
 
@@ -1214,13 +1221,15 @@ class PropertyController extends Controller
                 // Al dueño
                 if ($property->client && $property->client->user_id) {
                     $ownerUser = User::find($property->client->user_id);
-                    if ($ownerUser) Notification::send($ownerUser, new \App\Notifications\PropertyShareRevokedNotification($ownerName, $guestName, $propName, 'owner'));
+                    if ($ownerUser)
+                        Notification::send($ownerUser, new \App\Notifications\PropertyShareRevokedNotification($ownerName, $guestName, $propName, 'owner'));
                 }
-                
+
                 // Al invitado
                 if ($clienteInvitado->user_id) {
                     $guestUser = User::find($clienteInvitado->user_id);
-                    if ($guestUser) Notification::send($guestUser, new \App\Notifications\PropertyShareRevokedNotification($ownerName, $guestName, $propName, 'guest'));
+                    if ($guestUser)
+                        Notification::send($guestUser, new \App\Notifications\PropertyShareRevokedNotification($ownerName, $guestName, $propName, 'guest'));
                 }
 
                 // A los admins
@@ -1242,7 +1251,7 @@ class PropertyController extends Controller
                 ->where('property_shares.property_id', $id)
                 ->select('clients.id', 'clients.name', 'clients.email', 'clients.phone', 'clients.profile_picture', 'property_shares.created_at')
                 ->get();
-            
+
             return response()->json($shares);
         } catch (\Exception $e) {
             return response()->json(['error' => 'Error al obtener usuarios invitados: ' . $e->getMessage()], 500);
@@ -1251,21 +1260,23 @@ class PropertyController extends Controller
 
     private function getFormattedSecciones($propertyId)
     {
-        if (!$propertyId) return [];
+        if (!$propertyId)
+            return [];
 
         $areas = DB::table('property_areas as a')
             ->where('a.property_id', $propertyId)
-            ->where(function($q) {
+            ->where(function ($q) {
                 $q->whereNull('a.parent_id')
-                  ->orWhereExists(function($sub) {
-                      $sub->select(DB::raw(1))
-                          ->from('property_areas as p')
-                          ->whereColumn('p.id', 'a.parent_id');
-                  });
+                    ->orWhereExists(function ($sub) {
+                        $sub->select(DB::raw(1))
+                            ->from('property_areas as p')
+                            ->whereColumn('p.id', 'a.parent_id');
+                    });
             })
             ->get();
 
-        if ($areas->isEmpty()) return [];
+        if ($areas->isEmpty())
+            return [];
 
         return $areas->map(function ($area) {
             $parent = null;
@@ -1297,7 +1308,7 @@ class PropertyController extends Controller
                 return [
                     'id' => $catRecord ? $catRecord->id : null,
                     'nombre' => $catName ?: 'General',
-                    'inventario' => $items->map(function($item) {
+                    'inventario' => $items->map(function ($item) {
                         return [
                             'id' => $item->id,
                             'nombre' => $item->sub_category,

@@ -29,12 +29,12 @@ class ServiceController extends Controller
 
     private function parseCompositeId($raw)
     {
-        $decoded = trim(urldecode((string)$raw));
+        $decoded = trim(urldecode((string) $raw));
         $isWorkOrder = (bool) preg_match('/work[_\s-]*order/i', $decoded);
         $isService = (bool) preg_match('/servicio/i', $decoded);
 
         preg_match('/\d+/', $decoded, $matches);
-        $realId = isset($matches[0]) ? (int)$matches[0] : null;
+        $realId = isset($matches[0]) ? (int) $matches[0] : null;
 
         return [
             'raw' => $decoded,
@@ -79,7 +79,7 @@ class ServiceController extends Controller
             $realId = $parsed['realId'];
             $column = $parsed['column'];
 
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
             $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                 'folder' => 'agente_reportes'
             ]);
@@ -118,7 +118,7 @@ class ServiceController extends Controller
             $report->description = $request->description;
 
             if ($request->hasFile('image')) {
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                     'folder' => 'agente_reportes'
                 ]);
@@ -179,14 +179,20 @@ class ServiceController extends Controller
             }
 
             $data = $request->all();
-            
+
             // Mapear campos de español (frontend) a inglés (BD) si es necesario
-            if (isset($data['materiales'])) $data['materials'] = $data['materiales'];
-            if (isset($data['observaciones'])) $data['observations'] = $data['observaciones'];
-            if (isset($data['imagenes'])) $data['selected_images'] = $data['imagenes'];
-            if (isset($data['fechaTrabajo'])) $data['report_date'] = $data['fechaTrabajo'];
-            if (isset($data['horaInicio'])) $data['start_time'] = $data['horaInicio'];
-            if (isset($data['horaFin'])) $data['end_time'] = $data['horaFin'];
+            if (isset($data['materiales']))
+                $data['materials'] = $data['materiales'];
+            if (isset($data['observaciones']))
+                $data['observations'] = $data['observaciones'];
+            if (isset($data['imagenes']))
+                $data['selected_images'] = $data['imagenes'];
+            if (isset($data['fechaTrabajo']))
+                $data['report_date'] = $data['fechaTrabajo'];
+            if (isset($data['horaInicio']))
+                $data['start_time'] = $data['horaInicio'];
+            if (isset($data['horaFin']))
+                $data['end_time'] = $data['horaFin'];
 
             $data[$type] = $realId;
 
@@ -196,7 +202,7 @@ class ServiceController extends Controller
                 [$type => $realId],
                 $data
             );
-            
+
             \Log::info("Reporte guardado con éxito ID: " . $report->id);
 
             return response()->json(['success' => true, 'report' => $report], 200);
@@ -249,13 +255,13 @@ class ServiceController extends Controller
 
             $user = $request->user();
             if ($user && $user->role_id == 3) {
-                 $servicio->requested_by = $user->id;
+                $servicio->requested_by = $user->id;
             } else {
-                 $servicio->requested_by = $request->filled('requested_by') ? $request->requested_by : null;
+                $servicio->requested_by = $request->filled('requested_by') ? $request->requested_by : null;
             }
 
             // --- SUBIDA A CLOUDINARY ---
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
             // Caso retrocompatible (campo 'foto')
             if ($request->hasFile('foto')) {
@@ -298,14 +304,15 @@ class ServiceController extends Controller
             $servicio->service_category_id = $request->service_category_id ?? 1;
             $servicio->service_type = $request->service_type ?? $request->type ?? 'Mantenimiento';
             $servicio->priority = $request->priority ?? 'Media';
-            $servicio->status = 'Por Asignar'; 
-            
+            $servicio->status = 'Por Asignar';
+
             // Generar título si no viene
             if (!$request->filled('title')) {
                 $areaName = 'General';
                 if ($request->property_area_id) {
                     $area = PropertyArea::find($request->property_area_id);
-                    if ($area) $areaName = $area->name;
+                    if ($area)
+                        $areaName = $area->name;
                 }
                 $servicio->title = "Reporte: " . $areaName;
             } else {
@@ -363,31 +370,31 @@ class ServiceController extends Controller
 
             if ($user && $user->role_id == 3) {
                 $cliente = DB::table('clients')->where('user_id', $user->id)->first();
-                
+
                 if ($cliente) {
-                    $query->whereHas('property', function($q) use ($cliente) {
+                    $query->whereHas('property', function ($q) use ($cliente) {
                         $q->where('client_id', $cliente->id);
                     });
                 } else {
-                    return response()->json([], 200); 
+                    return response()->json([], 200);
                 }
             } elseif ($user && $user->role_id == 4) {
                 // Autónomo: solo ve servicios de propiedades de su empresa (o asignados a técnicos de su empresa)
                 $query->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
-                      ->orWhereHas('property', function ($qp) use ($user) {
-                          $qp->where('tenant_id', $user->tenant_id);
-                      })
-                      ->orWhereHas('technician', function ($qt) use ($user) {
-                          $qt->where('tenant_id', $user->tenant_id);
-                      });
+                        ->orWhereHas('property', function ($qp) use ($user) {
+                            $qp->where('tenant_id', $user->tenant_id);
+                        })
+                        ->orWhereHas('technician', function ($qt) use ($user) {
+                            $qt->where('tenant_id', $user->tenant_id);
+                        });
                 });
             } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
                 $query->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
-                      ->orWhereHas('property', function ($qp) use ($user) {
-                          $qp->where('tenant_id', $user->tenant_id);
-                      });
+                        ->orWhereHas('property', function ($qp) use ($user) {
+                            $qp->where('tenant_id', $user->tenant_id);
+                        });
                 });
             }
 
@@ -447,7 +454,7 @@ class ServiceController extends Controller
 
             if ($servicio->property && $servicio->property->client && $servicio->property->client->user_id) {
                 $clienteUser = User::find($servicio->property->client->user_id);
-                
+
                 if ($clienteUser) {
                     Notification::send($clienteUser, new \App\Notifications\VisitRescheduled($servicio));
                 }
@@ -491,9 +498,9 @@ class ServiceController extends Controller
                 $servicio->scheduled_start = $request->scheduled_start;
             }
             if ($request->has('custom_checklist')) {
-                $servicio->custom_checklist = $request->custom_checklist; 
+                $servicio->custom_checklist = $request->custom_checklist;
             }
-            
+
             // Reset arrival status if the job is rescheduled or reassigned
             if ($request->has('scheduled_start') || $request->has('tecnicos_ids') || $request->has('tecnico_id')) {
                 $servicio->arrival_status = 'PENDIENTE';
@@ -501,7 +508,7 @@ class ServiceController extends Controller
                 $servicio->arrived_latitude = null;
                 $servicio->arrived_longitude = null;
             }
-            
+
             $servicio->status = 'Programado';
             $servicio->save();
 
@@ -570,12 +577,13 @@ class ServiceController extends Controller
             }
 
             $property = \App\Models\Property::withoutGlobalScopes()
-                ->with(['client' => function($q) { $q->withoutGlobalScopes(); }])
+                ->with(['client' => function ($q) {
+                    $q->withoutGlobalScopes(); }])
                 ->find($model->property_id);
             $client = $property ? $property->client : null;
 
             $secciones = $this->getFormattedSecciones($model->property_id);
-            
+
             // Map the team
             $team = [];
             if ($model->technicians && $model->technicians->count() > 0) {
@@ -590,23 +598,23 @@ class ServiceController extends Controller
                     ];
                 }
             } else if ($isWorkOrder && $model->tecnico) {
-                 $team[] = [
-                        'id' => $model->tecnico->id,
-                        'name' => $model->tecnico->first_name . ' ' . $model->tecnico->last_name,
-                        'picture' => $model->tecnico->profile_picture,
-                        'email' => $model->tecnico->email,
-                        'phone_number' => $model->tecnico->phone_number,
-                        'role' => 'TÉCNICO'
-                 ];
+                $team[] = [
+                    'id' => $model->tecnico->id,
+                    'name' => $model->tecnico->first_name . ' ' . $model->tecnico->last_name,
+                    'picture' => $model->tecnico->profile_picture,
+                    'email' => $model->tecnico->email,
+                    'phone_number' => $model->tecnico->phone_number,
+                    'role' => 'TÉCNICO'
+                ];
             } else if (!$isWorkOrder && $model->technician) {
-                 $team[] = [
-                        'id' => $model->technician->id,
-                        'name' => $model->technician->first_name . ' ' . $model->technician->last_name,
-                        'picture' => $model->technician->profile_picture,
-                        'email' => $model->technician->email,
-                        'phone_number' => $model->technician->phone_number,
-                        'role' => 'TÉCNICO'
-                 ];
+                $team[] = [
+                    'id' => $model->technician->id,
+                    'name' => $model->technician->first_name . ' ' . $model->technician->last_name,
+                    'picture' => $model->technician->profile_picture,
+                    'email' => $model->technician->email,
+                    'phone_number' => $model->technician->phone_number,
+                    'role' => 'TÉCNICO'
+                ];
             }
 
             if ($isWorkOrder) {
@@ -681,7 +689,7 @@ class ServiceController extends Controller
 
 
     // ... (rest of the methods confirmedCitaCliente, solicitarReprogramacion, getTecnicoServicios, update remain unchanged)
-    
+
     public function confirmarCitaCliente($id)
     {
         try {
@@ -695,7 +703,7 @@ class ServiceController extends Controller
             $servicio->save();
 
             $admins = User::where('role_id', 0)->get();
-            
+
             Notification::send($admins, new \App\Notifications\VisitConfirmed($servicio));
 
             // Enviar notificación al Técnico asignado
@@ -733,18 +741,18 @@ class ServiceController extends Controller
                 'motivo' => 'nullable|string'
             ]);
 
-            $notaReprogramacion = "\n[ALERTA DE REPROGRAMACIÓN]: El cliente solicita cambiar la visita al: " . 
-                                  $request->fecha_sugerida . ". Motivo: " . 
-                                  ($request->motivo ?? 'Sin motivo especificado.');
-            
+            $notaReprogramacion = "\n[ALERTA DE REPROGRAMACIÓN]: El cliente solicita cambiar la visita al: " .
+                $request->fecha_sugerida . ". Motivo: " .
+                ($request->motivo ?? 'Sin motivo especificado.');
+
             $servicio->status = 'Reprogramación Solicitada';
-            
+
             $servicio->description = $servicio->description . $notaReprogramacion;
-            
+
             $servicio->save();
 
             $admins = User::where('role_id', 0)->get();
-            
+
             Notification::send($admins, new \App\Notifications\RescheduleRequested($servicio, $request->fecha_sugerida));
 
             return response()->json([
@@ -760,7 +768,8 @@ class ServiceController extends Controller
         }
     }
 
-    public function getTecnicoServicios($idTecnico) {
+    public function getTecnicoServicios($idTecnico)
+    {
         try {
             // 1. Servicios (con columnas seguras)
             $servicios = DB::table('services')
@@ -794,7 +803,7 @@ class ServiceController extends Controller
                 )
                 ->where(function ($query) use ($idTecnico) {
                     $query->where('services.assigned_to', $idTecnico)
-                          ->orWhere('service_technician.technician_id', $idTecnico);
+                        ->orWhere('service_technician.technician_id', $idTecnico);
                 })
                 ->distinct('services.id')
                 ->get();
@@ -828,18 +837,18 @@ class ServiceController extends Controller
                 )
                 ->where(function ($query) use ($idTecnico) {
                     $query->where('work_orders.tecnico_id', $idTecnico)
-                          ->orWhere('work_order_technician.technician_id', $idTecnico);
+                        ->orWhere('work_order_technician.technician_id', $idTecnico);
                 })
                 ->distinct('work_orders.id')
                 ->get();
 
             // 3. Unificar normalizando campos para el frontend
-            $unificados = $servicios->map(function($s) {
+            $unificados = $servicios->map(function ($s) {
                 $s->composite_id = "servicio-{$s->id}";
                 $s->tipo_registro = 'servicio';
                 $s->coordenadas = $s->coordinates;
                 return $s;
-            })->concat($workOrders->map(function($w) {
+            })->concat($workOrders->map(function ($w) {
                 $w->composite_id = "work_order-{$w->id}";
                 $w->tipo_registro = 'work_order';
                 $w->assigned_to = $w->tecnico_id;
@@ -865,7 +874,7 @@ class ServiceController extends Controller
     {
         try {
             $servicio = Service::find($id);
-            
+
             if (!$servicio) {
                 $workOrder = WorkOrder::find($id);
                 if ($workOrder) {
@@ -885,7 +894,7 @@ class ServiceController extends Controller
                 $servicio->status = $request->status;
                 if ($request->status === 'completed' || $request->status === 'Finalizado' || $request->status === 'Listo') {
                     $servicio->real_end = now();
-                    
+
                     // Si el servicio es un levantamiento, marcamos la propiedad como realizada
                     if (str_contains(strtolower($servicio->title), 'levantamiento')) {
                         $propiedad = \App\Models\Property::find($servicio->property_id);
@@ -893,7 +902,7 @@ class ServiceController extends Controller
                             $propiedad->levantamiento_realizado = true;
                             $propiedad->save();
                             \Log::info("Propiedad {$propiedad->id} marcada como LEVANTAMIENTO REALIZADO por término de servicio.");
-                            
+
                             // NOTIFICAR A LOS ADMINS
                             try {
                                 $admins = \App\Models\User::whereIn('role_id', [0, 1])->get();
@@ -908,7 +917,7 @@ class ServiceController extends Controller
                     }
                 }
             }
-            
+
             $servicio->save();
 
             return response()->json([
@@ -926,22 +935,24 @@ class ServiceController extends Controller
     }
     private function getFormattedSecciones($propertyId)
     {
-        if (!$propertyId) return [];
+        if (!$propertyId)
+            return [];
 
         // Obtener solo las áreas que no son huérfanas
         $areas = DB::table('property_areas as a')
             ->where('a.property_id', $propertyId)
-            ->where(function($q) {
+            ->where(function ($q) {
                 $q->whereNull('a.parent_id')
-                  ->orWhereExists(function($sub) {
-                      $sub->select(DB::raw(1))
-                          ->from('property_areas as p')
-                          ->whereColumn('p.id', 'a.parent_id');
-                  });
+                    ->orWhereExists(function ($sub) {
+                        $sub->select(DB::raw(1))
+                            ->from('property_areas as p')
+                            ->whereColumn('p.id', 'a.parent_id');
+                    });
             })
             ->get();
 
-        if ($areas->isEmpty()) return [];
+        if ($areas->isEmpty())
+            return [];
 
         return $areas->map(function ($area) {
             // Buscar si tiene un parent para la agrupación en el frontend
@@ -976,7 +987,7 @@ class ServiceController extends Controller
                 return [
                     'id' => $catRecord ? $catRecord->id : null,
                     'nombre' => $catName ?: 'General',
-                    'inventario' => $items->map(function($item) {
+                    'inventario' => $items->map(function ($item) {
                         // Mapear campos para que el frontend (React) los detecte correctamente
                         return [
                             'id' => $item->id,
@@ -1135,7 +1146,7 @@ class ServiceController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user || !in_array((int)$user->role_id, [0, 1])) {
+            if (!$user || !in_array((int) $user->role_id, [0, 1])) {
                 return response()->json(['error' => 'Acceso denegado. Exclusivo para Usuario Root.'], 403);
             }
 
@@ -1162,7 +1173,7 @@ class ServiceController extends Controller
                 ->whereIn('role_id', [2, 4, 5, 7])
                 ->select('id as user_id', 'first_name', 'last_name', 'email', 'phone_number', 'profile_picture')
                 ->get();
-            
+
             \Log::info("Techs assigned count: " . $techsAssigned->count());
 
             foreach ($techsAssigned as $t) {
@@ -1173,7 +1184,7 @@ class ServiceController extends Controller
                         ->leftJoin('work_order_technician', 'work_orders.id', '=', 'work_order_technician.work_order_id')
                         ->where(function ($q) use ($t) {
                             $q->where('work_orders.tecnico_id', $t->user_id)
-                              ->orWhere('work_order_technician.technician_id', $t->user_id);
+                                ->orWhere('work_order_technician.technician_id', $t->user_id);
                         })
                         ->whereNotIn('work_orders.status', ['Listo', 'Finalizado', 'Rechazado', 'Cancelado'])
                         ->select('work_orders.arrived_latitude', 'work_orders.arrived_longitude', 'work_orders.arrived_at', 'properties.coordinates')
@@ -1186,14 +1197,14 @@ class ServiceController extends Controller
                             ->leftJoin('service_technician', 'services.id', '=', 'service_technician.service_id')
                             ->where(function ($q) use ($t) {
                                 $q->where('services.assigned_to', $t->user_id)
-                                  ->orWhere('service_technician.technician_id', $t->user_id);
+                                    ->orWhere('service_technician.technician_id', $t->user_id);
                             })
                             ->whereNotIn('services.status', ['Listo', 'Finalizado', 'Rechazado', 'Cancelado'])
                             ->select('services.arrived_latitude', 'services.arrived_longitude', 'services.arrived_at', 'properties.coordinates')
                             ->latest('services.updated_at')
                             ->first();
                     }
-                    
+
                     \Log::info("Tech ID {$t->user_id} activeJob: " . ($activeJob ? "FOUND" : "NOT FOUND"));
 
                     if ($activeJob) {
@@ -1244,15 +1255,15 @@ class ServiceController extends Controller
                     )
                     ->where(function ($q) use ($tech) {
                         $q->where('work_orders.tecnico_id', $tech->user_id)
-                          ->orWhere('work_order_technician.technician_id', $tech->user_id);
+                            ->orWhere('work_order_technician.technician_id', $tech->user_id);
                     })
                     ->whereNotIn('work_orders.status', ['Listo', 'Finalizado', 'Rechazado', 'Cancelado'])
                     ->get()
-                    ->map(function($wo) {
+                    ->map(function ($wo) {
                         $wo->composite_id = "work_order-{$wo->id}";
                         $wo->tipo_registro = 'work_order';
                         $wo->title = ($wo->type ?? 'Trabajo') . ' - ' . ($wo->zone ?? 'General');
-                        
+
                         $wo->property_latitude = null;
                         $wo->property_longitude = null;
                         if (!empty($wo->property_coordinates)) {
@@ -1288,14 +1299,14 @@ class ServiceController extends Controller
                     )
                     ->where(function ($q) use ($tech) {
                         $q->where('services.assigned_to', $tech->user_id)
-                          ->orWhere('service_technician.technician_id', $tech->user_id);
+                            ->orWhere('service_technician.technician_id', $tech->user_id);
                     })
                     ->whereNotIn('services.status', ['Listo', 'Finalizado', 'Rechazado', 'Cancelado'])
                     ->get()
-                    ->map(function($s) {
+                    ->map(function ($s) {
                         $s->composite_id = "servicio-{$s->id}";
                         $s->tipo_registro = 'servicio';
-                        
+
                         $s->property_latitude = null;
                         $s->property_longitude = null;
                         if (!empty($s->property_coordinates)) {
@@ -1351,12 +1362,13 @@ class ServiceController extends Controller
 
             $user = $request->user();
             $techName = $user ? trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? '')) : 'Técnico';
-            if (empty($techName)) $techName = $user->name ?? 'Técnico';
+            if (empty($techName))
+                $techName = $user->name ?? 'Técnico';
 
             $nota = "\n[SOLICITUD 2DA VISITA]: Técnico {$techName} propone la fecha: {$request->fecha_propuesta}. Motivo: " . ($request->motivo ?? 'Sin motivo especificado.');
-            
+
             $model->status = 'Segunda Visita Solicitada';
-            
+
             // Si la descripción fue contaminada con anteriores notas repetidas de prueba, la limpiamos primero
             $cleanedDesc = $model->description ?? '';
             if ($cleanedDesc) {
@@ -1365,7 +1377,7 @@ class ServiceController extends Controller
             }
             // Adjuntamos la nota fresca para que el frontend pueda extraer la fecha y motivo
             $model->description = $cleanedDesc . $nota;
-            
+
             // Las propiedades ahora existen en la base de datos gracias a la migración
             $model->second_visit_proposed_date = $request->fecha_propuesta;
             $model->second_visit_reason = $request->motivo;
@@ -1392,19 +1404,23 @@ class ServiceController extends Controller
                 $clientObj = \App\Models\Client::withoutGlobalScopes()->find($property->client_id);
                 if ($clientObj && !empty($clientObj->email)) {
                     $uByEmail = User::withoutGlobalScopes()->where('email', $clientObj->email)->first();
-                    if ($uByEmail) $clientUsers->push($uByEmail);
+                    if ($uByEmail)
+                        $clientUsers->push($uByEmail);
                 }
                 $uById = User::withoutGlobalScopes()->find($property->client_id);
-                if ($uById) $clientUsers->push($uById);
+                if ($uById)
+                    $clientUsers->push($uById);
             }
             if (!empty($model->client_id)) {
                 $clientObj2 = \App\Models\Client::withoutGlobalScopes()->find($model->client_id);
                 if ($clientObj2 && !empty($clientObj2->email)) {
                     $uByEmail2 = User::withoutGlobalScopes()->where('email', $clientObj2->email)->first();
-                    if ($uByEmail2) $clientUsers->push($uByEmail2);
+                    if ($uByEmail2)
+                        $clientUsers->push($uByEmail2);
                 }
                 $uById2 = User::withoutGlobalScopes()->find($model->client_id);
-                if ($uById2) $clientUsers->push($uById2);
+                if ($uById2)
+                    $clientUsers->push($uById2);
             }
 
             // También notificar a todos los usuarios clientes (role_id = 3)
@@ -1467,7 +1483,8 @@ class ServiceController extends Controller
                     if (isset($model->scheduled_start)) {
                         $model->scheduled_start = $request->fecha_confirmada;
                     }
-                } catch (\Exception $e) {}
+                } catch (\Exception $e) {
+                }
                 $nota = "\n[RESPUESTA 2DA VISITA]: Cita ACEPTADA para la fecha: " . $request->fecha_confirmada;
             } else {
                 // Si propone una nueva fecha (reprogramar), se mantiene como Solicitada / Reprogramada
@@ -1555,7 +1572,8 @@ class ServiceController extends Controller
                 if (isset($model->scheduled_at)) {
                     $model->scheduled_at = $request->fecha_programada;
                 }
-            } catch (\Exception $e) {}
+            } catch (\Exception $e) {
+            }
             $model->description = ($model->description ?? '') . $nota;
             $model->save();
 

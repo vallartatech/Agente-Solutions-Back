@@ -73,7 +73,7 @@ class ServiceController extends Controller
                 $column = 'service_id';
             }
 
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
             $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                 'folder' => 'agente_reportes'
             ]);
@@ -193,7 +193,7 @@ class ServiceController extends Controller
             }
 
             // --- SUBIDA A CLOUDINARY ---
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
             // Caso retrocompatible (campo 'foto')
             if ($request->hasFile('foto')) {

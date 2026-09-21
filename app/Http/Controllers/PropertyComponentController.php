@@ -15,16 +15,18 @@ class PropertyComponentController extends Controller
         try {
             // Protección de Sanctum
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             // Obtener el área principal
             $mainArea = DB::table('property_areas')->where('id', $areaId)->first();
-            if (!$mainArea) return response()->json(['error' => 'Área no encontrada'], 404);
+            if (!$mainArea)
+                return response()->json(['error' => 'Área no encontrada'], 404);
 
             // Obtener subáreas
             $subAreas = DB::table('property_areas')->where('parent_id', $areaId)->get();
             $areaIds = $subAreas->pluck('id')->toArray();
-            $areaIds[] = (int)$areaId;
+            $areaIds[] = (int) $areaId;
 
             // Obtener todos los componentes de estas áreas
             $components = DB::table('property_components')
@@ -48,7 +50,8 @@ class PropertyComponentController extends Controller
         try {
             // Protección de Sanctum
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $request->validate([
                 'property_area_id' => 'required',
@@ -60,13 +63,13 @@ class PropertyComponentController extends Controller
             ]);
 
             // Lógica para Cloudinary
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
             // IMAGEN PRINCIPAL
             $imagePath = null;
             if ($request->hasFile('image')) {
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
-                    'folder' => 'agente_componentes' 
+                    'folder' => 'agente_componentes'
                 ]);
                 $imagePath = $respuestaNube['secure_url'];
             }
@@ -131,7 +134,8 @@ class PropertyComponentController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $summary = DB::table('property_components')
                 ->select(
@@ -170,7 +174,8 @@ class PropertyComponentController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $brand = $request->query('brand');
             $model = $request->query('model');
@@ -223,7 +228,8 @@ class PropertyComponentController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $components = DB::table('property_components as pc')
                 ->join('property_areas as pa', 'pc.property_area_id', '=', 'pa.id')
@@ -252,12 +258,13 @@ class PropertyComponentController extends Controller
             ], 500);
         }
     }
-    
+
     public function destroy($id)
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             DB::table('property_components')->where('id', $id)->delete();
             return response()->json(['success' => true]);
@@ -270,7 +277,8 @@ class PropertyComponentController extends Controller
     {
         try {
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $component = DB::table('property_components')->where('id', $id)->first();
             if (!$component) {
@@ -292,13 +300,13 @@ class PropertyComponentController extends Controller
                 }
             }
 
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
             // ACTUALIZAR IMAGEN PRINCIPAL
             $imagePath = $component->image_path;
             if ($request->hasFile('image')) {
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
-                    'folder' => 'agente_componentes' 
+                    'folder' => 'agente_componentes'
                 ]);
                 $imagePath = $respuestaNube['secure_url'];
             }

@@ -78,7 +78,7 @@ class QuoteController extends Controller
             if ($request->has('is_unified_batch')) {
                 $quote->is_unified_batch = filter_var($request->is_unified_batch, FILTER_VALIDATE_BOOLEAN);
             }
-            
+
             // Si el usuario es técnico (rol 2), el estado es "Pendiente de Admin"
             if ($user && $user->role_id === 2) {
                 $quote->status = 'Pendiente de Admin';
@@ -95,9 +95,9 @@ class QuoteController extends Controller
                 $quote->validity_days = $request->validity_days ?? 15;
                 $quote->observations = $request->observations;
                 $quote->internal_observations = $request->internal_observations;
-                
+
                 if ($request->hasFile('evidence_photo')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('evidence_photo')->getRealPath(), [
                         'folder' => 'cotizaciones_evidence'
                     ]);
@@ -107,7 +107,7 @@ class QuoteController extends Controller
             // Si es archivo, subimos el documento
             else {
                 if ($request->hasFile('file')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('file')->getRealPath(), [
                         'folder' => 'cotizaciones_pdf',
@@ -164,9 +164,9 @@ class QuoteController extends Controller
             if ($user && in_array($user->role_id, [0, 1])) {
                 // Intentamos obtener el usuario del cliente desde Servicio o desde Orden de Trabajo
                 $quote->load(['service.property.client', 'workOrder.property.client']);
-                
+
                 $cliente = $quote->service->property->client ?? $quote->workOrder->property->client ?? null;
-                
+
                 if ($cliente && $cliente->user_id) {
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
@@ -216,18 +216,18 @@ class QuoteController extends Controller
                 $quote->concept = is_string($request->concept) ? json_decode($request->concept, true) : $request->concept;
                 $quote->estimated_amount = $request->estimated_amount;
                 $quote->validity_days = $request->validity_days ?? 15;
-                
+
                 // Agregamos el nuevo comentario a las observaciones existentes
                 if ($request->observations) {
                     $quote->observations = ($quote->observations ? $quote->observations . "\n\n" : "") . $request->observations;
                 }
-                
+
                 if ($request->internal_observations) {
                     $quote->internal_observations = ($quote->internal_observations ? $quote->internal_observations . "\n\n" : "") . $request->internal_observations;
                 }
 
                 if ($request->hasFile('evidence_photo')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('evidence_photo')->getRealPath(), [
                         'folder' => 'cotizaciones_evidence'
                     ]);
@@ -235,7 +235,7 @@ class QuoteController extends Controller
                 }
             } else {
                 if ($request->hasFile('file')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('file')->getRealPath(), [
                         'folder' => 'cotizaciones_pdf',
                         'resource_type' => 'raw'
@@ -300,7 +300,7 @@ class QuoteController extends Controller
 
             // Cargamos ambas relaciones para soportar ambos flujos
             $quotesQuery = Quote::with([
-                'service.property.client', 
+                'service.property.client',
                 'service.technician',
                 'service.technicians',
                 'workOrder.property.client',
@@ -311,7 +311,7 @@ class QuoteController extends Controller
 
             // Si es cliente (rol 3), filtrar por sus servicios o sus órdenes de trabajo
             if ($user && $user->role_id === 3) {
-                $quotesQuery = $quotesQuery->where(function($q) use ($user) {
+                $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
                     $q->whereHas('service.property.client', function ($query) use ($user) {
                         $query->where('user_id', $user->id);
                     })->orWhereHas('workOrder.property.client', function ($query) use ($user) {
@@ -320,122 +320,124 @@ class QuoteController extends Controller
                 })->where('created_by_role', 'Admin'); // El cliente solo ve lo oficial del Admin
             } elseif ($user && $user->role_id === 4) {
                 // Autónomo: solo ve cotizaciones de su empresa (o de propiedades de su empresa)
-                $quotesQuery = $quotesQuery->where(function($q) use ($user) {
+                $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
-                      ->orWhereHas('service.property', function ($query) use ($user) {
-                          $query->where('tenant_id', $user->tenant_id);
-                      })->orWhereHas('workOrder.property', function ($query) use ($user) {
-                          $query->where('tenant_id', $user->tenant_id);
-                      });
+                        ->orWhereHas('service.property', function ($query) use ($user) {
+                            $query->where('tenant_id', $user->tenant_id);
+                        })->orWhereHas('workOrder.property', function ($query) use ($user) {
+                            $query->where('tenant_id', $user->tenant_id);
+                        });
                 });
             } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
-                $quotesQuery = $quotesQuery->where(function($q) use ($user) {
+                $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
-                      ->orWhereHas('service.property', function ($query) use ($user) {
-                          $query->where('tenant_id', $user->tenant_id);
-                      })->orWhereHas('workOrder.property', function ($query) use ($user) {
-                          $query->where('tenant_id', $user->tenant_id);
-                      });
+                        ->orWhereHas('service.property', function ($query) use ($user) {
+                            $query->where('tenant_id', $user->tenant_id);
+                        })->orWhereHas('workOrder.property', function ($query) use ($user) {
+                            $query->where('tenant_id', $user->tenant_id);
+                        });
                 });
             }
 
             $quotes = $quotesQuery->orderBy('created_at', 'desc')
-                                  ->get()
-                                  ->map(function($quote) use ($user) {
-                                      // Obtenemos el cliente y técnico de la relación que esté disponible
-                                      $client = $quote->service?->property?->client ?? $quote->workOrder?->property?->client ?? null;
-                                      $tecnicoModel = $quote->service?->technician ?? $quote->workOrder?->tecnico ?? ($quote->service?->technicians?->first() ?? $quote->workOrder?->technicians?->first() ?? null);
+                ->get()
+                ->map(function ($quote) use ($user) {
+                    // Obtenemos el cliente y técnico de la relación que esté disponible
+                    $client = $quote->service?->property?->client ?? $quote->workOrder?->property?->client ?? null;
+                    $tecnicoModel = $quote->service?->technician ?? $quote->workOrder?->tecnico ?? ($quote->service?->technicians?->first() ?? $quote->workOrder?->technicians?->first() ?? null);
 
-                                      return [
-                                          'id' => $quote->id,
-                                          'property_id' => $quote->property_id ?? $quote->service?->property_id ?? $quote->workOrder?->property_id ?? null,
-                                          'service_id' => $quote->service_id,
-                                          'work_order_id' => $quote->work_order_id,
-                                          'folio' => (function() use ($quote) {
-                                              $baseId = $quote->parent_id ?? $quote->id;
-                                              $suffix = '';
-                                              if ($quote->parent_id) {
-                                                  $childrenCount = \App\Models\Quote::where('parent_id', $quote->parent_id)
-                                                      ->where('id', '<=', $quote->id)
-                                                      ->count();
-                                                  $suffix = '-' . chr(64 + $childrenCount); // A, B, C...
-                                              }
-                                              return 'COT-' . str_pad($baseId, 3, '0', STR_PAD_LEFT) . $suffix;
-                                          })(),
-                                          'cliente' => $client->name ?? 'Sin Cliente',
-                                          'cliente_id' => $client->id ?? null,
-                                          'cliente_user_id' => $client->user_id ?? null,
-                                          'tecnico' => $tecnicoModel ? ($tecnicoModel->first_name . ' ' . $tecnicoModel->last_name) : 'Sin Técnico',
-                                          'tecnico_id' => $tecnicoModel->id ?? null,
-                                          'tecnico_user_id' => $tecnicoModel->id ?? null,
-                                            'propiedad_nombre' => $quote->service?->property?->property_name ?? $quote->workOrder?->property?->property_name ?? 'N/A',
-                                            'propiedad_direccion' => $quote->service?->property?->address ?? $quote->workOrder?->property?->address ?? 'N/A',
-                                            'cliente_telefono' => $client->phone ?? '',
-                                            'cliente_email' => $client->email ?? '',
-                                            'foto_fachada' => $quote->service?->property?->facade_photo_path ?? $quote->workOrder?->property?->facade_photo_path ?? null,
-                                          'fecha' => $quote->created_at ? $quote->created_at->format('Y-m-d') : '---',
-                                          'created_at' => $quote->created_at,
-                                          'total' => $quote->estimated_amount ?? 0,
-                                          'status' => $quote->status,
-                                          'type' => $quote->type,
-                                          'concept' => $quote->concept,
-                                          'observations' => $quote->observations,
-                                          'internal_observations' => ($user && $user->role_id !== 3) ? ($quote->internal_observations ?? null) : null,
-                                          'created_by_role' => $quote->created_by_role ?? 'Admin',
-                                          'parent_id' => $quote->parent_id ?? null,
-                                          'archivo_url' => $quote->file_path ? (str_starts_with($quote->file_path, 'http') ? $quote->file_path : asset('storage/' . $quote->file_path)) : null,
-                                          'evidence_photo_path' => $quote->evidence_photo_path,
-                                          'payment_receipt_path' => $quote->payment_receipt_path,
-                                          'payment_status' => $quote->payment_status,
-                                          'mp_payment_data' => $quote->mp_payment_data,
-                                          'advance_paid' => $quote->advance_paid,
-                                          'remaining_paid' => $quote->remaining_paid,
-                                          'advance_amount' => $quote->advance_amount,
-                                          'remaining_amount' => $quote->remaining_amount,
-                                          'advance_paid_at' => $quote->advance_paid_at,
-                                          'remaining_paid_at' => $quote->remaining_paid_at,
-                                          'cash_requested' => $quote->cash_requested,
-                                          'cash_confirmed' => $quote->cash_confirmed,
-                                          'cash_confirmed_at' => $quote->cash_confirmed_at,
-                                          'cash_confirmed_by' => $quote->cash_confirmed_by,
-                                          'cash_confirmed_by_name' => $quote->cash_confirmed_by_name,
-                                          'cash_amount_type' => $quote->cash_amount_type,
-                                          'cash_timing' => $quote->cash_timing,
-                                          'chat_history' => $quote->chat_history,
-                                      ];
-                                  });
+                    return [
+                        'id' => $quote->id,
+                        'property_id' => $quote->property_id ?? $quote->service?->property_id ?? $quote->workOrder?->property_id ?? null,
+                        'service_id' => $quote->service_id,
+                        'work_order_id' => $quote->work_order_id,
+                        'folio' => (function () use ($quote) {
+                            $baseId = $quote->parent_id ?? $quote->id;
+                            $suffix = '';
+                            if ($quote->parent_id) {
+                                $childrenCount = \App\Models\Quote::where('parent_id', $quote->parent_id)
+                                    ->where('id', '<=', $quote->id)
+                                    ->count();
+                                $suffix = '-' . chr(64 + $childrenCount); // A, B, C...
+                            }
+                            return 'COT-' . str_pad($baseId, 3, '0', STR_PAD_LEFT) . $suffix;
+                        })(),
+                        'cliente' => $client->name ?? 'Sin Cliente',
+                        'cliente_id' => $client->id ?? null,
+                        'cliente_user_id' => $client->user_id ?? null,
+                        'tecnico' => $tecnicoModel ? ($tecnicoModel->first_name . ' ' . $tecnicoModel->last_name) : 'Sin Técnico',
+                        'tecnico_id' => $tecnicoModel->id ?? null,
+                        'tecnico_user_id' => $tecnicoModel->id ?? null,
+                        'propiedad_nombre' => $quote->service?->property?->property_name ?? $quote->workOrder?->property?->property_name ?? 'N/A',
+                        'propiedad_direccion' => $quote->service?->property?->address ?? $quote->workOrder?->property?->address ?? 'N/A',
+                        'cliente_telefono' => $client->phone ?? '',
+                        'cliente_email' => $client->email ?? '',
+                        'foto_fachada' => $quote->service?->property?->facade_photo_path ?? $quote->workOrder?->property?->facade_photo_path ?? null,
+                        'fecha' => $quote->created_at ? $quote->created_at->format('Y-m-d') : '---',
+                        'created_at' => $quote->created_at,
+                        'total' => $quote->estimated_amount ?? 0,
+                        'status' => $quote->status,
+                        'type' => $quote->type,
+                        'concept' => $quote->concept,
+                        'observations' => $quote->observations,
+                        'internal_observations' => ($user && $user->role_id !== 3) ? ($quote->internal_observations ?? null) : null,
+                        'created_by_role' => $quote->created_by_role ?? 'Admin',
+                        'parent_id' => $quote->parent_id ?? null,
+                        'archivo_url' => $quote->file_path ? (str_starts_with($quote->file_path, 'http') ? $quote->file_path : asset('storage/' . $quote->file_path)) : null,
+                        'evidence_photo_path' => $quote->evidence_photo_path,
+                        'payment_receipt_path' => $quote->payment_receipt_path,
+                        'payment_status' => $quote->payment_status,
+                        'mp_payment_data' => $quote->mp_payment_data,
+                        'advance_paid' => $quote->advance_paid,
+                        'remaining_paid' => $quote->remaining_paid,
+                        'advance_amount' => $quote->advance_amount,
+                        'remaining_amount' => $quote->remaining_amount,
+                        'advance_paid_at' => $quote->advance_paid_at,
+                        'remaining_paid_at' => $quote->remaining_paid_at,
+                        'cash_requested' => $quote->cash_requested,
+                        'cash_confirmed' => $quote->cash_confirmed,
+                        'cash_confirmed_at' => $quote->cash_confirmed_at,
+                        'cash_confirmed_by' => $quote->cash_confirmed_by,
+                        'cash_confirmed_by_name' => $quote->cash_confirmed_by_name,
+                        'cash_amount_type' => $quote->cash_amount_type,
+                        'cash_timing' => $quote->cash_timing,
+                        'chat_history' => $quote->chat_history,
+                    ];
+                });
 
             // Cargar Cotizaciones de la Red (NetworkQuotes)
             try {
                 $networkQuotesQuery = \App\Models\NetworkQuote::withoutGlobalScopes()
                     ->with([
-                        'workOrder' => function($q) { 
+                        'workOrder' => function ($q) {
                             $q->withoutGlobalScopes()->with([
-                                'property' => function($qp) { $qp->withoutGlobalScopes()->with('client'); }
-                            ]); 
+                                'property' => function ($qp) {
+                                    $qp->withoutGlobalScopes()->with('client'); }
+                            ]);
                         },
-                        'technician' => function($q) { $q->withoutGlobalScopes(); }
+                        'technician' => function ($q) {
+                            $q->withoutGlobalScopes(); }
                     ]);
 
                 if ($user) {
                     if ($user->role_id === 8 || $user->role_id === 2) {
                         $networkQuotesQuery->where('technician_id', $user->id);
                     } elseif ($user->role_id === 4) {
-                        $networkQuotesQuery->whereHas('workOrder', function($q) use ($user) {
+                        $networkQuotesQuery->whereHas('workOrder', function ($q) use ($user) {
                             $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
                         });
                     }
                 }
 
-                $networkQuotes = $networkQuotesQuery->orderBy('created_at', 'desc')->get()->map(function($nq) {
+                $networkQuotes = $networkQuotesQuery->orderBy('created_at', 'desc')->get()->map(function ($nq) {
                     $wo = $nq->workOrder;
                     $client = $wo?->property?->client;
                     $clientName = $client ? trim($client->first_name . ' ' . $client->last_name) : ($wo?->owner_name ?? 'Cliente de la Red');
                     $propName = $wo?->property?->property_name ?: 'Propiedad en Red';
                     $propAddress = $wo?->property?->address ?: 'Dirección no especificada';
                     $techName = $nq->technician ? trim($nq->technician->first_name . ' ' . $nq->technician->last_name) : 'Técnico de la Red';
-                    
-                    $statusMapped = match($nq->status) {
+
+                    $statusMapped = match ($nq->status) {
                         'accepted' => 'Aprobado',
                         'rejected' => 'Rechazado',
                         default => 'Por Pagar'
@@ -464,8 +466,8 @@ class QuoteController extends Controller
                         'evidence_photo_path' => $wo?->evidence_path ?: $wo?->evidence_path_2,
                         'fecha' => $nq->created_at ? $nq->created_at->format('Y-m-d') : date('Y-m-d'),
                         'created_at' => $nq->created_at,
-                        'total' => (float)$nq->price,
-                        'estimated_amount' => (float)$nq->price,
+                        'total' => (float) $nq->price,
+                        'estimated_amount' => (float) $nq->price,
                         'status' => $statusMapped,
                         'network_status' => $nq->status,
                         'type' => 'manual',
@@ -474,8 +476,8 @@ class QuoteController extends Controller
                                 [
                                     'descripcion' => $conceptTitle,
                                     'cantidad' => 1,
-                                    'precio_u' => (float)$nq->price,
-                                    'precio' => (float)$nq->price
+                                    'precio_u' => (float) $nq->price,
+                                    'precio' => (float) $nq->price
                                 ]
                             ],
                             'materiales' => []
@@ -516,8 +518,10 @@ class QuoteController extends Controller
             // --- LÓGICA DE FLUJO: SI SE APRUEBA, ACTIVAMOS LOS SERVICIOS ---
             if ($request->status === 'Aprobado') {
                 $serviceIds = [];
-                if ($quote->service_id) $serviceIds[] = $quote->service_id;
-                if (is_array($quote->related_service_ids)) $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
+                if ($quote->service_id)
+                    $serviceIds[] = $quote->service_id;
+                if (is_array($quote->related_service_ids))
+                    $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
                 foreach ($serviceIds as $sId) {
                     $s = Service::find($sId);
                     if ($s) {
@@ -567,16 +571,16 @@ class QuoteController extends Controller
     }
 
     public function updateObservations(Request $request, $id)
-{
-    $quote = Quote::findOrFail($id);
-    // Tu tabla usa 'observations'
-    $quote->observations = $request->input('observaciones');
-    $quote->save();
+    {
+        $quote = Quote::findOrFail($id);
+        // Tu tabla usa 'observations'
+        $quote->observations = $request->input('observaciones');
+        $quote->save();
 
-    return response()->json(['message' => 'Observaciones guardadas']);
-}
+        return response()->json(['message' => 'Observaciones guardadas']);
+    }
 
-public function finalizarCotizacion(Request $request, $id)
+    public function finalizarCotizacion(Request $request, $id)
     {
         $quote = \App\Models\Quote::findOrFail($id);
 
@@ -584,7 +588,7 @@ public function finalizarCotizacion(Request $request, $id)
             // Si viene un archivo PDF, usamos la "Opción Nuclear"
             if ($request->hasFile('pdf')) {
                 // Instanciamos Cloudinary directamente con tu clave (igual que en ImageController)
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
                 // Subimos el archivo a la carpeta 'cotizaciones_pdf'
                 // NOTA CRÍTICA: Se usa resource_type => 'raw' para PDFs para evitar el error 401 de Cloudinary
@@ -625,16 +629,20 @@ public function finalizarCotizacion(Request $request, $id)
                 'message' => 'required|string',
             ]);
 
-            if (str_starts_with((string)$id, 'net_')) {
-                $netId = (int)str_replace('net_', '', (string)$id);
+            if (str_starts_with((string) $id, 'net_')) {
+                $netId = (int) str_replace('net_', '', (string) $id);
                 $netQuote = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->findOrFail($netId);
                 $user = auth('sanctum')->user() ?: auth()->user();
 
                 $senderRole = 'Usuario';
-                if ($user->role_id == 3) $senderRole = 'Cliente';
-                elseif ($user->role_id == 4) $senderRole = 'Autónomo';
-                elseif (in_array($user->role_id, [2, 8])) $senderRole = 'Técnico de la Red';
-                elseif (in_array($user->role_id, [0, 1])) $senderRole = 'Admin';
+                if ($user->role_id == 3)
+                    $senderRole = 'Cliente';
+                elseif ($user->role_id == 4)
+                    $senderRole = 'Autónomo';
+                elseif (in_array($user->role_id, [2, 8]))
+                    $senderRole = 'Técnico de la Red';
+                elseif (in_array($user->role_id, [0, 1]))
+                    $senderRole = 'Admin';
 
                 $newMessage = [
                     'sender_id' => $user->id,
@@ -681,7 +689,7 @@ public function finalizarCotizacion(Request $request, $id)
 
             $history = $quote->chat_history ?? [];
             $history[] = $newMessage;
-            
+
             $quote->chat_history = $history;
             $quote->save();
 
@@ -752,8 +760,10 @@ public function finalizarCotizacion(Request $request, $id)
 
             // Activar los servicios ligados a Programado
             $serviceIds = [];
-            if ($quote->service_id) $serviceIds[] = $quote->service_id;
-            if (is_array($quote->related_service_ids)) $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
+            if ($quote->service_id)
+                $serviceIds[] = $quote->service_id;
+            if (is_array($quote->related_service_ids))
+                $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
             foreach ($serviceIds as $sId) {
                 $service = Service::find($sId);
                 if ($service) {
@@ -794,14 +804,14 @@ public function finalizarCotizacion(Request $request, $id)
         try {
             $request->validate([
                 'cash_amount_type' => 'required|in:advance,remaining,full',
-                'cash_timing'      => 'required|in:immediate,on_completion',
+                'cash_timing' => 'required|in:immediate,on_completion',
             ]);
 
             $quote = Quote::findOrFail($id);
-            $quote->cash_requested   = true;
+            $quote->cash_requested = true;
             $quote->cash_amount_type = $request->cash_amount_type;
-            $quote->cash_timing      = $request->cash_timing;
-            $quote->payment_scheme   = 'cash';
+            $quote->cash_timing = $request->cash_timing;
+            $quote->payment_scheme = 'cash';
             if ($request->cash_amount_type === 'remaining') {
                 $quote->status = 'Liquidación en Efectivo Solicitada (40%)';
             } else {
@@ -817,15 +827,17 @@ public function finalizarCotizacion(Request $request, $id)
                     if (is_array($detalle)) {
                         $suma = 0;
                         foreach (($detalle['conceptos'] ?? $detalle['servicios'] ?? []) as $c) {
-                            $suma += ((float)($c['precio_u'] ?? $c['precio'] ?? 0)) * ((float)($c['cantidad'] ?? 1));
+                            $suma += ((float) ($c['precio_u'] ?? $c['precio'] ?? 0)) * ((float) ($c['cantidad'] ?? 1));
                         }
                         foreach (($detalle['materiales'] ?? []) as $m) {
-                            $suma += ((float)($m['costo_u'] ?? $m['precio'] ?? 0)) * ((float)($m['cantidad'] ?? 1));
+                            $suma += ((float) ($m['costo_u'] ?? $m['precio'] ?? 0)) * ((float) ($m['cantidad'] ?? 1));
                         }
-                        if ($suma > 0) $subtotalBase = $suma;
+                        if ($suma > 0)
+                            $subtotalBase = $suma;
                     }
                 }
-            } catch (\Exception $e) {}
+            } catch (\Exception $e) {
+            }
 
             if ($subtotalBase > 0) {
                 $subConIva = $subtotalBase * 1.16;
@@ -838,7 +850,7 @@ public function finalizarCotizacion(Request $request, $id)
             if ($request->cash_amount_type === 'remaining') {
                 $quote->remaining_amount = round($totalFinal * 0.40, 2);
             } elseif (!$quote->advance_amount || $request->cash_amount_type === 'advance') {
-                $quote->advance_amount   = round($totalFinal * 0.60, 2);
+                $quote->advance_amount = round($totalFinal * 0.60, 2);
                 $quote->remaining_amount = round($totalFinal * 0.40, 2);
             }
             $quote->save();
@@ -873,30 +885,32 @@ public function finalizarCotizacion(Request $request, $id)
             }
 
             $quote = Quote::findOrFail($id);
-            $quote->cash_confirmed    = true;
+            $quote->cash_confirmed = true;
             $quote->cash_confirmed_at = now();
             $quote->cash_confirmed_by = $user->id;
 
             // Si el tipo de efectivo es anticipo, dejamos pendiente el restante
             if ($quote->cash_amount_type === 'advance') {
-                $quote->advance_paid    = true;
+                $quote->advance_paid = true;
                 $quote->advance_paid_at = now();
-                $quote->status          = 'Anticipo Pagado (60%)';
+                $quote->status = 'Anticipo Pagado (60%)';
             } else {
                 // Pago total en efectivo
-                $quote->advance_paid     = true;
-                $quote->advance_paid_at  = now();
-                $quote->remaining_paid   = true;
+                $quote->advance_paid = true;
+                $quote->advance_paid_at = now();
+                $quote->remaining_paid = true;
                 $quote->remaining_paid_at = now();
-                $quote->status           = 'Pagado (Efectivo)';
+                $quote->status = 'Pagado (Efectivo)';
             }
 
             $quote->save();
 
             // Activar los servicios vinculados a Programado
             $serviceIds = [];
-            if ($quote->service_id) $serviceIds[] = $quote->service_id;
-            if (is_array($quote->related_service_ids)) $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
+            if ($quote->service_id)
+                $serviceIds[] = $quote->service_id;
+            if (is_array($quote->related_service_ids))
+                $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
             foreach ($serviceIds as $sId) {
                 $service = Service::find($sId);
                 if ($service) {
@@ -935,10 +949,10 @@ public function finalizarCotizacion(Request $request, $id)
             }
 
             $quote = Quote::findOrFail($id);
-            $quote->remaining_paid    = true;
+            $quote->remaining_paid = true;
             $quote->remaining_paid_at = now();
             $quote->cash_confirmed_by = $user->id; // Actualiza autorizador
-            $quote->status            = 'Pagado (Efectivo)';
+            $quote->status = 'Pagado (Efectivo)';
             $quote->save();
 
             if ($quote->cliente_user_id) {

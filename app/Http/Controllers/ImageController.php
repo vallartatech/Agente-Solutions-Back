@@ -21,7 +21,7 @@ class ImageController extends Controller
             // Esto se salta TODO el caché de Railway y Laravel
 // En app/Http/Controllers/ImageController.php
 
-            $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
             // 3. Subimos la imagen usando la API directa
             $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                 'folder' => 'agente_perfiles'
@@ -33,7 +33,7 @@ class ImageController extends Controller
             // 5. Detectamos qué estamos subiendo (perfil o portada) gracias a tu React
             $tipoCampo = $request->input('type', 'profile_picture');
 
-          // 6. Guardamos la URL en la columna correcta del usuario
+            // 6. Guardamos la URL en la columna correcta del usuario
             $userId = auth()->id();
 
             // Trampa de seguridad: Si no hay ID, lanzamos error

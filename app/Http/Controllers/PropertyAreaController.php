@@ -20,7 +20,8 @@ class PropertyAreaController extends Controller
         try {
             // Protección de Sanctum
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $areas = PropertyArea::with('subAreas')
                 ->where('property_id', $propertyId)
@@ -45,7 +46,8 @@ class PropertyAreaController extends Controller
     {
         // Protección de Sanctum
         $user = auth('sanctum')->user();
-        if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+        if (!$user)
+            return response()->json(['error' => 'No autorizado'], 401);
 
         $request->validate([
             'property_id' => 'required|exists:properties,id',
@@ -62,7 +64,7 @@ class PropertyAreaController extends Controller
         // --- SUBIDA A CLOUDINARY ---
         if ($request->hasFile('image')) {
             try {
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                     'folder' => 'agente_zonas' // Carpeta específica para las áreas
                 ]);
@@ -82,12 +84,13 @@ class PropertyAreaController extends Controller
             'area' => $area
         ], 201);
     }
-    
+
     public function getSubAreas($parentId)
     {
         // Protección de Sanctum
         $user = auth('sanctum')->user();
-        if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+        if (!$user)
+            return response()->json(['error' => 'No autorizado'], 401);
 
         $subareas = PropertyArea::where('parent_id', $parentId)
             ->orderBy('created_at', 'desc')
@@ -103,7 +106,8 @@ class PropertyAreaController extends Controller
     {
         // Protección de Sanctum
         $user = auth('sanctum')->user();
-        if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+        if (!$user)
+            return response()->json(['error' => 'No autorizado'], 401);
 
         $area = PropertyArea::findOrFail($id);
 
@@ -124,7 +128,7 @@ class PropertyAreaController extends Controller
         // --- SUBIDA A CLOUDINARY (Al editar) ---
         if ($request->hasFile('image')) {
             try {
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                     'folder' => 'agente_zonas'
                 ]);
@@ -152,13 +156,14 @@ class PropertyAreaController extends Controller
         try {
             // Protección de Sanctum
             $user = auth('sanctum')->user();
-            if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+            if (!$user)
+                return response()->json(['error' => 'No autorizado'], 401);
 
             $area = PropertyArea::with(['subAreas', 'components'])->findOrFail($id);
-            
+
             // 1. Borrar equipos de esta zona
             $area->components()->delete();
-            
+
             // 2. Borrar sub-zonas y sus equipos
             foreach ($area->subAreas as $sub) {
                 $sub->components()->delete();
@@ -185,13 +190,14 @@ class PropertyAreaController extends Controller
     public function updatePhoto(Request $request, $id)
     {
         $user = auth('sanctum')->user();
-        if (!$user) return response()->json(['error' => 'No autorizado'], 401);
+        if (!$user)
+            return response()->json(['error' => 'No autorizado'], 401);
 
         $area = PropertyArea::findOrFail($id);
 
         if ($request->hasFile('image')) {
             try {
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                 $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
                     'folder' => 'agente_zonas'
                 ]);

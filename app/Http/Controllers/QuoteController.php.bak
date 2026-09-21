@@ -47,7 +47,7 @@ class QuoteController extends Controller
                 $quote->internal_observations = $request->internal_observations;
                 
                 if ($request->hasFile('evidence_photo')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('evidence_photo')->getRealPath(), [
                         'folder' => 'cotizaciones_evidence'
                     ]);
@@ -57,7 +57,7 @@ class QuoteController extends Controller
             // Si es archivo, subimos el documento
             else {
                 if ($request->hasFile('file')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('file')->getRealPath(), [
                         'folder' => 'cotizaciones_pdf',
@@ -155,7 +155,7 @@ class QuoteController extends Controller
                 }
 
                 if ($request->hasFile('evidence_photo')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('evidence_photo')->getRealPath(), [
                         'folder' => 'cotizaciones_evidence'
                     ]);
@@ -163,7 +163,7 @@ class QuoteController extends Controller
                 }
             } else {
                 if ($request->hasFile('file')) {
-                    $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                    $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
                     $respuestaNube = $cloudinary->uploadApi()->upload($request->file('file')->getRealPath(), [
                         'folder' => 'cotizaciones_pdf',
                         'resource_type' => 'raw'
@@ -343,7 +343,7 @@ public function finalizarCotizacion(Request $request, $id)
             // Si viene un archivo PDF, usamos la "Opción Nuclear"
             if ($request->hasFile('pdf')) {
                 // Instanciamos Cloudinary directamente con tu clave (igual que en ImageController)
-                $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
+                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
                 // Subimos el archivo a la carpeta 'cotizaciones_pdf'
                 // NOTA CRÍTICA: Se usa resource_type => 'raw' para PDFs para evitar el error 401 de Cloudinary
