@@ -36,8 +36,8 @@ Route::post('/login', [AuthController::class, 'login']);
 
 Route::get('/test-email', function () {
     try {
-        \Illuminate\Support\Facades\Mail::raw('Este es un correo de prueba de Resend', function($msg) { 
-            $msg->to('ppechkoh@gmail.com')->subject('Prueba Resend'); 
+        \Illuminate\Support\Facades\Mail::raw('Este es un correo de prueba de Resend', function ($msg) {
+            $msg->to('ppechkoh@gmail.com')->subject('Prueba Resend');
         });
         return response()->json(['success' => true, 'message' => 'Correo enviado exitosamente con la configuración actual.']);
     } catch (\Exception $e) {
@@ -69,24 +69,24 @@ Route::get('/specialties', [SpecialtyController::class, 'index']);
 Route::get('/db-reset-pedro', function () {
     try {
         \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=0;');
-        
+
         // Tablas de Reportes y Cotizaciones
         \Illuminate\Support\Facades\DB::table('final_work_reports')->truncate();
         \Illuminate\Support\Facades\DB::table('work_reports')->truncate();
         \Illuminate\Support\Facades\DB::table('quotes')->truncate();
-        
+
         // Tablas de Trabajo
         \Illuminate\Support\Facades\DB::table('work_order_technician')->truncate();
         \Illuminate\Support\Facades\DB::table('service_technician')->truncate();
         \Illuminate\Support\Facades\DB::table('work_orders')->truncate();
         \Illuminate\Support\Facades\DB::table('services')->truncate();
-        
+
         // Tablas de Inventario y Propiedades
         \Illuminate\Support\Facades\DB::table('property_components')->truncate();
         \Illuminate\Support\Facades\DB::table('property_categories')->truncate();
         \Illuminate\Support\Facades\DB::table('property_areas')->truncate();
         \Illuminate\Support\Facades\DB::table('properties')->truncate();
-        
+
         // Notificaciones
         \Illuminate\Support\Facades\DB::table('notifications')->truncate();
 
@@ -149,20 +149,20 @@ Route::post('/registro-cliente', function (\Illuminate\Http\Request $request) {
 });
 
 // Rutas para Personalizar Login
-    Route::prefix('ui/settings')->group(function () {
-        Route::post('/login-background/image', [AppSettingController::class, 'updateLoginBackground']);
-        Route::post('/login-background/color', [AppSettingController::class, 'updateLoginColor']);
-        Route::delete('/login-background/image', [AppSettingController::class, 'deleteLoginBackground']);
-        Route::get('/login-settings', [AppSettingController::class, 'getLoginSettings']);
-        
-        // --- LOGO Y FAVICON ---
-        Route::post('/app-logo', [AppSettingController::class, 'updateAppLogo']);
-        Route::delete('/app-logo', [AppSettingController::class, 'deleteAppLogo']);
-        
-        // --- SIDEBAR CLIENTE ---
-        Route::post('/sidebar-links', [AppSettingController::class, 'updateSidebarLinks']);
-        Route::get('/sidebar-links', [AppSettingController::class, 'getSidebarLinks']);
-    });
+Route::prefix('ui/settings')->group(function () {
+    Route::post('/login-background/image', [AppSettingController::class, 'updateLoginBackground']);
+    Route::post('/login-background/color', [AppSettingController::class, 'updateLoginColor']);
+    Route::delete('/login-background/image', [AppSettingController::class, 'deleteLoginBackground']);
+    Route::get('/login-settings', [AppSettingController::class, 'getLoginSettings']);
+
+    // --- LOGO Y FAVICON ---
+    Route::post('/app-logo', [AppSettingController::class, 'updateAppLogo']);
+    Route::delete('/app-logo', [AppSettingController::class, 'deleteAppLogo']);
+
+    // --- SIDEBAR CLIENTE ---
+    Route::post('/sidebar-links', [AppSettingController::class, 'updateSidebarLinks']);
+    Route::get('/sidebar-links', [AppSettingController::class, 'getSidebarLinks']);
+});
 
 // Limpiar caché de Railway
 Route::get('/limpiar-cache', function () {
@@ -276,12 +276,12 @@ Route::middleware('auth:sanctum')->group(function () {
             if ($user->role_id == 4) {
                 $query->where(function ($q) use ($user) {
                     $q->where('properties.tenant_id', $user->tenant_id)
-                      ->orWhere('clients.tenant_id', $user->tenant_id);
+                        ->orWhere('clients.tenant_id', $user->tenant_id);
                 });
             } elseif ($user->role_id !== 0 && $user->tenant_id) {
                 $query->where(function ($q) use ($user) {
                     $q->where('properties.tenant_id', $user->tenant_id)
-                      ->orWhere('clients.tenant_id', $user->tenant_id);
+                        ->orWhere('clients.tenant_id', $user->tenant_id);
                 });
             } elseif ($user->role_id == 3) {
                 $cliente = \Illuminate\Support\Facades\DB::table('clients')->where('user_id', $user->id)->first();
@@ -289,7 +289,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     $sharedPropertyIds = \Illuminate\Support\Facades\DB::table('property_shares')->where('client_id', $cliente->id)->pluck('property_id');
                     $query->where(function ($q) use ($cliente, $sharedPropertyIds) {
                         $q->where('properties.client_id', $cliente->id)
-                          ->orWhereIn('properties.id', $sharedPropertyIds);
+                            ->orWhereIn('properties.id', $sharedPropertyIds);
                     });
                 } else {
                     return response()->json([]);
@@ -298,13 +298,13 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         $propiedades = $query->select(
-            'properties.id as prop_id', 
-            'properties.address', 
-            'properties.coordinates', 
-            'clients.name', 
-            'clients.phone', 
-            'clients.id as client_id', 
-            'clients.email', 
+            'properties.id as prop_id',
+            'properties.address',
+            'properties.coordinates',
+            'clients.name',
+            'clients.phone',
+            'clients.id as client_id',
+            'clients.email',
             \Illuminate\Support\Facades\DB::raw('COALESCE(users.profile_picture, clients.profile_picture) as profile_picture'),
             \Illuminate\Support\Facades\DB::raw('COALESCE(prop_tenant.logo_url, client_tenant.logo_url) as tenant_logo_url'),
             \Illuminate\Support\Facades\DB::raw('COALESCE(prop_tenant.name, client_tenant.name) as tenant_name')
@@ -314,7 +314,7 @@ Route::middleware('auth:sanctum')->group(function () {
             $partes = explode(',', $prop->coordinates);
             $fotoUrl = $prop->profile_picture ? (str_starts_with($prop->profile_picture, 'http') ? $prop->profile_picture : asset('storage/' . $prop->profile_picture)) : null;
             $tenantLogoUrl = $prop->tenant_logo_url ? (str_starts_with($prop->tenant_logo_url, 'http') ? $prop->tenant_logo_url : asset('storage/' . $prop->tenant_logo_url)) : null;
-            
+
             return [
                 'id' => $prop->prop_id,
                 'address' => $prop->address,
@@ -348,7 +348,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/servicios/{id}', [ServiceController::class, 'update']);
     Route::put('/servicios/{id}/asignar', [ServiceController::class, 'assignTechnician']);
     Route::put('/servicios/{id}/asignar-trabajo', [ServiceController::class, 'assignWorkOrder']); // NUEVO
-    
+
     // Rutas para Reportes de Trabajo
     Route::get('/servicios/{id}/reportes', [ServiceController::class, 'getReports']);
     Route::post('/servicios/{id}/reportes', [ServiceController::class, 'storeReport']);
@@ -427,7 +427,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/cotizaciones/{id}/observaciones', [QuoteController::class, 'updateObservations']);
     //Finalizar Cotización
     Route::post('/cotizaciones/{id}/finalizar', [QuoteController::class, 'finalizarCotizacion']);
-    
+
     // Pagos de Cotizaciones
     Route::post('/cotizaciones/{id}/pago', [QuoteController::class, 'uploadPaymentReceipt']);
     Route::post('/cotizaciones/{id}/validar-pago', [QuoteController::class, 'validatePayment']);
@@ -455,7 +455,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // 2. Procesar las imágenes con Cloudinary
         $cloudinary = new Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
-        
+
         $path1 = null;
         if ($request->hasFile('evidence_1')) {
             $resp1 = $cloudinary->uploadApi()->upload($request->file('evidence_1')->getRealPath(), ['folder' => 'work_orders_evidences']);
@@ -487,17 +487,17 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             $user = $request->user();
             $userName = $user ? ($user->first_name . ' ' . $user->last_name) : 'Un cliente';
-            
+
             // Usamos relaciones de Eloquent para obtener la propiedad
             $propertyName = $workOrder->property ? ($workOrder->property->nombre_propiedad ?: $workOrder->property->address) : 'Propiedad desconocida';
-            
+
             // Obtenemos administradores (rol 1 y 0)
             $admins = User::whereIn('role_id', [0, 1])->get();
             \Log::info("Enviando notificación de WorkOrder. Admins encontrados: " . $admins->count());
-            
+
             // Notificamos a los admins y al usuario actual para confirmar
             $notifiables = $admins->merge([$user]);
-            
+
             Notification::send($notifiables, new NewWorkOrderNotification($workOrder, $userName, $propertyName));
             \Log::info("Notificación enviada correctamente vía Eloquent.");
         } catch (\Exception $e) {
@@ -584,7 +584,7 @@ Route::middleware('auth:sanctum')->group(function () {
         if (!$quote) {
             return response()->json(['message' => 'Cotización no encontrada'], 404);
         }
-        
+
         $quote->status = 'rejected';
         $quote->save();
 
@@ -625,10 +625,14 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         $senderRole = 'Usuario';
-        if ($user->role_id == 3) $senderRole = 'Cliente';
-        elseif ($user->role_id == 4) $senderRole = 'Autónomo';
-        elseif (in_array($user->role_id, [2, 8])) $senderRole = 'Técnico de la Red';
-        elseif (in_array($user->role_id, [0, 1])) $senderRole = 'Admin';
+        if ($user->role_id == 3)
+            $senderRole = 'Cliente';
+        elseif ($user->role_id == 4)
+            $senderRole = 'Autónomo';
+        elseif (in_array($user->role_id, [2, 8]))
+            $senderRole = 'Técnico de la Red';
+        elseif (in_array($user->role_id, [0, 1]))
+            $senderRole = 'Admin';
 
         $newMessage = [
             'sender_id' => $user->id,
@@ -673,18 +677,23 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/mercado-trabajos', function () {
         $jobs = \App\Models\WorkOrder::withoutGlobalScopes()
             ->with([
-                'property' => function($q) { $q->withoutGlobalScopes(); },
-                'property.client' => function($q) { $q->withoutGlobalScopes(); },
-                'networkQuotes' => function($q) { $q->withoutGlobalScopes(); },
-                'networkQuotes.technician' => function($q) { $q->withoutGlobalScopes(); },
-                'networkQuotes.technician.specialties' => function($q) { $q->withoutGlobalScopes(); }
+                'property' => function ($q) {
+                    $q->withoutGlobalScopes(); },
+                'property.client' => function ($q) {
+                    $q->withoutGlobalScopes(); },
+                'networkQuotes' => function ($q) {
+                    $q->withoutGlobalScopes(); },
+                'networkQuotes.technician' => function ($q) {
+                    $q->withoutGlobalScopes(); },
+                'networkQuotes.technician.specialties' => function ($q) {
+                    $q->withoutGlobalScopes(); }
             ])
             ->withCount('networkQuotes')
             ->where('publish_network', 1)
             ->where('status', 'Por Hacer')
             ->orderBy('created_at', 'desc')
             ->get();
-            
+
         $jobs->transform(function ($job) {
             $ownerName = 'Cliente Desconocido';
             if ($job->property && $job->property->client) {
@@ -705,8 +714,8 @@ Route::middleware('auth:sanctum')->group(function () {
             if ($job->property && !empty($job->property->coordinates)) {
                 $coordsParts = explode(',', $job->property->coordinates);
                 if (count($coordsParts) >= 2) {
-                    $parsedLat = (float)trim($coordsParts[0]);
-                    $parsedLng = (float)trim($coordsParts[1]);
+                    $parsedLat = (float) trim($coordsParts[0]);
+                    $parsedLng = (float) trim($coordsParts[1]);
                     if ($parsedLat != 0 && $parsedLng != 0) {
                         $rawLat = $parsedLat;
                         $rawLng = $parsedLng;
@@ -759,7 +768,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return $job;
         });
-            
+
         return response()->json([
             'success' => true,
             'data' => $jobs
@@ -775,7 +784,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->findOrFail($id);
         $user = auth('sanctum')->user();
-        
+
         $quote = \App\Models\NetworkQuote::create([
             'work_order_id' => $workOrder->id,
             'technician_id' => $user->id,
@@ -805,11 +814,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::delete('/work-orders/reset-all-services', function () {
         $user = auth('sanctum')->user();
-        
+
         try {
             if ($user && $user->tenant_id) {
                 \App\Models\WorkReport::withoutGlobalScopes()->where('tenant_id', $user->tenant_id)->delete();
-                \App\Models\NetworkQuote::withoutGlobalScopes()->whereHas('workOrder', function($q) use ($user) {
+                \App\Models\NetworkQuote::withoutGlobalScopes()->whereHas('workOrder', function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id);
                 })->delete();
                 \App\Models\WorkOrder::withoutGlobalScopes()->where('tenant_id', $user->tenant_id)->delete();
@@ -840,23 +849,23 @@ Route::middleware('auth:sanctum')->group(function () {
             'networkQuotes' => fn($q) => $q->withoutGlobalScopes(),
             'networkQuotes.technician' => fn($q) => $q->withoutGlobalScopes()
         ]);
-        
+
         if ($user && $user->role_id == 4) {
-            $query->where(function($q) use ($user) {
+            $query->where(function ($q) use ($user) {
                 $q->where('tenant_id', $user->tenant_id)
-                  ->orWhereHas('property', function($qp) use ($user) {
-                      $qp->where('tenant_id', $user->tenant_id);
-                  })
-                  ->orWhereHas('tecnico', function($qt) use ($user) {
-                      $qt->where('tenant_id', $user->tenant_id);
-                  });
+                    ->orWhereHas('property', function ($qp) use ($user) {
+                        $qp->where('tenant_id', $user->tenant_id);
+                    })
+                    ->orWhereHas('tecnico', function ($qt) use ($user) {
+                        $qt->where('tenant_id', $user->tenant_id);
+                    });
             });
         } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
-            $query->where(function($q) use ($user) {
+            $query->where(function ($q) use ($user) {
                 $q->where('tenant_id', $user->tenant_id)
-                  ->orWhereHas('property', function($qp) use ($user) {
-                      $qp->where('tenant_id', $user->tenant_id);
-                  });
+                    ->orWhereHas('property', function ($qp) use ($user) {
+                        $qp->where('tenant_id', $user->tenant_id);
+                    });
             });
         }
 
@@ -873,20 +882,20 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
 
         if ($user && $user->role_id == 4) {
-            $query->where(function($q) use ($user) {
-                $q->whereHas('technician', function($qt) use ($user) {
+            $query->where(function ($q) use ($user) {
+                $q->whereHas('technician', function ($qt) use ($user) {
                     $qt->where('tenant_id', $user->tenant_id)->orWhere('id', $user->id);
-                })->orWhereHas('service', function($qs) use ($user) {
+                })->orWhereHas('service', function ($qs) use ($user) {
                     $qs->where('tenant_id', $user->tenant_id);
-                })->orWhereHas('workOrder', function($qw) use ($user) {
+                })->orWhereHas('workOrder', function ($qw) use ($user) {
                     $qw->where('tenant_id', $user->tenant_id);
                 });
             });
         } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
-            $query->where(function($q) use ($user) {
-                $q->whereHas('technician', function($qt) use ($user) {
+            $query->where(function ($q) use ($user) {
+                $q->whereHas('technician', function ($qt) use ($user) {
                     $qt->where('tenant_id', $user->tenant_id);
-                })->orWhereHas('service', function($qs) use ($user) {
+                })->orWhereHas('service', function ($qs) use ($user) {
                     $qs->where('tenant_id', $user->tenant_id);
                 });
             });
