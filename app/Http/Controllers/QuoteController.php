@@ -999,7 +999,11 @@ class QuoteController extends Controller
                 ? 'Liquidación en Efectivo Solicitada (40%)'
                 : 'Pago en Efectivo Solicitado';
 
-            $totalFinal = (float) ($quote->estimated_amount ?: 0);
+            $totalFinal = $this->calcularTotalEfectivoQuote($quote);
+            if ($totalFinal <= 0) {
+                $totalFinal = (float) ($quote->estimated_amount ?: 0);
+            }
+
             if ($request->cash_amount_type === 'remaining') {
                 $quote->remaining_amount = round($totalFinal * 0.40, 2);
             } elseif ($request->cash_amount_type === 'advance') {
@@ -1109,7 +1113,10 @@ class QuoteController extends Controller
                         ? 'Liquidación en Efectivo Solicitada (40%)'
                         : 'Pago en Efectivo Solicitado';
 
-                    $totalFinal = (float) ($quote->estimated_amount ?: 0);
+                    $totalFinal = $this->calcularTotalEfectivoQuote($quote);
+                    if ($totalFinal <= 0) {
+                        $totalFinal = (float) ($quote->estimated_amount ?: 0);
+                    }
                     if ($request->cash_amount_type === 'remaining') {
                         $quote->remaining_amount = round($totalFinal * 0.40, 2);
                     } elseif ($request->cash_amount_type === 'advance') {
@@ -1220,7 +1227,10 @@ class QuoteController extends Controller
             }
 
             $quote = Quote::findOrFail($id);
-            $totalFinal = (float) ($quote->estimated_amount ?: 0);
+            $totalFinal = $this->calcularTotalEfectivoQuote($quote);
+            if ($totalFinal <= 0) {
+                $totalFinal = (float) ($quote->estimated_amount ?: 0);
+            }
 
             if ($amountPaid <= 0) {
                 $amountPaid = ($paymentType === 'advance') ? round($totalFinal * 0.60, 2) : $totalFinal;
@@ -1338,5 +1348,58 @@ class QuoteController extends Controller
             \Log::error("Error en confirmarEfectivoRestante: " . $e->getMessage());
             return response()->json(['error' => 'Error al confirmar saldo restante en efectivo: ' . $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Calcula el subtotal base y total para pago en efectivo (Subtotal + 16% IVA, sin comisión MP).
+     */
+    private function calcularTotalEfectivoQuote($quote): float
+    {
+        $subtotal = 0;
+        if (!empty($quote->concept)) {
+            $conceptData = is_string($quote->concept) ? json_decode($quote->concept, true) : $quote->concept;
+            if (is_array($conceptData)) {
+                $servicios = $conceptData['conceptos'] ?? $conceptData['servicios'] ?? [];
+                if (is_array($servicios)) {
+                    foreach ($servicios as $c) {
+                        $cant = (float) ($c['cantidad'] ?? $c['cant'] ?? 1);
+                        $precio = (float) ($c['precio'] ?? $c['precio_u'] ?? 0);
+                        $subtotal += ($cant * $precio);
+                    }
+                }
+                if (!empty($conceptData['materiales']) && is_array($conceptData['materiales'])) {
+                    foreach ($conceptData['materiales'] as $m) {
+                        $cant = (float) ($m['cantidad'] ?? $m['cant'] ?? 1);
+                        $precio = (float) ($m['precio'] ?? $m['costo_u'] ?? 0);
+                        $subtotal += ($cant * $precio);
+                    }
+                }
+                if (!empty($conceptData['seccionesLote']) && is_array($conceptData['seccionesLote'])) {
+                    foreach ($conceptData['seccionesLote'] as $sec) {
+                        if (!empty($sec['conceptos']) && is_array($sec['conceptos'])) {
+                            foreach ($sec['conceptos'] as $sc) {
+                                $cant = (float) ($sc['cantidad'] ?? $sc['cant'] ?? 1);
+                                $precio = (float) ($sc['precio'] ?? $sc['precio_u'] ?? 0);
+                                $subtotal += ($cant * $precio);
+                            }
+                        }
+                        if (!empty($sec['materiales']) && is_array($sec['materiales'])) {
+                            foreach ($sec['materiales'] as $sm) {
+                                $cant = (float) ($sm['cantidad'] ?? $sm['cant'] ?? 1);
+                                $precio = (float) ($sm['precio'] ?? $sm['costo_u'] ?? 0);
+                                $subtotal += ($cant * $precio);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($subtotal > 0) {
+            return round($subtotal * 1.16, 2); // Subtotal + 16% IVA (Sin comisión Mercado Pago)
+        }
+
+        $base = (float) ($quote->estimated_amount ?: ($quote->total ?: 0));
+        return $base > 0 ? round($base * 1.16, 2) : 0;
     }
 }
