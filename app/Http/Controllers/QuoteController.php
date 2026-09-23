@@ -298,7 +298,7 @@ class QuoteController extends Controller
         try {
             $user = auth('sanctum')->user() ?: auth()->user();
 
-            // Cargamos ambas relaciones para soportar ambos flujos
+            // Cargamos relaciones para soportar ambos flujos (Services y WorkOrders)
             $quotesQuery = Quote::with([
                 'service.property.client',
                 'service.technician',
@@ -309,13 +309,34 @@ class QuoteController extends Controller
                 'cashConfirmedBy'
             ]);
 
-            // Si es cliente (rol 3), filtrar por sus servicios o sus órdenes de trabajo
+            // Si es cliente (rol 3), filtrar por sus servicios o sus órdenes de trabajo en sus propiedades
             if ($user && $user->role_id === 3) {
-                $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
-                    $q->whereHas('service.property.client', function ($query) use ($user) {
-                        $query->where('user_id', $user->id)->orWhere('email', $user->email);
-                    })->orWhereHas('workOrder.property.client', function ($query) use ($user) {
-                        $query->where('user_id', $user->id)->orWhere('email', $user->email);
+                $clientIds = \App\Models\Client::where('user_id', $user->id)
+                    ->orWhere('email', $user->email)
+                    ->pluck('id')
+                    ->toArray();
+
+                $propertyIds = \App\Models\Property::whereIn('client_id', $clientIds)
+                    ->pluck('id')
+                    ->toArray();
+
+                $quotesQuery = $quotesQuery->where(function ($q) use ($user, $clientIds, $propertyIds) {
+                    $q->whereHas('service.property', function ($query) use ($user, $clientIds, $propertyIds) {
+                        $query->whereIn('id', $propertyIds)
+                              ->orWhereIn('client_id', $clientIds)
+                              ->orWhereHas('client', function($cq) use ($user) {
+                                  $cq->where('user_id', $user->id)->orWhere('email', $user->email);
+                              });
+                    })->orWhereHas('workOrder.property', function ($query) use ($user, $clientIds, $propertyIds) {
+                        $query->whereIn('id', $propertyIds)
+                              ->orWhereIn('client_id', $clientIds)
+                              ->orWhereHas('client', function($cq) use ($user) {
+                                  $cq->where('user_id', $user->id)->orWhere('email', $user->email);
+                              });
+                    })->orWhereHas('workOrder', function ($query) use ($propertyIds) {
+                        $query->whereIn('property_id', $propertyIds);
+                    })->orWhereHas('service', function ($query) use ($propertyIds) {
+                        $query->whereIn('property_id', $propertyIds);
                     });
                 })->where(function($q) {
                     $q->whereNull('created_by_role')->orWhere('created_by_role', '!=', 'Técnico');
@@ -345,12 +366,74 @@ class QuoteController extends Controller
                 ->get()
                 ->map(function ($quote) use ($user) {
                     // Obtenemos el cliente y técnico de la relación que esté disponible
-                    $client = $quote->service?->property?->client ?? $quote->workOrder?->property?->client ?? null;
+                    $wo = $quote->workOrder;
+                    $serv = $quote->service;
+                    $prop = $serv?->property ?? $wo?->property ?? null;
+                    if (!$prop && $quote->property_id) {
+                        $prop = \App\Models\Property::find($quote->property_id);
+                    }
+
+                    $client = $prop?->client ?? $serv?->property?->client ?? $wo?->property?->client ?? null;
+                    if (!$client && $prop && $prop->client_id) {
+                        $client = \App\Models\Client::find($prop->client_id);
+                    }
+                    if (!$client && $user && $user->role_id === 3) {
+                        $client = \App\Models\Client::where('user_id', $user->id)->orWhere('email', $user->email)->first();
+                    }
+
                     $tecnicoModel = $quote->service?->technician ?? $quote->workOrder?->tecnico ?? ($quote->service?->technicians?->first() ?? $quote->workOrder?->technicians?->first() ?? null);
+
+                    // Evidencias del reporte
+                    $evidencias = [];
+                    if ($wo?->evidence_path) $evidencias[] = str_starts_with($wo->evidence_path, 'http') ? $wo->evidence_path : asset('storage/' . ltrim($wo->evidence_path, '/'));
+                    if ($wo?->evidence_path_2) $evidencias[] = str_starts_with($wo->evidence_path_2, 'http') ? $wo->evidence_path_2 : asset('storage/' . ltrim($wo->evidence_path_2, '/'));
+                    if ($serv?->evidence_path) $evidencias[] = str_starts_with($serv->evidence_path, 'http') ? $serv->evidence_path : asset('storage/' . ltrim($serv->evidence_path, '/'));
+                    if ($quote->evidence_photo_path) $evidencias[] = str_starts_with($quote->evidence_photo_path, 'http') ? $quote->evidence_photo_path : asset('storage/' . ltrim($quote->evidence_photo_path, '/'));
+
+                    // Limpiar descripción de etiquetas de lote si existen
+                    $descLimpia = $wo?->description ?? $serv?->description ?? $quote->observations ?? '';
+                    if (is_string($descLimpia)) {
+                        $descLimpia = preg_replace('/\[LOTE-[A-Z0-9]+\]\s*(\(\d+\/\d+\))?\s*/i', '', $descLimpia);
+                        if (str_contains($descLimpia, '[EQUIPO AFECTADO]:')) {
+                            $partes = explode('[EQUIPO AFECTADO]:', $descLimpia);
+                            $descLimpia = trim($partes[0]);
+                        }
+                    }
+
+                    // Problemas relacionados si es lote
+                    $problemasLote = [];
+                    if ($quote->is_unified_batch || !empty($quote->related_service_ids)) {
+                        $relatedIds = is_array($quote->related_service_ids) ? $quote->related_service_ids : (is_string($quote->related_service_ids) ? json_decode($quote->related_service_ids, true) : []);
+                        if (!empty($relatedIds)) {
+                            $relatedWos = \App\Models\WorkOrder::whereIn('id', $relatedIds)->get();
+                            foreach ($relatedWos as $rwo) {
+                                $rEvidencias = [];
+                                if ($rwo->evidence_path) $rEvidencias[] = str_starts_with($rwo->evidence_path, 'http') ? $rwo->evidence_path : asset('storage/' . ltrim($rwo->evidence_path, '/'));
+                                if ($rwo->evidence_path_2) $rEvidencias[] = str_starts_with($rwo->evidence_path_2, 'http') ? $rwo->evidence_path_2 : asset('storage/' . ltrim($rwo->evidence_path_2, '/'));
+                                $problemasLote[] = [
+                                    'id' => $rwo->id,
+                                    'tipo' => $rwo->type,
+                                    'zona' => $rwo->zone,
+                                    'equipo' => $rwo->equipment ?: 'General',
+                                    'descripcion' => $rwo->description,
+                                    'evidencias' => $rEvidencias
+                                ];
+                            }
+                        }
+                    }
+
+                    $fotoFachada = $prop?->facade_photo_path ?? null;
+                    if ($fotoFachada && !str_starts_with($fotoFachada, 'http')) {
+                        $fotoFachada = asset('storage/' . ltrim($fotoFachada, '/'));
+                    }
+
+                    $scheduledFormatted = $wo?->scheduled_at ? $wo->scheduled_at->format('d/m/Y') : ($serv?->scheduled_start ? date('d/m/Y', strtotime($serv->scheduled_start)) : ($quote->created_at ? $quote->created_at->format('d/m/Y') : 'Pendiente'));
+
+                    $clienteNombre = $client?->name ?? ($user && $user->role_id === 3 ? trim($user->first_name . ' ' . $user->last_name) : 'Sin Cliente');
 
                     return [
                         'id' => $quote->id,
-                        'property_id' => $quote->property_id ?? $quote->service?->property_id ?? $quote->workOrder?->property_id ?? null,
+                        'property_id' => $quote->property_id ?? $prop?->id ?? null,
                         'service_id' => $quote->service_id,
                         'work_order_id' => $quote->work_order_id,
                         'folio' => (function () use ($quote) {
@@ -364,20 +447,36 @@ class QuoteController extends Controller
                             }
                             return 'COT-' . str_pad($baseId, 3, '0', STR_PAD_LEFT) . $suffix;
                         })(),
-                        'cliente' => $client->name ?? 'Sin Cliente',
+                        'cliente' => $clienteNombre,
+                        'cliente_nombre' => $clienteNombre,
                         'cliente_id' => $client->id ?? null,
                         'cliente_user_id' => $client->user_id ?? null,
+                        'cliente_telefono' => $client?->phone ?? ($user && $user->role_id === 3 ? ($user->phone_number ?? '') : ''),
+                        'cliente_email' => $client?->email ?? ($user && $user->role_id === 3 ? $user->email : ''),
+                        'cliente_tipo_propiedad' => strtoupper($prop?->type ?? 'CASA'),
                         'tecnico' => $tecnicoModel ? ($tecnicoModel->first_name . ' ' . $tecnicoModel->last_name) : 'Sin Técnico',
                         'tecnico_id' => $tecnicoModel->id ?? null,
                         'tecnico_user_id' => $tecnicoModel->id ?? null,
-                        'propiedad_nombre' => $quote->service?->property?->property_name ?? $quote->workOrder?->property?->property_name ?? 'N/A',
-                        'propiedad_direccion' => $quote->service?->property?->address ?? $quote->workOrder?->property?->address ?? 'N/A',
-                        'cliente_telefono' => $client->phone ?? '',
-                        'cliente_email' => $client->email ?? '',
-                        'foto_fachada' => $quote->service?->property?->facade_photo_path ?? $quote->workOrder?->property?->facade_photo_path ?? null,
+                        'tecnico_telefono' => $tecnicoModel?->phone_number ?? $tecnicoModel?->phone ?? null,
+                        'propiedad_nombre' => $prop?->property_name ?? 'Propiedad de Cliente',
+                        'propiedad_direccion' => $prop?->address ?? 'Dirección no especificada',
+                        'propiedad_curp' => $prop?->custom_curp ?? ($prop ? "PROP-{$prop->id}" : "COT-{$quote->id}"),
+                        'propiedad_coordenadas' => $prop?->coordinates ?? null,
+                        'propiedad_foto' => $fotoFachada,
+                        'foto_fachada' => $fotoFachada,
+                        'tipo_falla' => $wo?->type ?? $serv?->service_type ?? $serv?->title ?? 'Mantenimiento General',
+                        'zona' => $wo?->zone ?? $serv?->zone ?? 'Área de la propiedad',
+                        'equipo' => $wo?->equipment ?? $serv?->equipment ?? 'General',
+                        'descripcion_problema' => $descLimpia,
+                        'evidencias' => $evidencias,
+                        'problemas_lote' => $problemasLote,
+                        'prioridad' => $wo?->priority ?? 'Normal',
+                        'batch_id' => $wo?->batch_id ?? null,
+                        'scheduled_at' => $scheduledFormatted,
                         'fecha' => $quote->created_at ? $quote->created_at->format('Y-m-d') : '---',
                         'created_at' => $quote->created_at,
                         'total' => $quote->estimated_amount ?? 0,
+                        'estimated_amount' => $quote->estimated_amount ?? 0,
                         'status' => $quote->status,
                         'type' => $quote->type,
                         'concept' => $quote->concept,
@@ -385,7 +484,7 @@ class QuoteController extends Controller
                         'internal_observations' => ($user && $user->role_id !== 3) ? ($quote->internal_observations ?? null) : null,
                         'created_by_role' => $quote->created_by_role ?? 'Admin',
                         'parent_id' => $quote->parent_id ?? null,
-                        'archivo_url' => $quote->file_path ? (str_starts_with($quote->file_path, 'http') ? $quote->file_path : asset('storage/' . $quote->file_path)) : null,
+                        'archivo_url' => $quote->file_path ? (str_starts_with($quote->file_path, 'http') ? $quote->file_path : asset('storage/' . ltrim($quote->file_path, '/'))) : null,
                         'evidence_photo_path' => $quote->evidence_photo_path,
                         'payment_receipt_path' => $quote->payment_receipt_path,
                         'payment_status' => $quote->payment_status,
@@ -428,15 +527,20 @@ class QuoteController extends Controller
                         $networkQuotesQuery->whereHas('workOrder', function ($q) use ($user) {
                             $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
                         });
+                    } elseif ($user->role_id === 3) {
+                        $networkQuotesQuery->whereHas('workOrder.property.client', function ($q) use ($user) {
+                            $q->where('user_id', $user->id)->orWhere('email', $user->email);
+                        });
                     }
                 }
 
-                $networkQuotes = $networkQuotesQuery->orderBy('created_at', 'desc')->get()->map(function ($nq) {
+                $networkQuotes = $networkQuotesQuery->orderBy('created_at', 'desc')->get()->map(function ($nq) use ($user) {
                     $wo = $nq->workOrder;
-                    $client = $wo?->property?->client;
-                    $clientName = $client ? trim($client->first_name . ' ' . $client->last_name) : ($wo?->owner_name ?? 'Cliente de la Red');
-                    $propName = $wo?->property?->property_name ?: 'Propiedad en Red';
-                    $propAddress = $wo?->property?->address ?: 'Dirección no especificada';
+                    $prop = $wo?->property;
+                    $client = $prop?->client;
+                    $clientName = $client ? (trim($client->first_name . ' ' . $client->last_name) ?: $client->name) : ($wo?->owner_name ?? ($user && $user->role_id === 3 ? trim($user->first_name . ' ' . $user->last_name) : 'Cliente de la Red'));
+                    $propName = $prop?->property_name ?: 'Propiedad en Red';
+                    $propAddress = $prop?->address ?: 'Dirección no especificada';
                     $techName = $nq->technician ? trim($nq->technician->first_name . ' ' . $nq->technician->last_name) : 'Técnico de la Red';
 
                     $statusMapped = match ($nq->status) {
@@ -445,7 +549,22 @@ class QuoteController extends Controller
                         default => 'Por Pagar'
                     };
 
+                    $tipoFalla = $wo?->type ?: 'Mantenimiento en Red';
+                    $equipo = $wo?->equipment ?: 'otro';
+                    $zona = $wo?->zone ?: 'General';
+                    $descLimpia = $wo?->description ?: ($nq->message ?: 'Trabajo publicado en la Red');
+                    
+                    $rEvidencias = [];
+                    if ($wo?->evidence_path) $rEvidencias[] = str_starts_with($wo->evidence_path, 'http') ? $wo->evidence_path : asset('storage/' . ltrim($wo->evidence_path, '/'));
+                    if ($wo?->evidence_path_2) $rEvidencias[] = str_starts_with($wo->evidence_path_2, 'http') ? $wo->evidence_path_2 : asset('storage/' . ltrim($wo->evidence_path_2, '/'));
+
+                    $fotoFachada = $prop?->facade_photo_path ?: ($wo?->evidence_path ?: $wo?->evidence_path_2);
+                    if ($fotoFachada && !str_starts_with($fotoFachada, 'http')) {
+                        $fotoFachada = asset('storage/' . ltrim($fotoFachada, '/'));
+                    }
+
                     $conceptTitle = $wo ? ($wo->type . ($wo->equipment ? ' - ' . $wo->equipment : '')) : 'Trabajo de la Red';
+
                     return [
                         'id' => 'net_' . $nq->id,
                         'network_quote_id' => $nq->id,
@@ -455,17 +574,29 @@ class QuoteController extends Controller
                         'work_order_id' => $nq->work_order_id,
                         'folio' => 'RED-' . str_pad($nq->id, 3, '0', STR_PAD_LEFT),
                         'cliente' => $clientName ?: 'Cliente de la Red',
+                        'cliente_nombre' => $clientName ?: 'Cliente de la Red',
                         'cliente_id' => $client?->id,
                         'cliente_user_id' => $client?->user_id,
+                        'cliente_telefono' => $client?->phone ?? ($user && $user->role_id === 3 ? ($user->phone_number ?? '') : ''),
+                        'cliente_email' => $client?->email ?? ($user && $user->role_id === 3 ? $user->email : ''),
+                        'cliente_tipo_propiedad' => strtoupper($prop?->type ?? 'CASA'),
                         'tecnico' => $techName,
                         'tecnico_id' => $nq->technician_id,
                         'tecnico_user_id' => $nq->technician_id,
                         'propiedad_nombre' => $propName,
                         'propiedad_direccion' => $propAddress,
-                        'cliente_telefono' => $client?->phone ?? '',
-                        'cliente_email' => $client?->email ?? '',
-                        'foto_fachada' => $wo?->evidence_path ?: ($wo?->evidence_path_2 ?: $wo?->property?->facade_photo_path),
-                        'evidence_photo_path' => $wo?->evidence_path ?: $wo?->evidence_path_2,
+                        'propiedad_curp' => $prop?->custom_curp ?: "RED-{$nq->id}",
+                        'propiedad_coordenadas' => $prop?->coordinates ?? null,
+                        'propiedad_foto' => $fotoFachada,
+                        'foto_fachada' => $fotoFachada,
+                        'tipo_falla' => $tipoFalla,
+                        'zona' => $zona,
+                        'equipo' => $equipo,
+                        'descripcion_problema' => $descLimpia,
+                        'evidencias' => $rEvidencias,
+                        'problemas_lote' => [],
+                        'prioridad' => $wo?->priority ?? 'Normal',
+                        'scheduled_at' => $wo?->scheduled_at ? $wo->scheduled_at->format('d/m/Y') : ($nq->created_at ? $nq->created_at->format('d/m/Y') : 'Pendiente'),
                         'fecha' => $nq->created_at ? $nq->created_at->format('Y-m-d') : date('Y-m-d'),
                         'created_at' => $nq->created_at,
                         'total' => (float) $nq->price,
