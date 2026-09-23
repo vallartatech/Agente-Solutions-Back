@@ -59,9 +59,9 @@ class AuthController extends Controller
             }
         }
 
-        $isTechnician = ($request->role_id == 2);
-        if ($isTechnician && empty($tenantId)) {
-            $tenantId = 1; // Si el técnico no ingresó código de empresa, se va directo a Agente Solutions
+        $isTechnician = ($request->role_id == 2 || $request->role_id == 8);
+        if ($request->role_id == 2 && empty($tenantId)) {
+            $tenantId = 1; // Si el técnico de Agente no ingresó código de empresa, se va directo a Agente Solutions
         }
 
         $currentUser = auth('sanctum')->user();
@@ -88,7 +88,7 @@ class AuthController extends Controller
         $roleToAssign = $request->role_id;
 
         // A PRUEBA DE BALAS: Asegurar que el rol exista en la tabla roles
-        foreach ([0, 1, 2, 3, 4, 5, 6, 7] as $rId) {
+        foreach ([0, 1, 2, 3, 4, 5, 6, 7, 8] as $rId) {
             \DB::table('roles')->insertOrIgnore(['id' => $rId, 'created_at' => now(), 'updated_at' => now()]);
         }
         \DB::table('roles')->insertOrIgnore(['id' => $roleToAssign, 'created_at' => now(), 'updated_at' => now()]);
