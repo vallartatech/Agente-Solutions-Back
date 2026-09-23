@@ -313,11 +313,13 @@ class QuoteController extends Controller
             if ($user && $user->role_id === 3) {
                 $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
                     $q->whereHas('service.property.client', function ($query) use ($user) {
-                        $query->where('user_id', $user->id);
+                        $query->where('user_id', $user->id)->orWhere('email', $user->email);
                     })->orWhereHas('workOrder.property.client', function ($query) use ($user) {
-                        $query->where('user_id', $user->id);
+                        $query->where('user_id', $user->id)->orWhere('email', $user->email);
                     });
-                })->where('created_by_role', 'Admin'); // El cliente solo ve lo oficial del Admin
+                })->where(function($q) {
+                    $q->whereNull('created_by_role')->orWhere('created_by_role', '!=', 'Técnico');
+                });
             } elseif ($user && $user->role_id === 4) {
                 // Autónomo: solo ve cotizaciones de su empresa (o de propiedades de su empresa)
                 $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
@@ -819,7 +821,7 @@ class QuoteController extends Controller
             }
             $quote->save();
 
-            // Calcular monto final (subtotal + 16% IVA + comisión MercadoPago) para que coincida exactamente en pago online y en efectivo
+            // Calcular monto final
             $subtotalBase = 0;
             try {
                 if ($quote->concept) {
@@ -855,7 +857,7 @@ class QuoteController extends Controller
             }
             $quote->save();
 
-            // Notificar a los Administradores (rol 0 o 1)
+            // Notificar a los Administradores y Root (rol 0 o 1)
             $clientName = $request->user()?->first_name . ' ' . $request->user()?->last_name ?? 'Cliente';
             $admins = User::whereIn('role_id', [0, 1])->get();
             foreach ($admins as $admin) {
@@ -870,6 +872,82 @@ class QuoteController extends Controller
             return response()->json(['message' => 'Solicitud de pago en efectivo enviada.', 'quote' => $quote]);
         } catch (\Exception $e) {
             return response()->json(['error' => 'Error al solicitar pago en efectivo: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Solicitud de pago en efectivo para múltiples cotizaciones seleccionadas en el Carrito.
+     */
+    public function solicitarEfectivoBatch(Request $request)
+    {
+        try {
+            $request->validate([
+                'quote_ids' => 'required|array|min:1',
+                'quote_ids.*' => 'integer|exists:quotes,id',
+                'cash_amount_type' => 'required|in:advance,full,remaining',
+                'cash_timing' => 'required|in:immediate,on_completion',
+            ]);
+
+            $quoteIds = $request->input('quote_ids', []);
+            $quotes = Quote::whereIn('id', $quoteIds)->get();
+            $clientName = trim(($request->user()?->first_name ?? '') . ' ' . ($request->user()?->last_name ?? 'Cliente'));
+            $admins = User::whereIn('role_id', [0, 1])->get();
+            $folios = [];
+
+            foreach ($quotes as $quote) {
+                $quote->cash_requested = true;
+                $quote->cash_amount_type = $request->cash_amount_type;
+                $quote->cash_timing = $request->cash_timing;
+                $quote->payment_scheme = 'cash';
+                $quote->status = ($request->cash_amount_type === 'remaining')
+                    ? 'Liquidación en Efectivo Solicitada (40%)'
+                    : 'Pago en Efectivo Solicitado';
+
+                $subtotalBase = 0;
+                try {
+                    if ($quote->concept) {
+                        $detalle = is_string($quote->concept) ? json_decode($quote->concept, true) : $quote->concept;
+                        if (is_array($detalle)) {
+                            $suma = 0;
+                            foreach (($detalle['conceptos'] ?? $detalle['servicios'] ?? []) as $c) {
+                                $suma += ((float) ($c['precio_u'] ?? $c['precio'] ?? 0)) * ((float) ($c['cantidad'] ?? 1));
+                            }
+                            foreach (($detalle['materiales'] ?? []) as $m) {
+                                $suma += ((float) ($m['costo_u'] ?? $m['precio'] ?? 0)) * ((float) ($m['cantidad'] ?? 1));
+                            }
+                            if ($suma > 0) $subtotalBase = $suma;
+                        }
+                    }
+                } catch (\Exception $e) {}
+
+                $totalFinal = ($subtotalBase > 0) ? round(($subtotalBase * 1.16 * 1.0349 + 4 * 1.16), 2) : (float) ($quote->estimated_amount ?? 0);
+                if ($request->cash_amount_type === 'remaining') {
+                    $quote->remaining_amount = round($totalFinal * 0.40, 2);
+                } else {
+                    $quote->advance_amount = round($totalFinal * 0.60, 2);
+                    $quote->remaining_amount = round($totalFinal * 0.40, 2);
+                }
+                $quote->save();
+
+                $folios[] = 'COT-' . $quote->id;
+
+                foreach ($admins as $admin) {
+                    $admin->notify(new \App\Notifications\CashPaymentRequested(
+                        $quote,
+                        $clientName,
+                        $request->cash_amount_type,
+                        $request->cash_timing
+                    ));
+                }
+            }
+
+            return response()->json([
+                'message' => 'Solicitud de pago en efectivo registrada para ' . count($quotes) . ' cotizaciones.',
+                'processed_ids' => $quoteIds,
+                'folios' => $folios
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al solicitar pago en efectivo para el lote: ' . $e->getMessage()], 500);
         }
     }
 
