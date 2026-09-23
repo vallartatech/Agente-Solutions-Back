@@ -934,6 +934,11 @@ class QuoteController extends Controller
      */
     public function solicitarEfectivo(Request $request, $id)
     {
+        // Si la petición viene para batch o contiene arreglo de quote_ids, delegar a solicitarEfectivoBatch
+        if ($id === 'batch' || $request->has('quote_ids') || is_array($request->input('quote_ids'))) {
+            return $this->solicitarEfectivoBatch($request);
+        }
+
         try {
             $request->validate([
                 'cash_amount_type' => 'required|in:advance,full,remaining',
