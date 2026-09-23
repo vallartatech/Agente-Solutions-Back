@@ -930,78 +930,112 @@ class QuoteController extends Controller
     }
 
     /**
-     * Cliente solicita pago en efectivo (anticipo o total, ahora o al finalizar).
+     * Solicitud de pago en efectivo (individual)
      */
     public function solicitarEfectivo(Request $request, $id)
     {
         try {
             $request->validate([
-                'cash_amount_type' => 'required|in:advance,remaining,full',
+                'cash_amount_type' => 'required|in:advance,full,remaining',
                 'cash_timing' => 'required|in:immediate,on_completion',
             ]);
+
+            $user = auth('sanctum')->user() ?: auth()->user();
+            $clientName = trim(($user?->first_name ?? '') . ' ' . ($user?->last_name ?? 'Cliente'));
+            if (!$clientName) $clientName = 'Cliente';
+            $admins = User::whereIn('role_id', [0, 1])->get();
+
+            // Si es cotización de la Red
+            if (is_string($id) && str_starts_with($id, 'net_')) {
+                $netId = (int) str_replace('net_', '', $id);
+                $nq = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->findOrFail($netId);
+                
+                $nq->status = ($request->cash_amount_type === 'remaining')
+                    ? 'accepted'
+                    : 'accepted';
+                $nq->save();
+
+                if ($nq->workOrder) {
+                    $nq->workOrder->status = 'Por Asignar';
+                    $nq->workOrder->save();
+                }
+
+                $totalFinal = (float) $nq->price;
+                $advanceAmount = ($request->cash_amount_type === 'advance') ? round($totalFinal * 0.60, 2) : $totalFinal;
+                $remainingAmount = ($request->cash_amount_type === 'advance') ? round($totalFinal * 0.40, 2) : 0;
+
+                foreach ($admins as $admin) {
+                    try {
+                        $admin->notify(new \App\Notifications\CashPaymentRequested(
+                            $nq,
+                            $clientName,
+                            $request->cash_amount_type,
+                            $request->cash_timing
+                        ));
+                    } catch (\Throwable $notifErr) {
+                        \Log::warning("Error enviando notif de efectivo a admin: " . $notifErr->getMessage());
+                    }
+                }
+
+                return response()->json([
+                    'message' => 'Solicitud de pago en efectivo registrada para la cotización de red.',
+                    'network_quote' => $nq,
+                    'advance_amount' => $advanceAmount,
+                    'remaining_amount' => $remainingAmount
+                ]);
+            }
 
             $quote = Quote::findOrFail($id);
             $quote->cash_requested = true;
             $quote->cash_amount_type = $request->cash_amount_type;
             $quote->cash_timing = $request->cash_timing;
             $quote->payment_scheme = 'cash';
-            if ($request->cash_amount_type === 'remaining') {
-                $quote->status = 'Liquidación en Efectivo Solicitada (40%)';
-            } else {
-                $quote->status = 'Pago en Efectivo Solicitado';
-            }
-            $quote->save();
+            $quote->status = ($request->cash_amount_type === 'remaining')
+                ? 'Liquidación en Efectivo Solicitada (40%)'
+                : 'Pago en Efectivo Solicitado';
 
-            // Calcular monto final
-            $subtotalBase = 0;
-            try {
-                if ($quote->concept) {
-                    $detalle = is_string($quote->concept) ? json_decode($quote->concept, true) : $quote->concept;
-                    if (is_array($detalle)) {
-                        $suma = 0;
-                        foreach (($detalle['conceptos'] ?? $detalle['servicios'] ?? []) as $c) {
-                            $suma += ((float) ($c['precio_u'] ?? $c['precio'] ?? 0)) * ((float) ($c['cantidad'] ?? 1));
-                        }
-                        foreach (($detalle['materiales'] ?? []) as $m) {
-                            $suma += ((float) ($m['costo_u'] ?? $m['precio'] ?? 0)) * ((float) ($m['cantidad'] ?? 1));
-                        }
-                        if ($suma > 0)
-                            $subtotalBase = $suma;
-                    }
-                }
-            } catch (\Exception $e) {
-            }
-
-            if ($subtotalBase > 0) {
-                $subConIva = $subtotalBase * 1.16;
-                $comisionMP = ($subConIva * 0.0349 + 4) * 1.16;
-                $totalFinal = round($subConIva + $comisionMP, 2);
-            } else {
-                $totalFinal = (float) $quote->estimated_amount;
-            }
-
+            $totalFinal = (float) ($quote->estimated_amount ?: 0);
             if ($request->cash_amount_type === 'remaining') {
                 $quote->remaining_amount = round($totalFinal * 0.40, 2);
-            } elseif (!$quote->advance_amount || $request->cash_amount_type === 'advance') {
+            } elseif ($request->cash_amount_type === 'advance') {
                 $quote->advance_amount = round($totalFinal * 0.60, 2);
                 $quote->remaining_amount = round($totalFinal * 0.40, 2);
+            } else {
+                $quote->advance_amount = $totalFinal;
+                $quote->remaining_amount = 0;
             }
             $quote->save();
 
-            // Notificar a los Administradores y Root (rol 0 o 1)
-            $clientName = $request->user()?->first_name . ' ' . $request->user()?->last_name ?? 'Cliente';
-            $admins = User::whereIn('role_id', [0, 1])->get();
+            // Activar servicios u órdenes de trabajo a 'Por Asignar'
+            if ($quote->service_id) {
+                $serv = Service::find($quote->service_id);
+                if ($serv && !in_array($serv->status, ['Listo', 'Finalizado'])) {
+                    $serv->update(['status' => 'Por Asignar']);
+                }
+            }
+            if ($quote->work_order_id) {
+                $wo = WorkOrder::find($quote->work_order_id);
+                if ($wo && !in_array($wo->status, ['Listo', 'Finalizado'])) {
+                    $wo->update(['status' => 'Por Asignar']);
+                }
+            }
+
             foreach ($admins as $admin) {
-                $admin->notify(new \App\Notifications\CashPaymentRequested(
-                    $quote,
-                    trim($clientName),
-                    $request->cash_amount_type,
-                    $request->cash_timing
-                ));
+                try {
+                    $admin->notify(new \App\Notifications\CashPaymentRequested(
+                        $quote,
+                        $clientName,
+                        $request->cash_amount_type,
+                        $request->cash_timing
+                    ));
+                } catch (\Throwable $notifErr) {
+                    \Log::warning("Error enviando notif de efectivo a admin: " . $notifErr->getMessage());
+                }
             }
 
             return response()->json(['message' => 'Solicitud de pago en efectivo enviada.', 'quote' => $quote]);
         } catch (\Exception $e) {
+            \Log::error("Error en solicitarEfectivo: " . $e->getMessage());
             return response()->json(['error' => 'Error al solicitar pago en efectivo: ' . $e->getMessage()], 500);
         }
     }
@@ -1014,166 +1048,290 @@ class QuoteController extends Controller
         try {
             $request->validate([
                 'quote_ids' => 'required|array|min:1',
-                'quote_ids.*' => 'integer|exists:quotes,id',
                 'cash_amount_type' => 'required|in:advance,full,remaining',
                 'cash_timing' => 'required|in:immediate,on_completion',
             ]);
 
             $quoteIds = $request->input('quote_ids', []);
-            $quotes = Quote::whereIn('id', $quoteIds)->get();
-            $clientName = trim(($request->user()?->first_name ?? '') . ' ' . ($request->user()?->last_name ?? 'Cliente'));
+            $user = auth('sanctum')->user() ?: auth()->user();
+            $clientName = trim(($user?->first_name ?? '') . ' ' . ($user?->last_name ?? 'Cliente'));
+            if (!$clientName) $clientName = 'Cliente';
             $admins = User::whereIn('role_id', [0, 1])->get();
             $folios = [];
+            $processedCount = 0;
 
-            foreach ($quotes as $quote) {
-                $quote->cash_requested = true;
-                $quote->cash_amount_type = $request->cash_amount_type;
-                $quote->cash_timing = $request->cash_timing;
-                $quote->payment_scheme = 'cash';
-                $quote->status = ($request->cash_amount_type === 'remaining')
-                    ? 'Liquidación en Efectivo Solicitada (40%)'
-                    : 'Pago en Efectivo Solicitado';
+            foreach ($quoteIds as $rawId) {
+                $strId = (string) $rawId;
+                
+                // Si es NetworkQuote (net_...)
+                if (str_starts_with($strId, 'net_')) {
+                    $netId = (int) str_replace('net_', '', $strId);
+                    $nq = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->find($netId);
+                    if ($nq) {
+                        $nq->status = 'accepted';
+                        $nq->save();
 
-                $subtotalBase = 0;
-                try {
-                    if ($quote->concept) {
-                        $detalle = is_string($quote->concept) ? json_decode($quote->concept, true) : $quote->concept;
-                        if (is_array($detalle)) {
-                            $suma = 0;
-                            foreach (($detalle['conceptos'] ?? $detalle['servicios'] ?? []) as $c) {
-                                $suma += ((float) ($c['precio_u'] ?? $c['precio'] ?? 0)) * ((float) ($c['cantidad'] ?? 1));
-                            }
-                            foreach (($detalle['materiales'] ?? []) as $m) {
-                                $suma += ((float) ($m['costo_u'] ?? $m['precio'] ?? 0)) * ((float) ($m['cantidad'] ?? 1));
-                            }
-                            if ($suma > 0) $subtotalBase = $suma;
+                        if ($nq->workOrder) {
+                            $nq->workOrder->status = 'Por Asignar';
+                            $nq->workOrder->save();
+                        }
+
+                        $folios[] = 'RED-' . str_pad($nq->id, 3, '0', STR_PAD_LEFT);
+                        $processedCount++;
+
+                        foreach ($admins as $admin) {
+                            try {
+                                $admin->notify(new \App\Notifications\CashPaymentRequested(
+                                    $nq,
+                                    $clientName,
+                                    $request->cash_amount_type,
+                                    $request->cash_timing
+                                ));
+                            } catch (\Throwable $ne) {}
                         }
                     }
-                } catch (\Exception $e) {}
-
-                $totalFinal = ($subtotalBase > 0) ? round(($subtotalBase * 1.16 * 1.0349 + 4 * 1.16), 2) : (float) ($quote->estimated_amount ?? 0);
-                if ($request->cash_amount_type === 'remaining') {
-                    $quote->remaining_amount = round($totalFinal * 0.40, 2);
-                } else {
-                    $quote->advance_amount = round($totalFinal * 0.60, 2);
-                    $quote->remaining_amount = round($totalFinal * 0.40, 2);
+                    continue;
                 }
-                $quote->save();
 
-                $folios[] = 'COT-' . $quote->id;
+                // Si es Quote estándar
+                $quote = Quote::find($strId);
+                if ($quote) {
+                    $quote->cash_requested = true;
+                    $quote->cash_amount_type = $request->cash_amount_type;
+                    $quote->cash_timing = $request->cash_timing;
+                    $quote->payment_scheme = 'cash';
+                    $quote->status = ($request->cash_amount_type === 'remaining')
+                        ? 'Liquidación en Efectivo Solicitada (40%)'
+                        : 'Pago en Efectivo Solicitado';
 
-                foreach ($admins as $admin) {
-                    $admin->notify(new \App\Notifications\CashPaymentRequested(
-                        $quote,
-                        $clientName,
-                        $request->cash_amount_type,
-                        $request->cash_timing
-                    ));
+                    $totalFinal = (float) ($quote->estimated_amount ?: 0);
+                    if ($request->cash_amount_type === 'remaining') {
+                        $quote->remaining_amount = round($totalFinal * 0.40, 2);
+                    } elseif ($request->cash_amount_type === 'advance') {
+                        $quote->advance_amount = round($totalFinal * 0.60, 2);
+                        $quote->remaining_amount = round($totalFinal * 0.40, 2);
+                    } else {
+                        $quote->advance_amount = $totalFinal;
+                        $quote->remaining_amount = 0;
+                    }
+                    $quote->save();
+
+                    // Activar servicios u órdenes de trabajo a 'Por Asignar'
+                    if ($quote->service_id) {
+                        $serv = Service::find($quote->service_id);
+                        if ($serv && !in_array($serv->status, ['Listo', 'Finalizado'])) {
+                            $serv->update(['status' => 'Por Asignar']);
+                        }
+                    }
+                    if ($quote->work_order_id) {
+                        $wo = WorkOrder::find($quote->work_order_id);
+                        if ($wo && !in_array($wo->status, ['Listo', 'Finalizado'])) {
+                            $wo->update(['status' => 'Por Asignar']);
+                        }
+                    }
+
+                    $folios[] = 'COT-' . $quote->id;
+                    $processedCount++;
+
+                    foreach ($admins as $admin) {
+                        try {
+                            $admin->notify(new \App\Notifications\CashPaymentRequested(
+                                $quote,
+                                $clientName,
+                                $request->cash_amount_type,
+                                $request->cash_timing
+                            ));
+                        } catch (\Throwable $ne) {}
+                    }
                 }
             }
 
             return response()->json([
-                'message' => 'Solicitud de pago en efectivo registrada para ' . count($quotes) . ' cotizaciones.',
+                'message' => 'Solicitud de pago en efectivo registrada para ' . $processedCount . ' cotizaciones.',
                 'processed_ids' => $quoteIds,
                 'folios' => $folios
             ]);
         } catch (\Exception $e) {
+            \Log::error("Error en solicitarEfectivoBatch: " . $e->getMessage());
             return response()->json(['error' => 'Error al solicitar pago en efectivo para el lote: ' . $e->getMessage()], 500);
         }
     }
 
     /**
-     * Admin confirma recepción del pago en efectivo.
+     * Admin/Root confirma recepción del pago en efectivo (total o anticipo configurable).
      */
     public function confirmarEfectivo(Request $request, $id)
     {
         try {
             $user = auth('sanctum')->user() ?: auth()->user();
-            if (!$user || !in_array($user->role_id, [0, 1])) {
+            if (!$user || !in_array($user->role_id, [0, 1, 4])) {
                 return response()->json(['error' => 'No autorizado'], 403);
             }
 
+            $paymentType = $request->input('payment_type', 'full'); // 'full', 'advance', 'custom'
+            $amountPaid = (float) $request->input('amount_paid', 0);
+            $remainingAmountInput = $request->has('remaining_amount') ? (float) $request->input('remaining_amount') : null;
+
+            // Si es NetworkQuote (net_...)
+            if (is_string($id) && str_starts_with($id, 'net_')) {
+                $netId = (int) str_replace('net_', '', $id);
+                $nq = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->findOrFail($netId);
+                
+                $totalFinal = (float) $nq->price;
+                if ($amountPaid <= 0) {
+                    $amountPaid = ($paymentType === 'advance') ? round($totalFinal * 0.60, 2) : $totalFinal;
+                }
+                $calculatedRemaining = $remainingAmountInput !== null ? $remainingAmountInput : max(0, round($totalFinal - $amountPaid, 2));
+
+                $nq->status = ($paymentType === 'advance' || $calculatedRemaining > 0)
+                    ? 'Anticipo Pagado (60%)'
+                    : 'Pagado (Efectivo)';
+                $nq->save();
+
+                if ($nq->workOrder) {
+                    $nq->workOrder->status = 'Programado';
+                    $nq->workOrder->scheduled_at = $nq->workOrder->scheduled_at ?: now();
+                    $nq->workOrder->save();
+                }
+
+                // Notificar al cliente
+                $client = $nq->workOrder?->property?->client;
+                if ($client && $client->user_id) {
+                    $clientUser = User::find($client->user_id);
+                    if ($clientUser) {
+                        try {
+                            $clientUser->notify(new \App\Notifications\QuotePaymentValidated($nq));
+                        } catch (\Throwable $e) {}
+                    }
+                }
+
+                return response()->json([
+                    'message' => 'Pago en efectivo confirmado correctamente.',
+                    'network_quote' => $nq,
+                    'amount_paid' => $amountPaid,
+                    'remaining_amount' => $calculatedRemaining,
+                    'status' => $nq->status
+                ]);
+            }
+
             $quote = Quote::findOrFail($id);
+            $totalFinal = (float) ($quote->estimated_amount ?: 0);
+
+            if ($amountPaid <= 0) {
+                $amountPaid = ($paymentType === 'advance') ? round($totalFinal * 0.60, 2) : $totalFinal;
+            }
+            $calculatedRemaining = $remainingAmountInput !== null ? $remainingAmountInput : max(0, round($totalFinal - $amountPaid, 2));
+
             $quote->cash_confirmed = true;
             $quote->cash_confirmed_at = now();
             $quote->cash_confirmed_by = $user->id;
 
-            // Si el tipo de efectivo es anticipo, dejamos pendiente el restante
-            if ($quote->cash_amount_type === 'advance') {
+            if ($paymentType === 'advance' || $calculatedRemaining > 0) {
                 $quote->advance_paid = true;
                 $quote->advance_paid_at = now();
+                $quote->advance_amount = $amountPaid;
+                $quote->remaining_amount = $calculatedRemaining;
                 $quote->status = 'Anticipo Pagado (60%)';
             } else {
-                // Pago total en efectivo
                 $quote->advance_paid = true;
                 $quote->advance_paid_at = now();
                 $quote->remaining_paid = true;
                 $quote->remaining_paid_at = now();
+                $quote->advance_amount = $amountPaid;
+                $quote->remaining_amount = 0;
                 $quote->status = 'Pagado (Efectivo)';
             }
 
             $quote->save();
 
-            // Activar los servicios vinculados a Programado
+            // Activar los servicios vinculados a 'Programado'
             $serviceIds = [];
-            if ($quote->service_id)
-                $serviceIds[] = $quote->service_id;
-            if (is_array($quote->related_service_ids))
-                $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
+            if ($quote->service_id) $serviceIds[] = $quote->service_id;
+            if (is_array($quote->related_service_ids)) $serviceIds = array_unique(array_merge($serviceIds, $quote->related_service_ids));
+            
             foreach ($serviceIds as $sId) {
                 $service = Service::find($sId);
                 if ($service) {
-                    $service->update(['status' => 'Programado', 'scheduled_at' => now()]);
-                    $workOrder = WorkOrder::where('service_id', $service->id)->first();
-                    if ($workOrder && $workOrder->status === 'Pendiente') {
-                        $workOrder->status = 'Asignado';
-                        $workOrder->save();
-                    }
+                    $service->update(['status' => 'Programado', 'scheduled_at' => $service->scheduled_start ?: now()]);
+                }
+            }
+
+            if ($quote->work_order_id) {
+                $workOrder = WorkOrder::find($quote->work_order_id);
+                if ($workOrder) {
+                    $workOrder->update(['status' => 'Programado', 'scheduled_at' => $workOrder->scheduled_at ?: now()]);
                 }
             }
 
             // Notificar al Cliente
-            if ($quote->cliente_user_id) {
-                $clienteUser = User::find($quote->cliente_user_id);
+            $client = $quote->service?->property?->client ?? $quote->workOrder?->property?->client;
+            $clientUserId = $quote->cliente_user_id ?: ($client?->user_id ?? null);
+            if ($clientUserId) {
+                $clienteUser = User::find($clientUserId);
                 if ($clienteUser) {
-                    $clienteUser->notify(new \App\Notifications\QuotePaymentValidated($quote));
+                    try {
+                        $clienteUser->notify(new \App\Notifications\QuotePaymentValidated($quote));
+                    } catch (\Throwable $e) {}
                 }
             }
 
-            return response()->json(['message' => 'Pago en efectivo confirmado.', 'quote' => $quote]);
+            return response()->json([
+                'message' => 'Pago en efectivo confirmado.',
+                'quote' => $quote,
+                'amount_paid' => $amountPaid,
+                'remaining_amount' => $calculatedRemaining,
+                'status' => $quote->status
+            ]);
         } catch (\Exception $e) {
+            \Log::error("Error en confirmarEfectivo: " . $e->getMessage());
             return response()->json(['error' => 'Error al confirmar pago en efectivo: ' . $e->getMessage()], 500);
         }
     }
 
     /**
-     * Admin confirma recepción del 40% restante en efectivo.
+     * Admin/Root confirma recepción del 40% restante en efectivo.
      */
     public function confirmarEfectivoRestante(Request $request, $id)
     {
         try {
             $user = auth('sanctum')->user() ?: auth()->user();
-            if (!$user || !in_array($user->role_id, [0, 1])) {
+            if (!$user || !in_array($user->role_id, [0, 1, 4])) {
                 return response()->json(['error' => 'No autorizado'], 403);
+            }
+
+            // Si es NetworkQuote (net_...)
+            if (is_string($id) && str_starts_with($id, 'net_')) {
+                $netId = (int) str_replace('net_', '', $id);
+                $nq = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->findOrFail($netId);
+                $nq->status = 'Pagado (Efectivo)';
+                $nq->save();
+
+                return response()->json(['message' => 'Liquidación de saldo en efectivo confirmada.', 'network_quote' => $nq]);
             }
 
             $quote = Quote::findOrFail($id);
             $quote->remaining_paid = true;
             $quote->remaining_paid_at = now();
-            $quote->cash_confirmed_by = $user->id; // Actualiza autorizador
+            $quote->remaining_amount = 0;
+            $quote->cash_confirmed_by = $user->id;
             $quote->status = 'Pagado (Efectivo)';
             $quote->save();
 
-            if ($quote->cliente_user_id) {
-                $clienteUser = User::find($quote->cliente_user_id);
+            $client = $quote->service?->property?->client ?? $quote->workOrder?->property?->client;
+            $clientUserId = $quote->cliente_user_id ?: ($client?->user_id ?? null);
+            if ($clientUserId) {
+                $clienteUser = User::find($clientUserId);
                 if ($clienteUser) {
-                    $clienteUser->notify(new \App\Notifications\QuotePaymentValidated($quote));
+                    try {
+                        $clienteUser->notify(new \App\Notifications\QuotePaymentValidated($quote));
+                    } catch (\Throwable $e) {}
                 }
             }
 
-            return response()->json(['message' => 'Liquidación de 40% en efectivo confirmada.', 'quote' => $quote]);
+            return response()->json(['message' => 'Liquidación de saldo en efectivo confirmada.', 'quote' => $quote]);
         } catch (\Exception $e) {
-            return response()->json(['error' => 'Error al confirmar 40% restante en efectivo: ' . $e->getMessage()], 500);
+            \Log::error("Error en confirmarEfectivoRestante: " . $e->getMessage());
+            return response()->json(['error' => 'Error al confirmar saldo restante en efectivo: ' . $e->getMessage()], 500);
         }
     }
 }
