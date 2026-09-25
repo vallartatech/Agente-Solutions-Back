@@ -177,10 +177,17 @@ class PropertyController extends Controller
                     // Si el usuario no tiene perfil, le devolvemos una lista vacía
                     return response()->json([], 200);
                 }
-            } elseif ($user->role_id == 4) {
-                // Autónomo: solo ve las propiedades de su empresa (o creadas por sus clientes)
-                $query->where(function ($q) use ($user) {
+            } elseif ($user->role_id == 4 || $user->role_id == 5) {
+                // Autónomo: ve las propiedades de su empresa, de sus clientes, o creadas bajo su perfil
+                $clienteIds = DB::table('clients')
+                    ->where('user_id', $user->id)
+                    ->orWhere('email', $user->email)
+                    ->orWhere('tenant_id', $user->tenant_id)
+                    ->pluck('id');
+
+                $query->where(function ($q) use ($user, $clienteIds) {
                     $q->where('tenant_id', $user->tenant_id)
+                        ->orWhereIn('client_id', $clienteIds)
                         ->orWhereHas('client', function ($qc) use ($user) {
                             $qc->where('tenant_id', $user->tenant_id);
                         });

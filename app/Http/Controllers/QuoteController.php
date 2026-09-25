@@ -217,13 +217,12 @@ class QuoteController extends Controller
                 $quote->estimated_amount = $request->estimated_amount;
                 $quote->validity_days = $request->validity_days ?? 15;
 
-                // Agregamos el nuevo comentario a las observaciones existentes
-                if ($request->observations) {
-                    $quote->observations = ($quote->observations ? $quote->observations . "\n\n" : "") . $request->observations;
+                if ($request->has('observations')) {
+                    $quote->observations = $request->observations;
                 }
 
-                if ($request->internal_observations) {
-                    $quote->internal_observations = ($quote->internal_observations ? $quote->internal_observations . "\n\n" : "") . $request->internal_observations;
+                if ($request->has('internal_observations')) {
+                    $quote->internal_observations = $request->internal_observations;
                 }
 
                 if ($request->hasFile('evidence_photo')) {

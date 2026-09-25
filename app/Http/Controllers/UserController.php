@@ -265,6 +265,25 @@ class UserController extends Controller
             }
             $user->tenant_id  = $tenant->id;
             $user->is_active  = 1;
+
+            // Vincular automáticamente el expediente de cliente y propiedades previas al nuevo tenant
+            DB::table('clients')
+                ->where('user_id', $user->id)
+                ->orWhere('email', $user->email)
+                ->update(['tenant_id' => $tenant->id, 'user_id' => $user->id]);
+
+            $clientIds = DB::table('clients')
+                ->where('user_id', $user->id)
+                ->orWhere('email', $user->email)
+                ->orWhere('tenant_id', $tenant->id)
+                ->pluck('id');
+
+            if ($clientIds->isNotEmpty()) {
+                DB::table('properties')
+                    ->whereIn('client_id', $clientIds)
+                    ->whereNull('tenant_id')
+                    ->update(['tenant_id' => $tenant->id]);
+            }
         } elseif ((int)$request->role_id === 2 || (int)$request->role_id === 8) {
             // Técnico: si es externo de Agente Solutions, tiene 1 año gratis, luego $99/mes
             $tenantObj = $user->tenant_id ? Tenant::find($user->tenant_id) : null;
