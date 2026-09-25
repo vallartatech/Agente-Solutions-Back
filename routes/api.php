@@ -832,6 +832,41 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     })->middleware('auth:sanctum');
 
+    // Eliminar / Cancelar publicación de servicio en la Red
+    Route::delete('/mercado-trabajos/{id}', function ($id) {
+        try {
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->find($id);
+            if (!$workOrder) {
+                // Verificar si existe en la tabla services
+                $service = \App\Models\Service::withoutGlobalScopes()->find($id);
+                if ($service) {
+                    \App\Models\NetworkQuote::withoutGlobalScopes()->where('work_order_id', $service->id)->delete();
+                    $service->delete();
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Publicación eliminada correctamente de la Red.'
+                    ]);
+                }
+                return response()->json(['success' => false, 'message' => 'Publicación no encontrada.'], 404);
+            }
+
+            // Eliminar cotizaciones de la red asociadas y relaciones
+            \App\Models\NetworkQuote::withoutGlobalScopes()->where('work_order_id', $workOrder->id)->delete();
+            \Illuminate\Support\Facades\DB::table('work_order_technician')->where('work_order_id', $workOrder->id)->delete();
+            $workOrder->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Publicación eliminada y cancelada con éxito.'
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    });
+
     Route::delete('/work-orders/reset-all-services', function () {
         $user = auth('sanctum')->user();
 
