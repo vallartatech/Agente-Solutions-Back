@@ -703,17 +703,19 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5)
         if ($authUser && ($request->boolean('only_mine') || in_array((int)$authUser->role_id, [3, 4, 5]))) {
-            if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin puede ver todos
+            if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
-                    $q->where('user_id', $authUser->id)
-                      ->orWhere('client_id', $authUser->id)
-                      ->orWhereHas('property.client', function ($qc) use ($authUser) {
-                          $qc->where('user_id', $authUser->id);
-                      });
+                    $q->whereHas('property.client', function ($qc) use ($authUser) {
+                        $qc->withoutGlobalScopes()
+                           ->where('user_id', $authUser->id)
+                           ->orWhere('email', $authUser->email)
+                           ->orWhere('name', 'like', "%{$authUser->first_name}%");
+                    });
+
                     if (!empty($authUser->tenant_id)) {
                         $q->orWhere('tenant_id', $authUser->tenant_id)
                           ->orWhereHas('property', function ($qp) use ($authUser) {
-                              $qp->where('tenant_id', $authUser->tenant_id);
+                              $qp->withoutGlobalScopes()->where('tenant_id', $authUser->tenant_id);
                           });
                     }
                 });
@@ -728,8 +730,12 @@ Route::middleware('auth:sanctum')->group(function () {
             $ownerTenantId = $job->tenant_id ?: null;
 
             if ($job->property && $job->property->client) {
-                $ownerName = trim($job->property->client->first_name . ' ' . $job->property->client->last_name);
-                $ownerUserId = $job->property->client->user_id;
+                $client = $job->property->client;
+                $ownerName = trim(($client->first_name ?? '') . ' ' . ($client->last_name ?? ''));
+                if (empty($ownerName)) {
+                    $ownerName = $client->name ?? '';
+                }
+                $ownerUserId = $client->user_id;
             }
             if (empty($ownerName) && $job->tenant_id) {
                 $owner = \App\Models\User::withoutGlobalScopes()
@@ -752,7 +758,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 }
             }
             $job->owner_name = $ownerName ?: 'Cliente de la Red';
-            $job->owner_user_id = $ownerUserId ?: ($job->user_id ?? null);
+            $job->owner_user_id = $ownerUserId;
             $job->owner_tenant_id = $ownerTenantId ?: ($job->property?->tenant_id ?? null);
 
             // Coordenadas fijas y estables (nunca saltan en recargas)
@@ -819,9 +825,11 @@ Route::middleware('auth:sanctum')->group(function () {
             if ($authUser) {
                 if (in_array((int)$authUser->role_id, [0, 1])) {
                     $isMine = true;
-                } elseif ($authUser->tenant_id && ($job->tenant_id == $authUser->tenant_id || $job->property?->tenant_id == $authUser->tenant_id)) {
+                } elseif (!empty($authUser->tenant_id) && ($job->tenant_id == $authUser->tenant_id || $job->property?->tenant_id == $authUser->tenant_id)) {
                     $isMine = true;
-                } elseif ($job->property?->client?->user_id == $authUser->id || $job->client_id == $authUser->id || $job->user_id == $authUser->id) {
+                } elseif ($job->property?->client?->user_id == $authUser->id || $job->property?->client?->email == $authUser->email) {
+                    $isMine = true;
+                } elseif (!empty($ownerName) && !empty($authUser->first_name) && stripos($ownerName, $authUser->first_name) !== false) {
                     $isMine = true;
                 }
             }
