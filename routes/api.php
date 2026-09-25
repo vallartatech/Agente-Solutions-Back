@@ -676,8 +676,10 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Nuevo Endpoint para el Mercado de Trabajos (Trabajos Públicos en la Red)
-    Route::get('/mercado-trabajos', function () {
-        $jobs = \App\Models\WorkOrder::withoutGlobalScopes()
+    Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
+        $authUser = auth('sanctum')->user() ?: auth()->user();
+
+        $query = \App\Models\WorkOrder::withoutGlobalScopes()
             ->with([
                 'property' => function ($q) {
                     $q->withoutGlobalScopes();
@@ -697,11 +699,30 @@ Route::middleware('auth:sanctum')->group(function () {
             ])
             ->withCount('networkQuotes')
             ->where('publish_network', 1)
-            ->where('status', 'Por Hacer')
-            ->orderBy('created_at', 'desc')
-            ->get();
+            ->where('status', 'Por Hacer');
 
-        $jobs->transform(function ($job) {
+        // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5)
+        if ($authUser && ($request->boolean('only_mine') || in_array((int)$authUser->role_id, [3, 4, 5]))) {
+            if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin puede ver todos
+                $query->where(function ($q) use ($authUser) {
+                    $q->where('user_id', $authUser->id)
+                      ->orWhere('client_id', $authUser->id)
+                      ->orWhereHas('property.client', function ($qc) use ($authUser) {
+                          $qc->where('user_id', $authUser->id);
+                      });
+                    if (!empty($authUser->tenant_id)) {
+                        $q->orWhere('tenant_id', $authUser->tenant_id)
+                          ->orWhereHas('property', function ($qp) use ($authUser) {
+                              $qp->where('tenant_id', $authUser->tenant_id);
+                          });
+                    }
+                });
+            }
+        }
+
+        $jobs = $query->orderBy('created_at', 'desc')->get();
+
+        $jobs->transform(function ($job) use ($authUser) {
             $ownerName = '';
             $ownerUserId = null;
             $ownerTenantId = $job->tenant_id ?: null;
@@ -793,6 +814,18 @@ Route::middleware('auth:sanctum')->group(function () {
             $job->zona_colonia = $zonaColonia;
             $job->zona = $zonaColonia;
             $job->area_name = $zonaColonia;
+
+            $isMine = false;
+            if ($authUser) {
+                if (in_array((int)$authUser->role_id, [0, 1])) {
+                    $isMine = true;
+                } elseif ($authUser->tenant_id && ($job->tenant_id == $authUser->tenant_id || $job->property?->tenant_id == $authUser->tenant_id)) {
+                    $isMine = true;
+                } elseif ($job->property?->client?->user_id == $authUser->id || $job->client_id == $authUser->id || $job->user_id == $authUser->id) {
+                    $isMine = true;
+                }
+            }
+            $job->is_mine = $isMine;
 
             return $job;
         });
