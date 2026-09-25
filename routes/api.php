@@ -415,6 +415,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/cotizaciones', [QuoteController::class, 'store']);
     Route::put('/cotizaciones/{id}/status', [QuoteController::class, 'updateStatus']);
     Route::post('/cotizaciones/{id}/update', [QuoteController::class, 'update']);
+    Route::post('/cotizaciones/{id}/recotizar', [QuoteController::class, 'solicitarRecotizacion']);
     Route::post('/cotizaciones/{id}/chat', [QuoteController::class, 'addMessage']);
     Route::post('/servicios/{id}/confirmar-materiales', [QuoteController::class, 'confirmMaterials']);
 

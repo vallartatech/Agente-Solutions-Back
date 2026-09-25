@@ -12,6 +12,8 @@ use App\Notifications\QuotePaymentReceived;
 use App\Notifications\QuotePaymentValidated;
 use App\Notifications\TechnicianQuoteSubmitted;
 use App\Notifications\TechnicianQuoteUpdated;
+use App\Notifications\QuoteRequoteRequestedNotification;
+use App\Notifications\QuoteRecotizadaNotification;
 
 class QuoteController extends Controller
 {
@@ -122,13 +124,16 @@ class QuoteController extends Controller
 
             $quote->save();
 
-            // Si se está basando en otra cotización (parent_id), marcamos la original como procesada/aceptada
+            // Si se está basando en otra cotización (parent_id), marcamos la original como Recotizada / Procesada
             if ($request->parent_id) {
                 $quote->parent_id = $request->parent_id;
                 $parent = Quote::find($request->parent_id);
                 if ($parent) {
-                    $parent->status = 'Procesada por Admin';
+                    $parent->status = 'Recotizada';
                     $parent->save();
+                    if (!$quote->tenant_id && $parent->tenant_id) {
+                        $quote->tenant_id = $parent->tenant_id;
+                    }
                 }
             }
 
@@ -170,7 +175,11 @@ class QuoteController extends Controller
                 if ($cliente && $cliente->user_id) {
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
-                        \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteAvailable($quote));
+                        if ($request->parent_id) {
+                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\QuoteRecotizadaNotification($quote));
+                        } else {
+                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteAvailable($quote));
+                        }
                     }
                 }
             }
@@ -280,7 +289,11 @@ class QuoteController extends Controller
                 if ($cliente && $cliente->user_id) {
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
-                        \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteAvailable($quote));
+                        if ($request->parent_id) {
+                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\QuoteRecotizadaNotification($quote));
+                        } else {
+                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteAvailable($quote));
+                        }
                     }
                 }
             }
@@ -502,6 +515,8 @@ class QuoteController extends Controller
                         'cash_amount_type' => $quote->cash_amount_type,
                         'cash_timing' => $quote->cash_timing,
                         'chat_history' => $quote->chat_history,
+                        'validity_days' => $quote->validity_days ?? 15,
+                        'recotizacion_solicitada' => ($quote->status === 'Pendiente de recotización'),
                     ];
                 });
 
@@ -1400,5 +1415,62 @@ class QuoteController extends Controller
 
         $base = (float) ($quote->estimated_amount ?: ($quote->total ?: 0));
         return $base > 0 ? round($base * 1.16, 2) : 0;
+    }
+
+    /**
+     * Solicitud de recotización de una cotización vencida (>15 días) por parte del cliente
+     */
+    public function solicitarRecotizacion(Request $request, $id)
+    {
+        try {
+            $quote = Quote::findOrFail($id);
+            $user = auth('sanctum')->user() ?: auth()->user();
+
+            $quote->status = 'Pendiente de recotización';
+            $quote->save();
+
+            // Obtener nombre del cliente
+            $clientName = trim(($user?->first_name ?? '') . ' ' . ($user?->last_name ?? ''));
+            if (!$clientName) {
+                $quote->load(['service.property.client', 'workOrder.property.client']);
+                $client = $quote->service?->property?->client ?? $quote->workOrder?->property?->client;
+                $clientName = $client?->name ?: ($user?->name ?: 'Cliente');
+            }
+
+            // Destinatarios: Admins (0, 1) y Autónomos (4) según tenant
+            $tenantId = $quote->tenant_id ?? $user?->tenant_id ?? null;
+            if (!$tenantId && $quote->service_id) {
+                $service = \App\Models\Service::find($quote->service_id);
+                $tenantId = $service?->tenant_id ?? ($service?->property ? $service->property->tenant_id : null);
+            } elseif (!$tenantId && $quote->work_order_id) {
+                $workOrder = \App\Models\WorkOrder::find($quote->work_order_id);
+                $tenantId = $workOrder?->tenant_id ?? ($workOrder?->property ? $workOrder->property->tenant_id : null);
+            }
+
+            if ($tenantId) {
+                $destinatarios = User::where(function($q) use ($tenantId) {
+                    $q->whereIn('role_id', [0, 1])
+                      ->orWhere(function($sub) use ($tenantId) {
+                          $sub->where('role_id', 4)->where('tenant_id', $tenantId);
+                      });
+                })->get();
+            } else {
+                $destinatarios = User::whereIn('role_id', [0, 1])->get();
+            }
+
+            if ($destinatarios->isNotEmpty()) {
+                \Illuminate\Support\Facades\Notification::send($destinatarios, new QuoteRequoteRequestedNotification($quote, $clientName));
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Solicitud de recotización enviada exitosamente.',
+                'quote' => $quote
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Error al solicitar recotización: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
