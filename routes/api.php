@@ -677,29 +677,30 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Nuevo Endpoint para el Mercado de Trabajos (Trabajos Públicos en la Red)
     Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
-        $authUser = auth('sanctum')->user() ?: auth()->user();
+        try {
+            $authUser = auth('sanctum')->user() ?: auth()->user();
 
-        $query = \App\Models\WorkOrder::withoutGlobalScopes()
-            ->with([
-                'property' => function ($q) {
-                    $q->withoutGlobalScopes();
-                },
-                'property.client' => function ($q) {
-                    $q->withoutGlobalScopes();
-                },
-                'networkQuotes' => function ($q) {
-                    $q->withoutGlobalScopes();
-                },
-                'networkQuotes.technician' => function ($q) {
-                    $q->withoutGlobalScopes();
-                },
-                'networkQuotes.technician.specialties' => function ($q) {
-                    $q->withoutGlobalScopes();
-                }
-            ])
-            ->withCount('networkQuotes')
-            ->where('publish_network', 1)
-            ->where('status', 'Por Hacer');
+            $query = \App\Models\WorkOrder::withoutGlobalScopes()
+                ->with([
+                    'property' => function ($q) {
+                        $q->withoutGlobalScopes();
+                    },
+                    'property.client' => function ($q) {
+                        $q->withoutGlobalScopes();
+                    },
+                    'networkQuotes' => function ($q) {
+                        $q->withoutGlobalScopes();
+                    },
+                    'networkQuotes.technician' => function ($q) {
+                        $q->withoutGlobalScopes();
+                    },
+                    'networkQuotes.technician.specialties' => function ($q) {
+                        $q->withoutGlobalScopes();
+                    }
+                ])
+                ->withCount('networkQuotes')
+                ->where('publish_network', 1)
+                ->where('status', 'Por Hacer');
 
         // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5)
         if ($authUser && ($request->boolean('only_mine') || in_array((int)$authUser->role_id, [3, 4, 5]))) {
@@ -842,7 +843,17 @@ Route::middleware('auth:sanctum')->group(function () {
             'success' => true,
             'data' => $jobs
         ]);
-    });
+    } catch (\Throwable $e) {
+        \Log::error("Error in /mercado-trabajos: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+        return response()->json([
+            'success' => false,
+            'error' => $e->getMessage(),
+            'line' => $e->getLine(),
+            'file' => basename($e->getFile()),
+            'trace' => $e->getTraceAsString()
+        ], 500);
+    }
+});
 
     // Enviar una cotización a un trabajo de la red
     Route::post('/mercado-trabajos/{id}/cotizar', function (Request $request, $id) {
