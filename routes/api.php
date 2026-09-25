@@ -703,8 +703,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $jobs->transform(function ($job) {
             $ownerName = '';
+            $ownerUserId = null;
+            $ownerTenantId = $job->tenant_id ?: null;
+
             if ($job->property && $job->property->client) {
                 $ownerName = trim($job->property->client->first_name . ' ' . $job->property->client->last_name);
+                $ownerUserId = $job->property->client->user_id;
             }
             if (empty($ownerName) && $job->tenant_id) {
                 $owner = \App\Models\User::withoutGlobalScopes()
@@ -713,6 +717,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     ->first();
                 if ($owner) {
                     $ownerName = trim("{$owner->first_name} {$owner->last_name}") ?: $owner->name;
+                    $ownerUserId = $owner->id;
                 }
             }
             if (empty($ownerName) && $job->property && $job->property->tenant_id) {
@@ -722,9 +727,12 @@ Route::middleware('auth:sanctum')->group(function () {
                     ->first();
                 if ($owner) {
                     $ownerName = trim("{$owner->first_name} {$owner->last_name}") ?: $owner->name;
+                    $ownerUserId = $owner->id;
                 }
             }
-            $job->owner_name = $ownerName ?: 'Pedro Pech Koh';
+            $job->owner_name = $ownerName ?: 'Cliente de la Red';
+            $job->owner_user_id = $ownerUserId ?: ($job->user_id ?? null);
+            $job->owner_tenant_id = $ownerTenantId ?: ($job->property?->tenant_id ?? null);
 
             // Coordenadas fijas y estables (nunca saltan en recargas)
             $rawLat = 21.0181;
@@ -814,7 +822,6 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
 
         // Notificar al dueño de la orden de trabajo (el Autónomo o Cliente)
-        // El dueño es el 'tenant_id' o 'property->client_id'
         try {
             $owner = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
             if ($owner) {
@@ -832,14 +839,27 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     })->middleware('auth:sanctum');
 
-    // Eliminar / Cancelar publicación de servicio en la Red
+    // Eliminar / Cancelar publicación de servicio en la Red (Solo el Autor o Admin)
     Route::delete('/mercado-trabajos/{id}', function ($id) {
         try {
-            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->find($id);
+            $user = auth('sanctum')->user();
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->find($id);
+
             if (!$workOrder) {
                 // Verificar si existe en la tabla services
-                $service = \App\Models\Service::withoutGlobalScopes()->find($id);
+                $service = \App\Models\Service::withoutGlobalScopes()->with('property.client')->find($id);
                 if ($service) {
+                    // Validar permisos: solo autor o admin
+                    $isOwner = false;
+                    if ($user) {
+                        if (in_array($user->role_id, [0, 1])) $isOwner = true;
+                        elseif ($user->tenant_id && ($service->tenant_id == $user->tenant_id || $service->property?->tenant_id == $user->tenant_id)) $isOwner = true;
+                        elseif ($service->property?->client?->user_id == $user->id || $service->client_id == $user->id) $isOwner = true;
+                    }
+                    if (!$isOwner && $user) {
+                        return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicación porque fue creada por otro usuario.'], 403);
+                    }
+
                     \App\Models\NetworkQuote::withoutGlobalScopes()->where('work_order_id', $service->id)->delete();
                     $service->delete();
                     return response()->json([
@@ -848,6 +868,17 @@ Route::middleware('auth:sanctum')->group(function () {
                     ]);
                 }
                 return response()->json(['success' => false, 'message' => 'Publicación no encontrada.'], 404);
+            }
+
+            // Validar permisos: solo autor o admin
+            $isOwner = false;
+            if ($user) {
+                if (in_array($user->role_id, [0, 1])) $isOwner = true;
+                elseif ($user->tenant_id && ($workOrder->tenant_id == $user->tenant_id || $workOrder->property?->tenant_id == $user->tenant_id)) $isOwner = true;
+                elseif ($workOrder->property?->client?->user_id == $user->id || $workOrder->client_id == $user->id) $isOwner = true;
+            }
+            if (!$isOwner && $user) {
+                return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicación porque fue creada por otro usuario.'], 403);
             }
 
             // Eliminar cotizaciones de la red asociadas y relaciones
