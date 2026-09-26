@@ -728,39 +728,65 @@ Route::middleware('auth:sanctum')->group(function () {
         $jobs->transform(function ($job) use ($authUser) {
             $ownerName = '';
             $ownerUserId = null;
-            $ownerTenantId = $job->tenant_id ?: null;
+            $ownerTenantId = $job->tenant_id ?: ($job->property?->tenant_id ?? null);
 
-            if ($job->property && $job->property->client) {
-                $client = $job->property->client;
-                $ownerName = trim(($client->first_name ?? '') . ' ' . ($client->last_name ?? ''));
-                if (empty($ownerName)) {
-                    $ownerName = $client->name ?? '';
-                }
-                $ownerUserId = $client->user_id;
-            }
-            if (empty($ownerName) && $job->tenant_id) {
-                $owner = \App\Models\User::withoutGlobalScopes()
-                    ->where('tenant_id', $job->tenant_id)
-                    ->orWhere('id', $job->tenant_id)
-                    ->first();
-                if ($owner) {
-                    $ownerName = trim("{$owner->first_name} {$owner->last_name}") ?: $owner->name;
-                    $ownerUserId = $owner->id;
+            // 1. Intentar por usuario asociado al cliente de la propiedad
+            if ($job->property && $job->property->client && $job->property->client->user_id) {
+                $user = \App\Models\User::withoutGlobalScopes()->find($job->property->client->user_id);
+                if ($user) {
+                    $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+                    $ownerUserId = $user->id;
                 }
             }
-            if (empty($ownerName) && $job->property && $job->property->tenant_id) {
-                $owner = \App\Models\User::withoutGlobalScopes()
-                    ->where('tenant_id', $job->property->tenant_id)
-                    ->orWhere('id', $job->property->tenant_id)
-                    ->first();
-                if ($owner) {
-                    $ownerName = trim("{$owner->first_name} {$owner->last_name}") ?: $owner->name;
-                    $ownerUserId = $owner->id;
+
+            // 2. Si no o si es genérico, intentar por el Tenant del trabajo
+            if ((empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') && $ownerTenantId) {
+                $tenant = \App\Models\Tenant::withoutGlobalScopes()->find($ownerTenantId);
+                if ($tenant && $tenant->owner_user_id) {
+                    $user = \App\Models\User::withoutGlobalScopes()->find($tenant->owner_user_id);
+                    if ($user) {
+                        $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+                        $ownerUserId = $user->id;
+                    }
+                }
+                if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba') {
+                    $user = \App\Models\User::withoutGlobalScopes()
+                        ->where('tenant_id', $ownerTenantId)
+                        ->whereIn('role_id', [3, 4, 5])
+                        ->first();
+                    if ($user) {
+                        $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+                        $ownerUserId = $user->id;
+                    }
+                }
+                if (empty($ownerName) && $tenant && !empty($tenant->name)) {
+                    $ownerName = $tenant->name;
                 }
             }
+
+            // 3. Si aún está vacío o es genérico, intentar por el nombre del Cliente de la propiedad si no es de prueba
+            if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') {
+                if ($job->property && $job->property->client) {
+                    $client = $job->property->client;
+                    $cName = trim(($client->first_name ?? '') . ' ' . ($client->last_name ?? ''));
+                    if (empty($cName)) $cName = $client->name ?? '';
+                    if (!empty($cName) && strtolower($cName) !== 'cliente de prueba' && strtolower($cName) !== 'cliente desconocido') {
+                        $ownerName = $cName;
+                    }
+                }
+            }
+
+            // 4. Si el usuario autenticado es quien consulta y es el dueño de la orden, usar su nombre
+            if ($authUser && (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido')) {
+                if ($authUser->tenant_id && $authUser->tenant_id == $ownerTenantId) {
+                    $ownerName = trim("{$authUser->first_name} {$authUser->last_name}") ?: $authUser->name;
+                    $ownerUserId = $authUser->id;
+                }
+            }
+
             $job->owner_name = $ownerName ?: 'Cliente de la Red';
             $job->owner_user_id = $ownerUserId;
-            $job->owner_tenant_id = $ownerTenantId ?: ($job->property?->tenant_id ?? null);
+            $job->owner_tenant_id = $ownerTenantId;
 
             // Coordenadas fijas y estables (nunca saltan en recargas)
             $rawLat = 21.0181;
