@@ -327,7 +327,7 @@ class TenantController extends Controller
         $user = auth()->user();
         
         $query = User::withoutGlobalScopes()
-            ->whereIn('role_id', [2, 7])
+            ->whereIn('role_id', [2, 6, 7, 8])
             ->where('approval_status', 'pending');
 
         if ($user->role_id !== 0) {
@@ -336,6 +336,7 @@ class TenantController extends Controller
 
         $technicians = $query->with(['tenant:id,name,code', 'specialties'])
             ->select('id', 'first_name', 'last_name', 'email', 'phone_number', 'created_at', 'tenant_id', 'role_id', 'approval_status', 'is_active')
+            ->orderBy('created_at', 'desc')
             ->get();
 
         return response()->json([
