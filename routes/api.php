@@ -26,8 +26,6 @@ use App\Http\Controllers\MercadoPagoController;
 use App\Http\Controllers\TenantController;
 use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\PropertyManagerController;
-use App\Http\Controllers\JobRequestController;
-use App\Http\Controllers\JobQuoteController;
 // ========================================================
 // 🟢 ZONA PÚBLICA (Sin Token - Cualquiera puede entrar)
 // ========================================================
@@ -1074,14 +1072,5 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/property-managers/my-manager', [PropertyManagerController::class, 'getMyManager']);
     Route::get('/property-managers/my-status', [PropertyManagerController::class, 'getMyStatus']);
     Route::post('/property-managers/assign-properties', [PropertyManagerController::class, 'assignProperties']);
-
-    // --- NUEVOS ROLES: CONTRATISTA (Marketplace interno) ---
-    Route::get('/job-requests', [JobRequestController::class, 'availableForTechnician']);
-    Route::post('/job-requests', [JobRequestController::class, 'store']);
-    Route::get('/job-requests/my-requests', [JobRequestController::class, 'myRequests']);
-    Route::get('/job-requests/{id}', [JobRequestController::class, 'show']);
-    Route::post('/job-requests/{id}/select-quote', [JobRequestController::class, 'selectQuote']);
-    Route::post('/job-requests/{id}/quotes', [JobQuoteController::class, 'store']);
-    Route::get('/job-quotes/my-quotes', [JobQuoteController::class, 'myQuotes']);
 });
 
