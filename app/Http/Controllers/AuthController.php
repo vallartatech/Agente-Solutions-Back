@@ -59,39 +59,30 @@ class AuthController extends Controller
             }
         }
 
-        $isTechnician = ($request->role_id == 2 || $request->role_id == 8);
+        $isTechnician = ($request->role_id == 2 || $request->role_id == 6 || $request->role_id == 8);
         if ($request->role_id == 2 && empty($tenantId)) {
-            $tenantId = 1; // Si el técnico de Agente no ingresó código de empresa, se va directo a Agente Solutions
+            $tenantId = 1; // Técnico oficial de Agente Solutions
         }
 
         $currentUser = auth('sanctum')->user();
         $isRootOrAdmin = ($currentUser && in_array($currentUser->role_id, [0, 1])) || $request->boolean('from_admin');
 
-        $isAutonomoEmpresarial = ($request->role_id == 4 || $request->role_id == 6);
-        $isAutonomoPersonal    = ($request->role_id == 5);
-        $isAutonomo = $isAutonomoEmpresarial || $isAutonomoPersonal;
+        // Roles que crean un Tenant propio (Propietarios, Gestores, Contratistas)
+        $createsTenant = ($request->role_id == 4 || $request->role_id == 5 || $request->role_id == 7);
 
-        // Precios de suscripción por tipo (Contratista usa el mismo que Empresarial)
-        $subscriptionPrices = [4 => 999.00, 5 => 499.00, 6 => 999.00];
+        // Estado inicial de aprobación
+        // Rol 2 (Técnico Matriz) y Rol 8 (Técnico Cuadrilla) quedan pendientes de aprobación
+        // Rol 6 (Técnico Independiente) queda aprobado inmediatamente con 1 año gratis
+        $isPendingApprovalTech = in_array($request->role_id, [2, 8]);
+        $approvalStatus = ($isPendingApprovalTech && !$isRootOrAdmin) ? 'pending' : 'approved';
+        $isActive = ($isPendingApprovalTech && !$isRootOrAdmin) ? 0 : 1;
 
-        $approvalStatus = ($isTechnician && !$isRootOrAdmin) ? 'pending' : 'approved';
-        if ($request->role_id == 7) {
-            $approvalStatus = $tenantId ? 'pending' : 'pending_link';
-        }
+        $roleToAssign = (int) $request->role_id;
 
-        // Autónomos creados por Root/Admin quedan activos inmediatamente; públicos quedan inactivos hasta pagar
-        $isActive = ($isTechnician && !$isRootOrAdmin) ? 0 : ($isAutonomo && !$isRootOrAdmin ? 0 : 1);
-        if ($request->role_id == 7) {
-            $isActive = 0;
-        }
-
-        $roleToAssign = $request->role_id;
-
-        // A PRUEBA DE BALAS: Asegurar que el rol exista en la tabla roles
+        // Asegurar que el rol exista en la tabla roles
         foreach ([0, 1, 2, 3, 4, 5, 6, 7, 8] as $rId) {
             \DB::table('roles')->insertOrIgnore(['id' => $rId, 'created_at' => now(), 'updated_at' => now()]);
         }
-        \DB::table('roles')->insertOrIgnore(['id' => $roleToAssign, 'created_at' => now(), 'updated_at' => now()]);
 
         $user = User::create([
             'first_name'      => $request->first_name,
@@ -105,7 +96,20 @@ class AuthController extends Controller
             'is_active'       => $isActive
         ]);
 
-        if ($isTechnician && $request->has('specialties')) {
+        // Si es cliente directo de Agente Solutions (Rol 3)
+        if ($roleToAssign == 3) {
+            \DB::table('clients')->insertOrIgnore([
+                'user_id'    => $user->id,
+                'name'       => trim($user->first_name . ' ' . $user->last_name),
+                'email'      => $user->email,
+                'phone'      => $user->phone_number,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        // Si es técnico o contratista, guardar especialidades
+        if (($isTechnician || $roleToAssign == 7) && $request->has('specialties')) {
             $specialtyIds = [];
             foreach ((array) $request->specialties as $specItem) {
                 if (is_numeric($specItem)) {
@@ -123,19 +127,30 @@ class AuthController extends Controller
             }
         }
 
-        if ($isAutonomo) {
-            $membershipType   = $isAutonomoPersonal ? 'autonomo_personal' : ($request->role_id == 6 ? 'contratista' : 'autonomo_empresarial');
-            $subscriptionAmt  = $isAutonomoPersonal ? 299.00 : 935.00;
-            $customCode       = !empty($request->company_code) ? trim($request->company_code) : ('AUT' . ($isAutonomoPersonal ? '_P' : '_E') . '_' . time() . '_' . $user->id);
-            $companyName      = !empty($request->company_name) ? trim($request->company_name) : trim($user->first_name . ' ' . $user->last_name);
+        // Si el usuario crea su propio espacio/tenant (Roles 4, 5, 7)
+        if ($createsTenant) {
+            $membershipType = 'market_client_personal';
+            $prefix = 'AUT_P';
+            $maxProperties = 3;
+            $maxClients = 0;
+            $subscriptionAmt = 299.00;
 
-            // Siempre se dan 6 MESES GRATIS iniciales
-            $subStatus  = 'active';
-            $subStart   = now();
-            $subExpires = now()->addMonths(6);
+            if ($roleToAssign == 5) {
+                $membershipType = 'market_property_manager';
+                $prefix = 'AUT_E';
+                $maxProperties = 30;
+                $maxClients = 30;
+                $subscriptionAmt = 935.00;
+            } elseif ($roleToAssign == 7) {
+                $membershipType = 'market_contractor';
+                $prefix = 'AUT_C';
+                $maxProperties = 50;
+                $maxClients = 50;
+                $subscriptionAmt = 935.00;
+            }
 
-            $maxProperties = $isAutonomoPersonal ? 3 : 30;
-            $maxClients    = $isAutonomoPersonal ? 0 : 30;
+            $customCode  = !empty($request->company_code) ? trim($request->company_code) : ($prefix . '_' . time() . '_' . $user->id);
+            $companyName = !empty($request->company_name) ? trim($request->company_name) : trim($user->first_name . ' ' . $user->last_name);
 
             $tenant = Tenant::create([
                 'name'                    => $companyName,
@@ -148,9 +163,9 @@ class AuthController extends Controller
                 'max_properties'          => $maxProperties,
                 'max_clients'             => $maxClients,
                 'billing_cycle'           => 'trial',
-                'subscription_status'     => $subStatus,
-                'subscription_start'      => $subStart,
-                'subscription_expires_at' => $subExpires,
+                'subscription_status'     => 'active',
+                'subscription_start'      => now(),
+                'subscription_expires_at' => now()->addMonths(6),
                 'subscription_amount'     => $subscriptionAmt,
             ]);
 
@@ -175,7 +190,7 @@ class AuthController extends Controller
                 $user->subscription_status = 'exempt';
                 $user->subscription_amount = 0.00;
             } else {
-                // Técnico externo: 1 AÑO GRATIS, luego $99/mes
+                // Técnico independiente o de cuadrilla: 1 AÑO GRATIS, luego $99/mes
                 $user->subscription_status     = 'active';
                 $user->subscription_start      = now();
                 $user->subscription_expires_at = now()->addYear();
@@ -184,12 +199,21 @@ class AuthController extends Controller
             $user->save();
             $user->load(['tenant', 'specialties']);
 
-            // $user->sendEmailVerificationNotification();
+            if ($roleToAssign == 6) {
+                $token = $user->createToken('AgenteToken')->plainTextToken;
+                return response()->json([
+                    'success' => true,
+                    'status' => 'active',
+                    'message' => '¡Registro exitoso! Te hemos otorgado 1 AÑO GRATIS de bienvenida como Técnico Independiente en la Red.',
+                    'user' => $user,
+                    'token' => $token
+                ], 201);
+            }
 
             return response()->json([
                 'success' => true,
                 'status' => 'pending_approval',
-                'message' => 'Tu perfil ha sido registrado con éxito. Te hemos otorgado 1 AÑO GRATIS de suscripción. Está en espera de revisión por el Administrador de tu empresa.',
+                'message' => 'Tu perfil ha sido registrado con éxito. Te hemos otorgado 1 AÑO GRATIS de suscripción. Está en espera de revisión por el Administrador.',
                 'user' => $user
             ], 201);
         }
@@ -201,7 +225,7 @@ class AuthController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Usuario creado exitosamente con prueba gratuita de 6 meses activa.',
+            'message' => 'Usuario creado exitosamente con periodo de prueba activo.',
             'user' => $user,
             'token' => $token
         ], 201);
