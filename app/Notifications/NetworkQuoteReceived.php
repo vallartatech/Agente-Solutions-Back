@@ -31,11 +31,12 @@ class NetworkQuoteReceived extends Notification
     {
         return [
             'type' => 'network_quote_received',
+            'alert_type' => 'network_quote_received',
             'title' => 'Nueva Cotización en la Red',
             'message' => "{$this->technicianName} te ha enviado una cotización de \${$this->quote->price} para tu trabajo en {$this->propertyName}.",
             'work_order_id' => $this->quote->work_order_id,
             'quote_id' => $this->quote->id,
-            'url' => "/mercado-trabajos"
+            'url' => "/red-autonomos"
         ];
     }
 }

@@ -62,6 +62,218 @@ Route::post('/mercadopago/subscription/{tenantId}', [MercadoPagoController::clas
 Route::get('/tenants/public-list', [TenantController::class, 'listTenants']);
 Route::get('/specialties', [SpecialtyController::class, 'index']);
 
+// 🌐 Mercado de Trabajos Abierto (Visible para técnicos y público, con personalización para usuarios logueados)
+Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
+    try {
+        $authUser = auth('sanctum')->user() ?: auth()->user();
+
+        $query = \App\Models\WorkOrder::withoutGlobalScopes()
+            ->with([
+                'property' => function ($q) {
+                    $q->withoutGlobalScopes();
+                },
+                'property.client' => function ($q) {
+                    $q->withoutGlobalScopes();
+                },
+                'networkQuotes' => function ($q) {
+                    $q->withoutGlobalScopes();
+                },
+                'networkQuotes.technician' => function ($q) {
+                    $q->withoutGlobalScopes();
+                },
+                'networkQuotes.technician.specialties' => function ($q) {
+                    $q->withoutGlobalScopes();
+                }
+            ])
+            ->withCount('networkQuotes')
+            ->where('publish_network', 1)
+            ->where('status', 'Por Hacer');
+
+        // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5)
+        if ($authUser && ($request->boolean('only_mine') || in_array((int)$authUser->role_id, [3, 4, 5]))) {
+            if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
+                $query->where(function ($q) use ($authUser) {
+                    $q->whereHas('property.client', function ($qc) use ($authUser) {
+                        $qc->withoutGlobalScopes()
+                           ->where('user_id', $authUser->id)
+                           ->orWhere('email', $authUser->email)
+                           ->orWhere('name', 'like', "%{$authUser->first_name}%");
+                    });
+
+                    if (!empty($authUser->tenant_id)) {
+                        $q->orWhere('tenant_id', $authUser->tenant_id)
+                          ->orWhereHas('property', function ($qp) use ($authUser) {
+                              $qp->withoutGlobalScopes()->where('tenant_id', $authUser->tenant_id);
+                          });
+                    }
+                });
+            }
+        }
+
+        $jobs = $query->orderBy('created_at', 'desc')->get();
+
+        $jobs->transform(function ($job) use ($authUser) {
+            $ownerName = '';
+            $ownerUserId = null;
+            $ownerTenantId = $job->tenant_id ?: ($job->property?->tenant_id ?? null);
+
+            // 1. Intentar por usuario asociado al cliente de la propiedad
+            if ($job->property && $job->property->client && $job->property->client->user_id) {
+                $user = \App\Models\User::withoutGlobalScopes()->find($job->property->client->user_id);
+                if ($user) {
+                    $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+                    $ownerUserId = $user->id;
+                }
+            }
+
+            // 2. Si no o si es genérico, intentar por el Tenant del trabajo
+            if ((empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') && $ownerTenantId) {
+                $tenant = \App\Models\Tenant::withoutGlobalScopes()->find($ownerTenantId);
+                if ($tenant && $tenant->owner_user_id) {
+                    $user = \App\Models\User::withoutGlobalScopes()->find($tenant->owner_user_id);
+                    if ($user) {
+                        $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+                        $ownerUserId = $user->id;
+                    }
+                }
+                if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba') {
+                    $user = \App\Models\User::withoutGlobalScopes()
+                        ->where('tenant_id', $ownerTenantId)
+                        ->whereIn('role_id', [3, 4, 5])
+                        ->first();
+                    if ($user) {
+                        $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+                        $ownerUserId = $user->id;
+                    }
+                }
+                if (empty($ownerName) && $tenant && !empty($tenant->name)) {
+                    $ownerName = $tenant->name;
+                }
+            }
+
+            // 3. Si aún está vacío o es genérico, intentar por el nombre del Cliente de la propiedad si no es de prueba
+            if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') {
+                if ($job->property && $job->property->client) {
+                    $client = $job->property->client;
+                    $cName = trim(($client->first_name ?? '') . ' ' . ($client->last_name ?? ''));
+                    if (empty($cName)) $cName = $client->name ?? '';
+                    if (!empty($cName) && strtolower($cName) !== 'cliente de prueba' && strtolower($cName) !== 'cliente desconocido') {
+                        $ownerName = $cName;
+                    }
+                }
+            }
+
+            // 4. Si el usuario autenticado es quien consulta y es el dueño de la orden, usar su nombre
+            if ($authUser && (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido')) {
+                if ($authUser->tenant_id && $authUser->tenant_id == $ownerTenantId) {
+                    $ownerName = trim("{$authUser->first_name} {$authUser->last_name}") ?: $authUser->name;
+                    $ownerUserId = $authUser->id;
+                }
+            }
+
+            $job->owner_name = $ownerName ?: 'Cliente de la Red';
+            $job->owner_user_id = $ownerUserId;
+            $job->owner_tenant_id = $ownerTenantId;
+
+            // Coordenadas fijas y estables (nunca saltan en recargas)
+            $rawLat = 21.0181;
+            $rawLng = -89.6242;
+            $hasRealCoords = false;
+
+            if ($job->property && !empty($job->property->coordinates)) {
+                $coordsParts = explode(',', $job->property->coordinates);
+                if (count($coordsParts) >= 2) {
+                    $parsedLat = (float) trim($coordsParts[0]);
+                    $parsedLng = (float) trim($coordsParts[1]);
+                    if ($parsedLat != 0 && $parsedLng != 0) {
+                        $rawLat = $parsedLat;
+                        $rawLng = $parsedLng;
+                        $hasRealCoords = true;
+                    }
+                }
+            }
+
+            if (!$hasRealCoords) {
+                $seed = (($job->property_id ?: $job->id) * 17) % 360;
+                $rawLat = 21.0181 + (sin(deg2rad($seed)) * 0.025);
+                $rawLng = -89.6242 + (cos(deg2rad($seed)) * 0.025);
+            }
+
+            // Área / Zona de cobertura aproximada (Protección de privacidad de la casa exacta)
+            $areaLat = round($rawLat, 3);
+            $areaLng = round($rawLng, 3);
+            $job->area_lat = $areaLat;
+            $job->area_lng = $areaLng;
+            $job->lat = $areaLat;
+            $job->lng = $areaLng;
+
+            // Extracción limpia de Colonia / Fraccionamiento y Ciudad cercana (Privacidad de dirección)
+            $fullAddress = $job->property ? ($job->property->address ?: '') : '';
+            $zonaColonia = 'Mérida, Yucatán';
+
+            if (!empty($fullAddress)) {
+                $city = '';
+                $colonia = '';
+                if (preg_match('/(?:Col\.|Colonia|Fracc\.|Fraccionamiento)\s*([^,]+)/iu', $fullAddress, $matches)) {
+                    $colonia = trim($matches[0]);
+                }
+                if (preg_match('/\b(M[eé]rida|Um[aá]n|Kanas[ií]n|Progreso|Conkal|Valladolid|Tizim[ií]n|Motul|Hunucm[aá]|Tekax|Ticul|Chelem|Chicxulub)\b/iu', $fullAddress, $cityMatches)) {
+                    $city = trim($cityMatches[1]);
+                }
+                if ($city && $colonia) {
+                    $zonaColonia = "{$city}, {$colonia}";
+                } elseif ($colonia) {
+                    $zonaColonia = $colonia;
+                } elseif ($city) {
+                    $zonaColonia = "{$city}, Yucatán";
+                } else {
+                    $parts = array_filter(array_map('trim', explode(',', $fullAddress)));
+                    if (count($parts) >= 2) {
+                        $zonaColonia = implode(', ', array_slice($parts, -2));
+                    }
+                }
+            } elseif ($job->property && !empty($job->property->property_name)) {
+                $zonaColonia = $job->property->property_name;
+            }
+
+            $job->zona_colonia = $zonaColonia;
+            $job->zona = $zonaColonia;
+            $job->area_name = $zonaColonia;
+            $job->colonia_cercana = $zonaColonia;
+
+            $isMine = false;
+            if ($authUser) {
+                if (in_array((int)$authUser->role_id, [0, 1])) {
+                    $isMine = true;
+                } elseif (!empty($authUser->tenant_id) && ($job->tenant_id == $authUser->tenant_id || $job->property?->tenant_id == $authUser->tenant_id)) {
+                    $isMine = true;
+                } elseif ($job->property?->client?->user_id == $authUser->id || $job->property?->client?->email == $authUser->email) {
+                    $isMine = true;
+                } elseif (!empty($ownerName) && !empty($authUser->first_name) && stripos($ownerName, $authUser->first_name) !== false) {
+                    $isMine = true;
+                }
+            }
+            $job->is_mine = $isMine;
+
+            return $job;
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => $jobs
+        ]);
+    } catch (\Throwable $e) {
+        \Log::error("Error in /mercado-trabajos: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+        return response()->json([
+            'success' => false,
+            'error' => $e->getMessage(),
+            'line' => $e->getLine(),
+            'file' => basename($e->getFile()),
+            'trace' => $e->getTraceAsString()
+        ], 500);
+    }
+});
+
 
 // 🧹 RUTA DE EMERGENCIA (Temporalmente Pública para facilitar el Reset)
 Route::get('/db-reset-pedro', function () {
@@ -625,13 +837,11 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         $senderRole = 'Usuario';
-        if ($user->role_id == 3)
+        if (in_array((int)$user->role_id, [3, 4, 5, 7]))
             $senderRole = 'Cliente';
-        elseif ($user->role_id == 4)
-            $senderRole = 'Autónomo';
-        elseif (in_array($user->role_id, [2, 8]))
+        elseif (in_array((int)$user->role_id, [2, 6, 8]))
             $senderRole = 'Técnico de la Red';
-        elseif (in_array($user->role_id, [0, 1]))
+        elseif (in_array((int)$user->role_id, [0, 1]))
             $senderRole = 'Admin';
 
         $newMessage = [
@@ -650,14 +860,17 @@ Route::middleware('auth:sanctum')->group(function () {
         $senderNameStr = $user->name ?: ($user->first_name . ' ' . $user->last_name);
 
         // Disparar Notificaciones
-        if (in_array($user->role_id, [2, 8])) {
+        if (in_array((int)$user->role_id, [2, 6, 8])) {
             // El técnico envió el mensaje -> notificar al Cliente / Autónomo dueño del reporte
-            $clientUserId = $quote->workOrder?->tenant_id ?: ($quote->workOrder?->property?->client?->user_id ?? null);
-            if ($clientUserId) {
-                $clientUser = \App\Models\User::find($clientUserId);
-                if ($clientUser) {
-                    \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'Técnico'));
-                }
+            $clientUser = null;
+            if ($quote->workOrder?->property?->client?->user_id) {
+                $clientUser = \App\Models\User::withoutGlobalScopes()->find($quote->workOrder->property->client->user_id);
+            }
+            if (!$clientUser && $quote->workOrder?->tenant_id) {
+                $clientUser = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $quote->workOrder->tenant_id)->first();
+            }
+            if ($clientUser) {
+                \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'Técnico'));
             }
         } else {
             // El Cliente / Autónomo envió el mensaje -> notificar al Técnico
@@ -673,212 +886,6 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     });
 
-    // Nuevo Endpoint para el Mercado de Trabajos (Trabajos Públicos en la Red)
-    Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
-        try {
-            $authUser = auth('sanctum')->user() ?: auth()->user();
-
-            $query = \App\Models\WorkOrder::withoutGlobalScopes()
-                ->with([
-                    'property' => function ($q) {
-                        $q->withoutGlobalScopes();
-                    },
-                    'property.client' => function ($q) {
-                        $q->withoutGlobalScopes();
-                    },
-                    'networkQuotes' => function ($q) {
-                        $q->withoutGlobalScopes();
-                    },
-                    'networkQuotes.technician' => function ($q) {
-                        $q->withoutGlobalScopes();
-                    },
-                    'networkQuotes.technician.specialties' => function ($q) {
-                        $q->withoutGlobalScopes();
-                    }
-                ])
-                ->withCount('networkQuotes')
-                ->where('publish_network', 1)
-                ->where('status', 'Por Hacer');
-
-        // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5)
-        if ($authUser && ($request->boolean('only_mine') || in_array((int)$authUser->role_id, [3, 4, 5]))) {
-            if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
-                $query->where(function ($q) use ($authUser) {
-                    $q->whereHas('property.client', function ($qc) use ($authUser) {
-                        $qc->withoutGlobalScopes()
-                           ->where('user_id', $authUser->id)
-                           ->orWhere('email', $authUser->email)
-                           ->orWhere('name', 'like', "%{$authUser->first_name}%");
-                    });
-
-                    if (!empty($authUser->tenant_id)) {
-                        $q->orWhere('tenant_id', $authUser->tenant_id)
-                          ->orWhereHas('property', function ($qp) use ($authUser) {
-                              $qp->withoutGlobalScopes()->where('tenant_id', $authUser->tenant_id);
-                          });
-                    }
-                });
-            }
-        }
-
-        $jobs = $query->orderBy('created_at', 'desc')->get();
-
-        $jobs->transform(function ($job) use ($authUser) {
-            $ownerName = '';
-            $ownerUserId = null;
-            $ownerTenantId = $job->tenant_id ?: ($job->property?->tenant_id ?? null);
-
-            // 1. Intentar por usuario asociado al cliente de la propiedad
-            if ($job->property && $job->property->client && $job->property->client->user_id) {
-                $user = \App\Models\User::withoutGlobalScopes()->find($job->property->client->user_id);
-                if ($user) {
-                    $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
-                    $ownerUserId = $user->id;
-                }
-            }
-
-            // 2. Si no o si es genérico, intentar por el Tenant del trabajo
-            if ((empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') && $ownerTenantId) {
-                $tenant = \App\Models\Tenant::withoutGlobalScopes()->find($ownerTenantId);
-                if ($tenant && $tenant->owner_user_id) {
-                    $user = \App\Models\User::withoutGlobalScopes()->find($tenant->owner_user_id);
-                    if ($user) {
-                        $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
-                        $ownerUserId = $user->id;
-                    }
-                }
-                if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba') {
-                    $user = \App\Models\User::withoutGlobalScopes()
-                        ->where('tenant_id', $ownerTenantId)
-                        ->whereIn('role_id', [3, 4, 5])
-                        ->first();
-                    if ($user) {
-                        $ownerName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
-                        $ownerUserId = $user->id;
-                    }
-                }
-                if (empty($ownerName) && $tenant && !empty($tenant->name)) {
-                    $ownerName = $tenant->name;
-                }
-            }
-
-            // 3. Si aún está vacío o es genérico, intentar por el nombre del Cliente de la propiedad si no es de prueba
-            if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') {
-                if ($job->property && $job->property->client) {
-                    $client = $job->property->client;
-                    $cName = trim(($client->first_name ?? '') . ' ' . ($client->last_name ?? ''));
-                    if (empty($cName)) $cName = $client->name ?? '';
-                    if (!empty($cName) && strtolower($cName) !== 'cliente de prueba' && strtolower($cName) !== 'cliente desconocido') {
-                        $ownerName = $cName;
-                    }
-                }
-            }
-
-            // 4. Si el usuario autenticado es quien consulta y es el dueño de la orden, usar su nombre
-            if ($authUser && (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido')) {
-                if ($authUser->tenant_id && $authUser->tenant_id == $ownerTenantId) {
-                    $ownerName = trim("{$authUser->first_name} {$authUser->last_name}") ?: $authUser->name;
-                    $ownerUserId = $authUser->id;
-                }
-            }
-
-            $job->owner_name = $ownerName ?: 'Cliente de la Red';
-            $job->owner_user_id = $ownerUserId;
-            $job->owner_tenant_id = $ownerTenantId;
-
-            // Coordenadas fijas y estables (nunca saltan en recargas)
-            $rawLat = 21.0181;
-            $rawLng = -89.6242;
-            $hasRealCoords = false;
-
-            if ($job->property && !empty($job->property->coordinates)) {
-                $coordsParts = explode(',', $job->property->coordinates);
-                if (count($coordsParts) >= 2) {
-                    $parsedLat = (float) trim($coordsParts[0]);
-                    $parsedLng = (float) trim($coordsParts[1]);
-                    if ($parsedLat != 0 && $parsedLng != 0) {
-                        $rawLat = $parsedLat;
-                        $rawLng = $parsedLng;
-                        $hasRealCoords = true;
-                    }
-                }
-            }
-
-            if (!$hasRealCoords) {
-                $seed = (($job->property_id ?: $job->id) * 17) % 360;
-                $rawLat = 21.0181 + (sin(deg2rad($seed)) * 0.025);
-                $rawLng = -89.6242 + (cos(deg2rad($seed)) * 0.025);
-            }
-
-            // Área / Zona de cobertura aproximada (Protección de privacidad de la casa exacta)
-            $areaLat = round($rawLat, 3);
-            $areaLng = round($rawLng, 3);
-            $job->area_lat = $areaLat;
-            $job->area_lng = $areaLng;
-            $job->lat = $areaLat;
-            $job->lng = $areaLng;
-
-            // Extracción de Colonia / Fraccionamiento / Zona
-            $fullAddress = $job->property ? ($job->property->address ?: '') : '';
-            $zonaColonia = 'Mérida, Yucatán';
-
-            if (!empty($job->zone) && !in_array(strtolower($job->zone), ['general', 'n/a', ''])) {
-                $zonaColonia = $job->zone;
-            } elseif (!empty($fullAddress)) {
-                if (preg_match('/(?:Col\.|Colonia|Fracc\.|Fraccionamiento)\s*([^,]+)/i', $fullAddress, $matches)) {
-                    $zonaColonia = trim($matches[0]);
-                    if (preg_match('/(M[eé]rida|Um[aá]n|Kanas[ií]n|Progreso|Conkal)/i', $fullAddress, $cityMatches)) {
-                        $zonaColonia .= ', ' . $cityMatches[1];
-                    }
-                } else {
-                    $parts = array_filter(array_map('trim', explode(',', $fullAddress)));
-                    if (count($parts) >= 2) {
-                        $zonaColonia = implode(', ', array_slice($parts, -2));
-                    } else {
-                        $zonaColonia = $fullAddress;
-                    }
-                }
-            } elseif ($job->property && !empty($job->property->property_name)) {
-                $zonaColonia = $job->property->property_name;
-            }
-
-            $job->zona_colonia = $zonaColonia;
-            $job->zona = $zonaColonia;
-            $job->area_name = $zonaColonia;
-
-            $isMine = false;
-            if ($authUser) {
-                if (in_array((int)$authUser->role_id, [0, 1])) {
-                    $isMine = true;
-                } elseif (!empty($authUser->tenant_id) && ($job->tenant_id == $authUser->tenant_id || $job->property?->tenant_id == $authUser->tenant_id)) {
-                    $isMine = true;
-                } elseif ($job->property?->client?->user_id == $authUser->id || $job->property?->client?->email == $authUser->email) {
-                    $isMine = true;
-                } elseif (!empty($ownerName) && !empty($authUser->first_name) && stripos($ownerName, $authUser->first_name) !== false) {
-                    $isMine = true;
-                }
-            }
-            $job->is_mine = $isMine;
-
-            return $job;
-        });
-
-        return response()->json([
-            'success' => true,
-            'data' => $jobs
-        ]);
-    } catch (\Throwable $e) {
-        \Log::error("Error in /mercado-trabajos: " . $e->getMessage() . "\n" . $e->getTraceAsString());
-        return response()->json([
-            'success' => false,
-            'error' => $e->getMessage(),
-            'line' => $e->getLine(),
-            'file' => basename($e->getFile()),
-            'trace' => $e->getTraceAsString()
-        ], 500);
-    }
-});
-
     // Enviar una cotización a un trabajo de la red
     Route::post('/mercado-trabajos/{id}/cotizar', function (Request $request, $id) {
         $request->validate([
@@ -886,33 +893,81 @@ Route::middleware('auth:sanctum')->group(function () {
             'message' => 'nullable|string'
         ]);
 
-        $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->findOrFail($id);
+        $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
         $user = auth('sanctum')->user();
 
-        $quote = \App\Models\NetworkQuote::create([
-            'work_order_id' => $workOrder->id,
-            'technician_id' => $user->id,
-            'price' => $request->price,
-            'message' => $request->message,
-            'status' => 'pending'
-        ]);
+        $quote = \App\Models\NetworkQuote::updateOrCreate(
+            [
+                'work_order_id' => $workOrder->id,
+                'technician_id' => $user->id,
+            ],
+            [
+                'price' => $request->price,
+                'message' => $request->message,
+                'status' => 'pending'
+            ]
+        );
 
         // Notificar al dueño de la orden de trabajo (el Autónomo o Cliente)
         try {
-            $owner = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
+            $owner = null;
+            if ($workOrder->property && $workOrder->property->client && $workOrder->property->client->user_id) {
+                $owner = \App\Models\User::withoutGlobalScopes()->find($workOrder->property->client->user_id);
+            }
+            if (!$owner && $workOrder->tenant_id) {
+                $owner = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
+            }
             if ($owner) {
-                $techName = $user->first_name . ' ' . $user->last_name;
+                $techName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
                 $propName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad';
                 \Illuminate\Support\Facades\Notification::send($owner, new \App\Notifications\NetworkQuoteReceived($quote, $techName, $propName));
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             \Log::error("Error enviando notificación de cotización: " . $e->getMessage());
         }
 
         return response()->json([
             'success' => true,
-            'message' => 'Cotización enviada con éxito'
+            'message' => 'Cotización enviada con éxito',
+            'quote' => $quote
         ]);
+    })->middleware('auth:sanctum');
+
+    // Iniciar o recuperar chat directo entre Técnico y Cliente para un trabajo
+    Route::post('/mercado-trabajos/{id}/iniciar-chat', function ($id) {
+        try {
+            $user = auth('sanctum')->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'No autorizado'], 401);
+            }
+
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client'])->findOrFail($id);
+
+            // Buscar si ya existe una cotización / chat de este técnico para este trabajo
+            $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)
+                ->where('technician_id', $user->id)
+                ->first();
+
+            if (!$quote) {
+                $quote = \App\Models\NetworkQuote::create([
+                    'work_order_id' => $workOrder->id,
+                    'technician_id' => $user->id,
+                    'price' => 0,
+                    'message' => 'Chat iniciado por el técnico',
+                    'status' => 'pending',
+                    'chat_history' => []
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'quote' => $quote
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error("Error en iniciar-chat: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
     })->middleware('auth:sanctum');
 
     // Eliminar / Cancelar publicación de servicio en la Red (Solo el Autor o Admin)
