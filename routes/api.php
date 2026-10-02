@@ -86,11 +86,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 }
             ])
             ->withCount('networkQuotes')
-            ->where('publish_network', 1)
-            ->where('status', 'Por Hacer');
+            ->where('publish_network', 1);
 
-        // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5)
-        if ($authUser && ($request->boolean('only_mine') || in_array((int)$authUser->role_id, [3, 4, 5]))) {
+        // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5, 7)
+        if ($request->boolean('only_mine') || ($authUser && in_array((int)$authUser->role_id, [3, 4, 5, 7]))) {
+            $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso']);
             if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
                     $q->whereHas('property.client', function ($qc) use ($authUser) {
@@ -1098,17 +1098,41 @@ Route::middleware('auth:sanctum')->group(function () {
                 $quote->save();
             }
 
-            // Notificar al Cliente
+            // Notificar al Cliente / Autónomo dueño de la publicación
             try {
-                $clientUser = null;
+                $clientUsers = collect();
+                // 1. Por el cliente asociado a la propiedad
                 if ($workOrder->property?->client?->user_id) {
-                    $clientUser = \App\Models\User::withoutGlobalScopes()->find($workOrder->property->client->user_id);
+                    $u = \App\Models\User::withoutGlobalScopes()->find($workOrder->property->client->user_id);
+                    if ($u) $clientUsers->push($u);
                 }
-                if (!$clientUser && $workOrder->tenant_id) {
-                    $clientUser = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
+                // 2. Por el email del cliente
+                if ($workOrder->property?->client?->email) {
+                    $u = \App\Models\User::withoutGlobalScopes()->where('email', $workOrder->property->client->email)->first();
+                    if ($u) $clientUsers->push($u);
                 }
-                if ($clientUser && $quote) {
-                    \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
+                // 3. Por el tenant de la orden o propiedad
+                $tenantId = $workOrder->tenant_id ?: ($workOrder->property?->tenant_id ?? null);
+                if ($tenantId) {
+                    $tenantUsers = \App\Models\User::withoutGlobalScopes()
+                        ->where('tenant_id', $tenantId)
+                        ->whereIn('role_id', [0, 1, 3, 4, 5, 7])
+                        ->get();
+                    foreach ($tenantUsers as $tu) {
+                        $clientUsers->push($tu);
+                    }
+                }
+
+                $clientUsers = $clientUsers->unique('id');
+
+                $title = $workOrder->type . ($workOrder->equipment ? ' - ' . $workOrder->equipment : '');
+                $propName = $workOrder->property ? ($workOrder->property->nombre_propiedad ?: $workOrder->property->address) : 'Propiedad';
+
+                foreach ($clientUsers as $targetClient) {
+                    if ($quote) {
+                        $targetClient->notify(new \App\Notifications\WorkOrderScheduledNotification($workOrder, $techName, $propName));
+                        $targetClient->notify(new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
+                    }
                 }
             } catch (\Throwable $e) {
                 \Log::error("Error notificando fecha programada: " . $e->getMessage());
