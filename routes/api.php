@@ -240,6 +240,9 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $job->zona = $zonaColonia;
             $job->area_name = $zonaColonia;
             $job->colonia_cercana = $zonaColonia;
+            $job->priority = $job->priority ?: 'Normal';
+            $job->is_urgent = in_array(strtolower($job->priority), ['urgente', 'sos', 'urgent']);
+            $job->scheduled_at = $job->scheduled_at ? (\Carbon\Carbon::parse($job->scheduled_at)->format('Y-m-d H:i')) : null;
 
             $isMine = false;
             if ($authUser) {
@@ -258,9 +261,89 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             return $job;
         });
 
+        // 🟢 Trabajos aceptados / asignados para este técnico
+        $acceptedJobs = [];
+        if ($authUser) {
+            $acceptedQuery = \App\Models\WorkOrder::withoutGlobalScopes()
+                ->with([
+                    'property' => fn($q) => $q->withoutGlobalScopes(),
+                    'property.client' => fn($q) => $q->withoutGlobalScopes(),
+                    'networkQuotes' => fn($q) => $q->withoutGlobalScopes()->where('technician_id', $authUser->id),
+                    'networkQuotes.technician' => fn($q) => $q->withoutGlobalScopes(),
+                ])
+                ->where(function ($q) use ($authUser) {
+                    $q->where('tecnico_id', $authUser->id)
+                      ->orWhereHas('networkQuotes', function ($nq) use ($authUser) {
+                          $nq->where('technician_id', $authUser->id)
+                             ->where('status', 'accepted');
+                      });
+                })
+                ->whereIn('status', ['Asignado', 'En Progreso', 'Terminado'])
+                ->orderBy('updated_at', 'desc');
+
+            $rawAccepted = $acceptedQuery->get();
+            $acceptedJobs = $rawAccepted->map(function ($order) use ($authUser) {
+                $rawLat = 21.0181;
+                $rawLng = -89.6242;
+                if ($order->property && !empty($order->property->coordinates)) {
+                    $parts = explode(',', $order->property->coordinates);
+                    if (count($parts) >= 2) {
+                        $rawLat = (float) trim($parts[0]);
+                        $rawLng = (float) trim($parts[1]);
+                    }
+                }
+                $acceptedQuote = $order->networkQuotes->firstWhere('status', 'accepted') ?: $order->networkQuotes->first();
+
+                $clientName = 'Cliente';
+                $clientPhone = '';
+                $clientEmail = '';
+                if ($order->property && $order->property->client) {
+                    $client = $order->property->client;
+                    $clientName = trim(($client->first_name ?? '') . ' ' . ($client->last_name ?? '')) ?: ($client->name ?? 'Cliente');
+                    $clientPhone = $client->phone ?: ($client->phone_number ?? '');
+                    $clientEmail = $client->email ?? '';
+                }
+
+                $fotos = array_values(array_filter([
+                    $order->evidence_path,
+                    $order->evidence_path_2,
+                    $order->property?->facade_photo_path
+                ]));
+
+                return [
+                    'id' => $order->id,
+                    'type' => $order->type,
+                    'titulo' => $order->type . ($order->equipment ? ' - ' . $order->equipment : ''),
+                    'equipment' => $order->equipment,
+                    'zone' => $order->zone,
+                    'description' => $order->description,
+                    'status' => $order->status,
+                    'priority' => $order->priority ?: 'Normal',
+                    'is_urgent' => in_array(strtolower($order->priority ?? ''), ['urgente', 'sos', 'urgent']),
+                    'scheduled_at' => $order->scheduled_at ? (\Carbon\Carbon::parse($order->scheduled_at)->format('Y-m-d H:i')) : null,
+                    'evidence_path' => $order->evidence_path,
+                    'evidence_path_2' => $order->evidence_path_2,
+                    'foto' => $fotos[0] ?? null,
+                    'fotos' => $fotos,
+                    'lat' => $rawLat,
+                    'lng' => $rawLng,
+                    'full_address' => $order->property ? $order->property->address : 'Dirección confirmada',
+                    'property_name' => $order->property ? ($order->property->nombre_propiedad ?: $order->property->address) : '',
+                    'client_name' => $clientName,
+                    'client_phone' => $clientPhone,
+                    'client_email' => $clientEmail,
+                    'agreed_price' => $acceptedQuote ? (float)$acceptedQuote->price : 0,
+                    'myQuote' => $acceptedQuote,
+                    'created_at' => $order->created_at->toIso8601String(),
+                    'updated_at' => $order->updated_at->toIso8601String(),
+                ];
+            });
+        }
+
         return response()->json([
             'success' => true,
-            'data' => $jobs
+            'data' => $jobs,
+            'accepted_jobs' => $acceptedJobs
         ]);
     } catch (\Throwable $e) {
         \Log::error("Error in /mercado-trabajos: " . $e->getMessage() . "\n" . $e->getTraceAsString());
@@ -692,6 +775,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'evidence_path_2' => $path2,
             'status' => 'Por Hacer',
             'priority' => $request->priority ?: ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
+            'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
             'publish_network' => filter_var($request->publish_network, FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
         ]);
 
@@ -966,6 +1050,139 @@ Route::middleware('auth:sanctum')->group(function () {
             ]);
         } catch (\Throwable $e) {
             \Log::error("Error en iniciar-chat: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    })->middleware('auth:sanctum');
+
+    // Programar hora estimada de visita / llegada del Técnico
+    Route::post('/mercado-trabajos/{id}/programar-visita', function (Request $request, $id) {
+        $request->validate([
+            'scheduled_at' => 'required|string',
+            'notes' => 'nullable|string'
+        ]);
+
+        try {
+            $user = auth('sanctum')->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'No autorizado'], 401);
+            }
+
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+            $scheduledDateTime = date('Y-m-d H:i:s', strtotime($request->scheduled_at));
+            $workOrder->scheduled_at = $scheduledDateTime;
+            $workOrder->save();
+
+            // Buscar la cotización aceptada o del técnico para registrar en el chat
+            $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)
+                ->where('technician_id', $user->id)
+                ->first();
+
+            $formattedTime = date('d/m/Y \a \l\a\s h:i A', strtotime($scheduledDateTime));
+            $techName = $user->first_name ? "{$user->first_name} {$user->last_name}" : ($user->name ?: 'El Técnico');
+            $msgText = "📅 {$techName} ha programado la visita para el {$formattedTime}." . ($request->notes ? " Nota: \"{$request->notes}\"" : "");
+
+            if ($quote) {
+                $history = $quote->chat_history ?? [];
+                $history[] = [
+                    'sender_id' => $user->id,
+                    'sender_name' => $techName,
+                    'sender_role' => 'Técnico de la Red',
+                    'message' => $msgText,
+                    'is_schedule' => true,
+                    'scheduled_at' => $scheduledDateTime,
+                    'schedule_status' => 'pending_confirmation',
+                    'created_at' => now()->toIso8601String(),
+                ];
+                $quote->chat_history = $history;
+                $quote->save();
+            }
+
+            // Notificar al Cliente
+            try {
+                $clientUser = null;
+                if ($workOrder->property?->client?->user_id) {
+                    $clientUser = \App\Models\User::withoutGlobalScopes()->find($workOrder->property->client->user_id);
+                }
+                if (!$clientUser && $workOrder->tenant_id) {
+                    $clientUser = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
+                }
+                if ($clientUser && $quote) {
+                    \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
+                }
+            } catch (\Throwable $e) {
+                \Log::error("Error notificando fecha programada: " . $e->getMessage());
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => "Visita programada para el {$formattedTime} correctamente.",
+                'scheduled_at' => $scheduledDateTime,
+                'chat_history' => $quote?->chat_history ?? []
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error("Error programando visita: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    })->middleware('auth:sanctum');
+
+    // Responder (Aceptar o Re-coordinar) horario propuesto por el técnico
+    Route::post('/mercado-trabajos/{id}/responder-visita-cliente', function (Request $request, $id) {
+        $request->validate([
+            'action' => 'required|in:confirm,reschedule',
+            'message' => 'nullable|string'
+        ]);
+
+        try {
+            $user = auth('sanctum')->user();
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes.technician'])->findOrFail($id);
+
+            $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)
+                ->where('status', 'accepted')
+                ->first();
+
+            if (!$quote) {
+                $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
+                    ->where('work_order_id', $workOrder->id)
+                    ->orderBy('id', 'desc')
+                    ->first();
+            }
+
+            $isConfirmed = $request->action === 'confirm';
+            $clientName = $user ? (trim("{$user->first_name} {$user->last_name}") ?: $user->name) : 'El Cliente';
+
+            $msgText = $isConfirmed
+                ? "✅ {$clientName} CONFIRMÓ el horario de visita propuesto."
+                : "⚠️ {$clientName} solicita re-coordinar el horario de visita: " . ($request->message ? "\"{$request->message}\"" : "Por favor acuerden un nuevo horario por chat.");
+
+            if ($quote) {
+                $history = $quote->chat_history ?? [];
+                $history[] = [
+                    'sender_id' => $user ? $user->id : 0,
+                    'sender_name' => $clientName,
+                    'sender_role' => 'Cliente',
+                    'message' => $msgText,
+                    'is_schedule_response' => true,
+                    'schedule_confirmed' => $isConfirmed,
+                    'created_at' => now()->toIso8601String(),
+                ];
+                $quote->chat_history = $history;
+                $quote->save();
+
+                // Notificar al Técnico
+                if ($quote->technician) {
+                    \Illuminate\Support\Facades\Notification::send($quote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $clientName, 'Cliente'));
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $isConfirmed ? 'Horario confirmado correctamente.' : 'Solicitud de reprogramación enviada.',
+                'chat_history' => $quote?->chat_history ?? []
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error("Error respondiendo horario: " . $e->getMessage());
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     })->middleware('auth:sanctum');
