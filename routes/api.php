@@ -88,10 +88,10 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             ->withCount('networkQuotes')
             ->where('publish_network', 1);
 
-        // Si se pide filtrar solo los del usuario autónomo o si el usuario autenticado es un Autónomo/Cliente (role_id 3, 4, 5, 7)
-        if ($request->boolean('only_mine') || ($authUser && in_array((int)$authUser->role_id, [3, 4, 5, 7]))) {
+        // Si se pide filtrar solo los del usuario autónomo o cliente (role_id 3, 4, 5, 7) con only_mine
+        if ($request->boolean('only_mine')) {
             $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso']);
-            if (!in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
+            if ($authUser && !in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
                     $q->whereHas('property.client', function ($qc) use ($authUser) {
                         $qc->withoutGlobalScopes()
@@ -108,6 +108,16 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     }
                 });
             }
+        } else {
+            // 🌐 SOLICITUDES DISPONIBLES EN LA RED (Solo órdenes ABIERTAS, sin asignar y sin cotización aceptada)
+            $query->whereNotIn('status', ['Asignado', 'En Progreso', 'Terminado', 'Completado', 'Cancelado', 'Listo'])
+                  ->where(function ($q) {
+                      $q->whereNull('tecnico_id')
+                        ->orWhere('tecnico_id', 0);
+                  })
+                  ->whereDoesntHave('networkQuotes', function ($nq) {
+                      $nq->where('status', 'accepted');
+                  });
         }
 
         $jobs = $query->orderBy('created_at', 'desc')->get();

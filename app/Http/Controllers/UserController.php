@@ -173,10 +173,15 @@ class UserController extends Controller
     {
         $realId = str_replace('u_', '', $id);
 
-        // Permitir todos los roles del sistema (0=Root, 1=Admin, 2=Tecnico, 3=Cliente, 4=Aut.Empresarial, 5=Aut.Personal, 6=Contratista, 7=Admin Propiedades, 8=Tecnico Red)
+        // Permitir todos los roles asignables del sistema (1=Admin, 2=Tecnico, 3=Cliente, 4=Aut.Empresarial, 5=Aut.Personal, 6=Contratista, 7=Admin Propiedades, 8=Tecnico Red)
         $request->validate([
             'role_id' => 'required|numeric|in:0,1,2,3,4,5,6,7,8'
         ]);
+
+        // SEGURIDAD: Nadie puede ser ascendido a ROOT desde la interfaz
+        if ((int)$request->role_id === 0) {
+            return response()->json(['success' => false, 'message' => 'Por seguridad, el rol ROOT MASTER no puede ser asignado desde aquí.'], 403);
+        }
 
         $user = null;
         if (str_starts_with($id, 'c_')) {
@@ -187,8 +192,27 @@ class UserController extends Controller
             } elseif ($clientObj && $clientObj->email) {
                 $user = User::withoutGlobalScopes()->where('email', $clientObj->email)->first();
             }
-            if (!$user) {
-                return response()->json(['success' => false, 'message' => 'Este cliente no tiene una cuenta de usuario asociada para cambiar de rol.'], 400);
+
+            // Si el cliente aún no tiene fila en la tabla users, crearla automáticamente
+            if (!$user && $clientObj) {
+                $nameParts = explode(' ', trim($clientObj->name ?? 'Cliente'));
+                $firstName = $nameParts[0] ?? 'Cliente';
+                $lastName = count($nameParts) > 1 ? implode(' ', array_slice($nameParts, 1)) : '';
+                $email = $clientObj->email ?: ('cliente_' . $realClientId . '@agentesolutions.com');
+
+                $user = User::create([
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'email' => $email,
+                    'phone_number' => $clientObj->phone ?? null,
+                    'password' => bcrypt('password123'),
+                    'role_id' => (int)$request->role_id,
+                    'is_active' => $clientObj->is_active ?? 1,
+                    'tenant_id' => $clientObj->tenant_id ?? null,
+                    'profile_picture' => $clientObj->profile_picture ?? null,
+                ]);
+
+                DB::table('clients')->where('id', $realClientId)->update(['user_id' => $user->id]);
             }
         } else {
             $user = User::withoutGlobalScopes()->find($realId);
@@ -199,8 +223,8 @@ class UserController extends Controller
         }
 
         // SEGURIDAD: Nunca quitarle el rol de ROOT a un usuario Root
-        if ((int)$user->role_id === 0 && (int)$request->role_id !== 0) {
-            return response()->json(['success' => false, 'message' => 'No puedes quitarle el rango de ROOT a este usuario.'], 403);
+        if ((int)$user->role_id === 0) {
+            return response()->json(['success' => false, 'message' => 'Por seguridad, la cuenta ROOT MASTER está protegida y su rol no puede ser modificado.'], 403);
         }
 
         // A PRUEBA DE BALAS: Asegurar que el rol exista en la tabla roles
