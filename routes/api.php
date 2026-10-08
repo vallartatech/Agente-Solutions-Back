@@ -304,10 +304,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     $clientEmail = $client->email ?? '';
                 }
 
+                $facadePhoto = $order->property?->facade_photo_path ?: ($order->property?->facade_photo ?: ($order->property?->foto_fachada ?: null));
                 $fotos = array_values(array_filter([
                     $order->evidence_path,
                     $order->evidence_path_2,
-                    $order->property?->facade_photo_path
+                    $facadePhoto
                 ]));
 
                 return [
@@ -323,7 +324,10 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'scheduled_at' => $order->scheduled_at ? (\Carbon\Carbon::parse($order->scheduled_at)->format('Y-m-d H:i')) : null,
                     'evidence_path' => $order->evidence_path,
                     'evidence_path_2' => $order->evidence_path_2,
-                    'foto' => $fotos[0] ?? null,
+                    'property' => $order->property,
+                    'facade_photo' => $facadePhoto,
+                    'foto_fachada' => $facadePhoto,
+                    'foto' => $order->evidence_path ?: ($order->evidence_path_2 ?: ($facadePhoto ?: null)),
                     'fotos' => $fotos,
                     'lat' => $rawLat,
                     'lng' => $rawLng,

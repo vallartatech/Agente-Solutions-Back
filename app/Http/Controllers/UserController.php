@@ -314,23 +314,22 @@ class UserController extends Controller
         try {
             $currentUser = auth('sanctum')->user();
 
-            $usersQuery = \App\Models\User::with('specialties')->select('id', 'first_name', 'last_name', 'email', 'role_id', 'is_active', 'approval_status', 'profile_picture', 'phone_number', 'tenant_id');
+            $usersQuery = \App\Models\User::withoutGlobalScopes()
+                ->with('specialties')
+                ->select('id', 'first_name', 'last_name', 'email', 'role_id', 'is_active', 'approval_status', 'profile_picture', 'phone_number', 'tenant_id');
             
-            if ($currentUser && $currentUser->role_id == 4) {
-                // Autónomo: solo ve a usuarios de su misma empresa (o sin tenant si están asignados a él) y a sí mismo. NUNCA Root (0) ni otros Autónomos (4)
+            if ($currentUser && $currentUser->role_id === 0) {
+                // ROOT: Visión global completa de todos los usuarios
+            } elseif ($currentUser && !empty($currentUser->tenant_id)) {
+                // Usuario con Tenant (Autónomo, Cliente, Gestor, etc.):
+                // Ve a los usuarios de su mismo tenant y a sí mismo, excluyendo ROOT
                 $usersQuery->where(function($q) use ($currentUser) {
                     $q->where('tenant_id', $currentUser->tenant_id)
                       ->orWhere('id', $currentUser->id);
-                })->where('role_id', '!=', 0)
-                  ->where(function($q) use ($currentUser) {
-                      $q->where('role_id', '!=', 4)->orWhere('id', $currentUser->id);
-                  });
-            } elseif ($currentUser && $currentUser->role_id !== 0) {
-                // Si es un admin normal o técnico, no ve al Root ni a otros Autónomos de otras empresas
-                $usersQuery->where('role_id', '!=', 0);
-                if ($currentUser->tenant_id) {
-                    $usersQuery->where('tenant_id', $currentUser->tenant_id);
-                }
+                })->where('role_id', '!=', 0);
+            } elseif ($currentUser) {
+                // Usuario sin tenant: se ve a sí mismo
+                $usersQuery->where('id', $currentUser->id);
             }
 
             $usuariosQuery = $usersQuery->get();
@@ -359,10 +358,12 @@ class UserController extends Controller
             $clientesDbQuery = DB::table('clients')
                 ->select('id', 'user_id', 'name', 'email', 'phone', 'profile_picture', 'is_active', 'tenant_id');
 
-            if ($currentUser && $currentUser->role_id == 4) {
+            if ($currentUser && $currentUser->role_id === 0) {
+                // ROOT ve todos los clientes
+            } elseif ($currentUser && !empty($currentUser->tenant_id)) {
                 $clientesDbQuery->where('tenant_id', $currentUser->tenant_id);
-            } elseif ($currentUser && $currentUser->role_id !== 0 && $currentUser->tenant_id) {
-                $clientesDbQuery->where('tenant_id', $currentUser->tenant_id);
+            } else {
+                $clientesDbQuery->where('id', 0);
             }
 
             $clientesQuery = $clientesDbQuery->get()->filter(function ($c) use ($userEmails, $userIds) {
@@ -510,11 +511,11 @@ class UserController extends Controller
     public function getTecnicos()
     {
         $currentUser = auth('sanctum')->user();
-        $query = User::with('specialties')->where('role_id', 2);
+        $query = User::withoutGlobalScopes()->with('specialties')->whereIn('role_id', [2, 8]);
         
-        if ($currentUser && $currentUser->role_id == 4) {
-            $query->where('tenant_id', $currentUser->tenant_id);
-        } elseif ($currentUser && $currentUser->role_id !== 0 && $currentUser->tenant_id) {
+        if ($currentUser && $currentUser->role_id === 0) {
+            // ROOT ve todos los técnicos
+        } elseif ($currentUser && !empty($currentUser->tenant_id)) {
             $query->where('tenant_id', $currentUser->tenant_id);
         }
 

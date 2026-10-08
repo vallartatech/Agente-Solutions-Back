@@ -31,6 +31,7 @@ class AuthController extends Controller
         ]);
 
         $currentUser = auth('sanctum')->user();
+        $isDirectCreation = ($currentUser !== null) || $request->boolean('from_admin');
         $isRootOrAdmin = ($currentUser && in_array($currentUser->role_id, [0, 1])) || $request->boolean('from_admin');
         $isLocalhostBypass = ($request->captcha_token === 'localhost_dev_token' || $request->captcha_token === 'from_admin_bypass' || app()->environment('local'));
 
@@ -49,7 +50,7 @@ class AuthController extends Controller
             }
         }
 
-        // Buscar tenant por código o ID
+        // Buscar tenant por código o ID, o heredar del usuario creador conectado
         $tenantId = $request->tenant_id ?? null;
         if (!empty($request->company_code)) {
             $t = Tenant::where('code', $request->company_code)
@@ -60,23 +61,47 @@ class AuthController extends Controller
             }
         }
 
-        $isTechnician = ($request->role_id == 2 || $request->role_id == 6 || $request->role_id == 8);
-        if ($request->role_id == 2 && empty($tenantId)) {
-            $tenantId = 1; // Técnico oficial de Agente Solutions
+        // Si el usuario autenticado está creando a este usuario (por ejemplo un cliente o autónomo registrando sus técnicos)
+        if ($currentUser && empty($tenantId)) {
+            if (!empty($currentUser->tenant_id)) {
+                $tenantId = $currentUser->tenant_id;
+            } elseif ($currentUser->role_id !== 0) {
+                // Si el creador no tiene tenant aún, creamos un tenant para vincularlo a él y a sus técnicos/usuarios
+                $tenant = Tenant::create([
+                    'name'                    => trim($currentUser->first_name . ' ' . $currentUser->last_name) . ' (Equipo)',
+                    'code'                    => 'AUT_U_' . time() . '_' . $currentUser->id,
+                    'owner_user_id'           => $currentUser->id,
+                    'phone'                   => $currentUser->phone_number,
+                    'email'                   => $currentUser->email,
+                    'status'                  => 'active',
+                    'membership_type'         => 'autonomo_empresarial',
+                    'max_properties'          => 30,
+                    'max_clients'             => 30,
+                    'billing_cycle'           => 'trial',
+                    'subscription_status'     => 'active',
+                    'subscription_start'      => now(),
+                    'subscription_expires_at' => now()->addMonths(6),
+                    'subscription_amount'     => 935.00,
+                ]);
+                $currentUser->tenant_id = $tenant->id;
+                $currentUser->save();
+                $tenantId = $tenant->id;
+            }
         }
 
-        $currentUser = auth('sanctum')->user();
-        $isRootOrAdmin = ($currentUser && in_array($currentUser->role_id, [0, 1])) || $request->boolean('from_admin');
+        $isTechnician = ($request->role_id == 2 || $request->role_id == 6 || $request->role_id == 8);
+        if ($request->role_id == 2 && empty($tenantId)) {
+            $tenantId = 1; // Técnico oficial de Agente Solutions matriz
+        }
 
-        // Roles que crean un Tenant propio (Propietarios, Gestores, Contratistas)
-        $createsTenant = ($request->role_id == 4 || $request->role_id == 5 || $request->role_id == 7);
+        // Roles que crean un Tenant propio (Propietarios, Gestores, Contratistas) si no fue creado dentro de una empresa
+        $createsTenant = ($request->role_id == 4 || $request->role_id == 5 || $request->role_id == 7) && empty($tenantId);
 
         // Estado inicial de aprobación
-        // Rol 2 (Técnico Matriz) y Rol 8 (Técnico Cuadrilla) quedan pendientes de aprobación
-        // Rol 6 (Técnico Independiente) queda aprobado inmediatamente con 1 año gratis
+        // Si fue creado directamente desde el panel interno por un usuario logueado o from_admin, queda activo y aprobado
         $isPendingApprovalTech = in_array($request->role_id, [2, 8]);
-        $approvalStatus = ($isPendingApprovalTech && !$isRootOrAdmin) ? 'pending' : 'approved';
-        $isActive = ($isPendingApprovalTech && !$isRootOrAdmin) ? 0 : 1;
+        $approvalStatus = ($isPendingApprovalTech && !$isDirectCreation) ? 'pending' : 'approved';
+        $isActive = ($isPendingApprovalTech && !$isDirectCreation) ? 0 : 1;
 
         $roleToAssign = (int) $request->role_id;
 
