@@ -340,26 +340,78 @@ class UserController extends Controller
 
             $usersQuery = \App\Models\User::withoutGlobalScopes()
                 ->with('specialties')
-                ->select('id', 'first_name', 'last_name', 'email', 'role_id', 'is_active', 'approval_status', 'profile_picture', 'phone_number', 'tenant_id');
+                ->select(
+                    'id', 'first_name', 'last_name', 'email', 'role_id', 'is_active', 
+                    'approval_status', 'profile_picture', 'phone_number', 'tenant_id',
+                    'rating_stars_avg', 'rating_time_avg', 'total_reviews_count'
+                );
             
             if ($currentUser && $currentUser->role_id === 0) {
                 // ROOT: Visión global completa de todos los usuarios
+            } elseif ($currentUser && $currentUser->role_id === 3) {
+                // CLIENTE (de la Red / Particular): Solo ve técnicos propios, técnicos de la red y su propia cuenta
+                $usersQuery->where(function($q) use ($currentUser) {
+                    $q->where('id', $currentUser->id)
+                      ->orWhere(function($sub) use ($currentUser) {
+                          if (!empty($currentUser->tenant_id)) {
+                              $sub->where('tenant_id', $currentUser->tenant_id)->where('role_id', 2);
+                          } else {
+                              $sub->where('role_id', 2);
+                          }
+                      })
+                      ->orWhere('role_id', 8) // Técnicos de la red
+                      ->orWhere('role_id', 2); // Técnicos Agente
+                })->where('role_id', '!=', 0);
             } elseif ($currentUser && !empty($currentUser->tenant_id)) {
-                // Usuario con Tenant (Autónomo, Cliente, Gestor, etc.):
-                // Ve a los usuarios de su mismo tenant y a sí mismo, excluyendo ROOT
+                // Usuario con Tenant (Autónomo, Gestor, etc.):
                 $usersQuery->where(function($q) use ($currentUser) {
                     $q->where('tenant_id', $currentUser->tenant_id)
-                      ->orWhere('id', $currentUser->id);
+                      ->orWhere('id', $currentUser->id)
+                      ->orWhere('role_id', 8);
                 })->where('role_id', '!=', 0);
             } elseif ($currentUser) {
-                // Usuario sin tenant: se ve a sí mismo
-                $usersQuery->where('id', $currentUser->id);
+                // Usuario sin tenant: se ve a sí mismo y a técnicos disponibles
+                $usersQuery->where(function($q) use ($currentUser) {
+                    $q->where('id', $currentUser->id)
+                      ->orWhereIn('role_id', [2, 8]);
+                })->where('role_id', '!=', 0);
             }
 
             $usuariosQuery = $usersQuery->get();
 
-            $usuarios = $usuariosQuery->map(function ($u) {
+            $usuarios = $usuariosQuery->map(function ($u) use ($currentUser) {
                 $fotoUrl = $u->profile_picture ? (str_starts_with($u->profile_picture, 'http') ? $u->profile_picture : asset('storage/' . $u->profile_picture)) : null;
+
+                // Obtener reseña específica dada por el cliente actual a este técnico (si existe)
+                $myReview = null;
+                $jobsCount = 0;
+                if ($currentUser && in_array((int)$u->role_id, [2, 6, 8])) {
+                    $reviewDb = \App\Models\TechnicianReview::where('technician_id', $u->id)
+                        ->where('client_id', $currentUser->id)
+                        ->orderBy('created_at', 'desc')
+                        ->first();
+                    if ($reviewDb) {
+                        $myReview = [
+                            'rating_stars' => (float)$reviewDb->rating_stars,
+                            'rating_time'  => (float)$reviewDb->rating_time,
+                            'comment'      => $reviewDb->comment,
+                            'created_at'   => $reviewDb->created_at ? $reviewDb->created_at->format('d/m/Y H:i') : null,
+                        ];
+                    }
+
+                    $jobsCount = \App\Models\WorkOrder::withoutGlobalScopes()
+                        ->where('tecnico_id', $u->id)
+                        ->where(function($q) use ($currentUser) {
+                            $q->whereHas('property', function($pq) use ($currentUser) {
+                                $pq->withoutGlobalScopes()->where('user_id', $currentUser->id);
+                            });
+                            if (!empty($currentUser->tenant_id)) {
+                                $q->orWhere('tenant_id', $currentUser->tenant_id);
+                            }
+                        })
+                        ->count();
+                }
+
                 return [
                     'id' => 'u_' . $u->id,
                     'first_name' => $u->first_name,
@@ -372,10 +424,20 @@ class UserController extends Controller
                     'phone_number' => $u->phone_number,
                     'address' => 'No aplica',
                     'specialties' => $u->specialties ?? [],
+                    'rating_stars_avg' => round((float)($u->rating_stars_avg ?? 5.0), 1),
+                    'rating_time_avg' => round((float)($u->rating_time_avg ?? 5.0), 1),
+                    'total_reviews_count' => (int)($u->total_reviews_count ?? 0),
+                    'my_review' => $myReview,
+                    'jobs_count' => $jobsCount,
                 ];
             });
 
-            // Evitar duplicados con la tabla clients
+            // Si es un cliente, no incluimos la tabla clients externa ya que solo le interesan sus técnicos
+            if ($currentUser && $currentUser->role_id === 3) {
+                return response()->json($usuarios->values(), 200);
+            }
+
+            // Evitar duplicados con la tabla clients para admins/root
             $userEmails = $usuariosQuery->pluck('email')->filter()->map(fn($e) => strtolower(trim($e)))->toArray();
             $userIds = $usuariosQuery->pluck('id')->toArray();
 
@@ -408,6 +470,11 @@ class UserController extends Controller
                     'profile_picture_url' => $fotoUrl,
                     'phone_number' => $c->phone,
                     'address' => 'No registrada',
+                    'rating_stars_avg' => 5.0,
+                    'rating_time_avg' => 5.0,
+                    'total_reviews_count' => 0,
+                    'my_review' => null,
+                    'jobs_count' => 0,
                 ];
             });
 
