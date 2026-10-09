@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -26,6 +26,8 @@ use App\Http\Controllers\MercadoPagoController;
 use App\Http\Controllers\TenantController;
 use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\PropertyManagerController;
+use App\Http\Controllers\TechnicianReviewController;
+
 // ========================================================
 // 🟢 ZONA PÚBLICA (Sin Token - Cualquiera puede entrar)
 // ========================================================
@@ -61,6 +63,11 @@ Route::post('/mercadopago/subscription/{tenantId}', [MercadoPagoController::clas
 // Lista pública de empresas autónomas para registro y login
 Route::get('/tenants/public-list', [TenantController::class, 'listTenants']);
 Route::get('/specialties', [SpecialtyController::class, 'index']);
+
+// Calificaciones de Técnicos (Dual-Factor: Relojes ⏱️ y Estrellas ⭐)
+Route::post('/technician-reviews', [TechnicianReviewController::class, 'store']);
+Route::get('/technicians/{id}/reviews', [TechnicianReviewController::class, 'getTechnicianReviews']);
+Route::get('/technician-reviews/status', [TechnicianReviewController::class, 'checkReviewStatus']);
 
 // 🌐 Mercado de Trabajos Abierto (Visible para técnicos y público, con personalización para usuarios logueados)
 Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
@@ -528,6 +535,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/usuarios/tecnicos', [UserController::class, 'getTecnicos']);
     Route::get('/users/tecnicos', [UserController::class, 'getTecnicos']);
 
+    Route::post('/services/{id}/confirm-arrival', [ServiceController::class, 'confirmArrival']);
+    Route::post('/work-orders/{id}/confirm-arrival', [ServiceController::class, 'confirmArrival']);
+
     Route::post('/upload-profile-picture', [ImageController::class, 'uploadProfilePicture']);
     Route::post('/update-photos', function (\Illuminate\Http\Request $request) {
         $user = User::find($request->user_id);
@@ -758,6 +768,8 @@ Route::middleware('auth:sanctum')->group(function () {
             'description' => 'required|string',
             'batch_id' => 'nullable|string',
             'publish_network' => 'nullable|boolean',
+            'tecnico_id' => 'nullable|integer',
+            'assigned_technician_id' => 'nullable|integer',
             'evidence_1' => 'nullable|file|image|max:5120',
             'evidence_2' => 'nullable|file|image|max:5120'
         ]);
@@ -777,6 +789,13 @@ Route::middleware('auth:sanctum')->group(function () {
             $path2 = $resp2['secure_url'];
         }
 
+        $tecnicoId = $request->tecnico_id ?: ($request->assigned_technician_id ?: null);
+        if ($tecnicoId) {
+            $tecnicoId = intval($tecnicoId);
+        }
+        $publishNetwork = filter_var($request->publish_network, FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+        $status = $tecnicoId ? 'Asignado' : 'Por Hacer';
+
         // 3. Insertar en la BD usando el Modelo Eloquent
         $workOrder = WorkOrder::create([
             'property_id' => $request->property_id,
@@ -787,10 +806,11 @@ Route::middleware('auth:sanctum')->group(function () {
             'batch_id' => $request->batch_id,
             'evidence_path' => $path1,
             'evidence_path_2' => $path2,
-            'status' => 'Por Hacer',
+            'tecnico_id' => $tecnicoId,
+            'status' => $status,
             'priority' => $request->priority ?: ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
             'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
-            'publish_network' => filter_var($request->publish_network, FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
+            'publish_network' => $publishNetwork,
         ]);
 
         // 4. Notificaciones (App y Correo)
@@ -807,6 +827,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Notificamos a los admins y al usuario actual para confirmar
             $notifiables = $admins->merge([$user]);
+
+            if ($tecnicoId) {
+                $assignedTech = User::withoutGlobalScopes()->find($tecnicoId);
+                if ($assignedTech) {
+                    $notifiables = $notifiables->merge([$assignedTech]);
+                }
+            }
 
             Notification::send($notifiables, new NewWorkOrderNotification($workOrder, $userName, $propertyName));
             \Log::info("Notificación enviada correctamente vía Eloquent.");
