@@ -65,7 +65,106 @@ Route::get('/tenants/public-list', [TenantController::class, 'listTenants']);
 Route::get('/specialties', [SpecialtyController::class, 'index']);
 
 // Calificaciones de Técnicos (Dual-Factor: Relojes ⏱️ y Estrellas ⭐)
-Route::post('/technician-reviews', [TechnicianReviewController::class, 'store']);
+Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) {
+    $validated = $request->validate([
+        'technician_id' => 'required|exists:users,id',
+        'rating_stars'  => 'nullable|numeric|min:1|max:5',
+        'rating_time'   => 'required|numeric|min:1|max:5',
+        'comment'       => 'nullable|string|max:1000',
+        'work_order_id' => 'nullable|integer',
+        'service_id'    => 'nullable|integer',
+    ]);
+
+    $clientId = $request->user() ? $request->user()->id : ($request->input('client_id') ?? 1);
+    $technicianId = (int) $validated['technician_id'];
+    $ratingStars = !empty($validated['rating_stars']) ? (float)$validated['rating_stars'] : 5.0;
+
+    $scheduledAt = null;
+    $arrivedAt = null;
+    $delayMinutes = null;
+
+    if (!empty($validated['work_order_id'])) {
+        $wo = \App\Models\WorkOrder::withoutGlobalScopes()->find($validated['work_order_id']);
+        if ($wo) {
+            $scheduledAt = $wo->scheduled_at;
+            $arrivedAt = $wo->arrived_at;
+        }
+    } elseif (!empty($validated['service_id'])) {
+        $serv = \App\Models\Service::withoutGlobalScopes()->find($validated['service_id']);
+        if ($serv) {
+            $scheduledAt = $serv->scheduled_at ?? $serv->created_at;
+            $arrivedAt = $serv->arrived_at;
+        }
+    }
+
+    if ($scheduledAt && $arrivedAt) {
+        try {
+            $schedTime = \Carbon\Carbon::parse($scheduledAt);
+            $arrTime = \Carbon\Carbon::parse($arrivedAt);
+            $delayMinutes = (int) $schedTime->diffInMinutes($arrTime, false);
+        } catch (\Exception $e) {
+            $delayMinutes = null;
+        }
+    }
+
+    $reviewQuery = \App\Models\TechnicianReview::where('client_id', $clientId)
+        ->where('technician_id', $technicianId);
+
+    if (!empty($validated['work_order_id'])) {
+        $reviewQuery->where('work_order_id', $validated['work_order_id']);
+    } elseif (!empty($validated['service_id'])) {
+        $reviewQuery->where('service_id', $validated['service_id']);
+    }
+
+    $review = $reviewQuery->first();
+
+    if ($review) {
+        $review->update([
+            'rating_stars'  => $ratingStars,
+            'rating_time'   => $validated['rating_time'],
+            'comment'       => $validated['comment'] ?? $review->comment,
+            'scheduled_at'  => $scheduledAt ?? $review->scheduled_at,
+            'arrived_at'    => $arrivedAt ?? $review->arrived_at,
+            'delay_minutes' => $delayMinutes ?? $review->delay_minutes,
+        ]);
+    } else {
+        $review = \App\Models\TechnicianReview::create([
+            'technician_id' => $technicianId,
+            'client_id'     => $clientId,
+            'work_order_id' => $validated['work_order_id'] ?? null,
+            'service_id'    => $validated['service_id'] ?? null,
+            'rating_stars'  => $ratingStars,
+            'rating_time'   => $validated['rating_time'],
+            'comment'       => $validated['comment'] ?? null,
+            'scheduled_at'  => $scheduledAt,
+            'arrived_at'    => $arrivedAt,
+            'delay_minutes' => $delayMinutes,
+        ]);
+    }
+
+    if (!empty($validated['work_order_id'])) {
+        \Illuminate\Support\Facades\DB::table('technician_cancellations')
+            ->where('work_order_id', $validated['work_order_id'])
+            ->where('technician_id', $technicianId)
+            ->update(['rated' => true]);
+    }
+
+    $technician = \App\Models\User::withoutGlobalScopes()->find($technicianId);
+    if ($technician) {
+        $technician->recalculateRatings();
+    }
+
+    return response()->json([
+        'status' => 'success',
+        'message' => '¡Calificación registrada exitosamente!',
+        'review' => $review,
+        'technician_stats' => [
+            'rating_stars_avg'    => $technician ? $technician->rating_stars_avg : 5.00,
+            'rating_time_avg'     => $technician ? $technician->rating_time_avg : 5.00,
+            'total_reviews_count' => $technician ? $technician->total_reviews_count : 1,
+        ]
+    ], 201);
+});
 Route::get('/technicians/{id}/reviews', [TechnicianReviewController::class, 'getTechnicianReviews']);
 Route::get('/technician-reviews/status', [TechnicianReviewController::class, 'checkReviewStatus']);
 
@@ -339,7 +438,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                              ->where('status', 'accepted');
                       });
                 })
-                ->whereIn('status', ['Asignado', 'En Progreso', 'Terminado'])
+                ->whereIn('status', ['Asignado', 'En Progreso', 'Terminado', 'Finalizado', 'Listo', 'Completado', 'Aprobado', 'Entregado'])
                 ->orderBy('updated_at', 'desc');
 
             $rawAccepted = $acceptedQuery->get();
