@@ -487,6 +487,10 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     $facadePhoto
                 ]));
 
+                $jobReview = \Illuminate\Support\Facades\DB::table('technician_reviews')
+                    ->where('work_order_id', $order->id)
+                    ->first();
+
                 return [
                     'id' => $order->id,
                     'type' => $order->type,
@@ -514,6 +518,12 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'client_email' => $clientEmail,
                     'agreed_price' => $acceptedQuote ? (float)$acceptedQuote->price : 0,
                     'myQuote' => $acceptedQuote,
+                    'review' => $jobReview ? [
+                        'rating_stars' => (float)$jobReview->rating_stars,
+                        'rating_time' => (float)$jobReview->rating_time,
+                        'comment' => $jobReview->comment,
+                        'created_at' => \Carbon\Carbon::parse($jobReview->created_at)->format('d/m/Y H:i'),
+                    ] : null,
                     'created_at' => $order->created_at->toIso8601String(),
                     'updated_at' => $order->updated_at->toIso8601String(),
                 ];
