@@ -75,7 +75,8 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
         'service_id'    => 'nullable|integer',
     ]);
 
-    $clientId = $request->user() ? $request->user()->id : ($request->input('client_id') ?? 1);
+    $authUser = auth('sanctum')->user() ?: $request->user();
+    $clientId = $authUser ? $authUser->id : $request->input('client_id');
     $technicianId = (int) $validated['technician_id'];
     $ratingStars = !empty($validated['rating_stars']) ? (float)$validated['rating_stars'] : 5.0;
 
@@ -84,17 +85,32 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
     $delayMinutes = null;
 
     if (!empty($validated['work_order_id'])) {
-        $wo = \App\Models\WorkOrder::withoutGlobalScopes()->find($validated['work_order_id']);
+        $wo = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->find($validated['work_order_id']);
         if ($wo) {
             $scheduledAt = $wo->scheduled_at;
             $arrivedAt = $wo->arrived_at;
+            if (!$clientId && $wo->property?->client?->user_id) {
+                $clientId = $wo->property->client->user_id;
+            }
+            if (!$clientId && $wo->tenant_id) {
+                $firstUser = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $wo->tenant_id)->value('id');
+                if ($firstUser) $clientId = $firstUser;
+            }
         }
     } elseif (!empty($validated['service_id'])) {
-        $serv = \App\Models\Service::withoutGlobalScopes()->find($validated['service_id']);
+        $serv = \App\Models\Service::withoutGlobalScopes()->with('property.client')->find($validated['service_id']);
         if ($serv) {
             $scheduledAt = $serv->scheduled_at ?? $serv->created_at;
             $arrivedAt = $serv->arrived_at;
+            if (!$clientId && $serv->property?->client?->user_id) {
+                $clientId = $serv->property->client->user_id;
+            }
         }
+    }
+
+    // Asegurar que $clientId exista en la tabla users para evitar violación de Foreign Key
+    if (!$clientId || !\App\Models\User::withoutGlobalScopes()->where('id', $clientId)->exists()) {
+        $clientId = \App\Models\User::withoutGlobalScopes()->value('id');
     }
 
     if ($scheduledAt && $arrivedAt) {
@@ -142,11 +158,11 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
         ]);
     }
 
+    // Marcar como calificado para que nunca vuelva a aparecer la encuesta
     if (!empty($validated['work_order_id'])) {
         \Illuminate\Support\Facades\DB::table('technician_cancellations')
             ->where('work_order_id', $validated['work_order_id'])
-            ->where('technician_id', $technicianId)
-            ->update(['rated' => true]);
+            ->update(['rated' => true, 'updated_at' => now()]);
     }
 
     $technician = \App\Models\User::withoutGlobalScopes()->find($technicianId);
@@ -1561,6 +1577,14 @@ Route::middleware('auth:sanctum')->group(function () {
             $result = [];
             foreach ($cancellations as $canc) {
                 $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->find($canc->work_order_id);
+                // Si la orden ya no existe o ya no tiene la marca de cancelada por técnico
+                if (!$workOrder || (!$workOrder->cancelled_by_tech && $workOrder->status !== 'Cancelado_Tecnico')) {
+                    \Illuminate\Support\Facades\DB::table('technician_cancellations')
+                        ->where('id', $canc->id)
+                        ->update(['rated' => true, 'updated_at' => now()]);
+                    continue;
+                }
+
                 $tech = \App\Models\User::withoutGlobalScopes()->find($canc->technician_id);
 
                 $result[] = [
@@ -1600,6 +1624,11 @@ Route::middleware('auth:sanctum')->group(function () {
             $user = auth('sanctum')->user();
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
 
+            // Marcar cualquier registro de cancelación como evaluado/resuelto
+            \Illuminate\Support\Facades\DB::table('technician_cancellations')
+                ->where('work_order_id', $workOrder->id)
+                ->update(['rated' => true, 'updated_at' => now()]);
+
             if ($request->action === 'reopen') {
                 $workOrder->status = 'Por Hacer';
                 $workOrder->tecnico_id = null;
@@ -1632,6 +1661,19 @@ Route::middleware('auth:sanctum')->group(function () {
         } catch (\Throwable $e) {
             \Log::error("Error resolviendo orden cancelada: " . $e->getMessage());
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    })->middleware('auth:sanctum');
+
+    // Descartar aviso de cancelación para que no vuelva a aparecer
+    Route::post('/client/dismiss-cancellation/{id}', function (Request $request, $id) {
+        try {
+            \Illuminate\Support\Facades\DB::table('technician_cancellations')
+                ->where('id', $id)
+                ->orWhere('work_order_id', $id)
+                ->update(['rated' => true, 'updated_at' => now()]);
+            return response()->json(['success' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false], 500);
         }
     })->middleware('auth:sanctum');
 
