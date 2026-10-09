@@ -97,7 +97,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
         // Si se pide filtrar solo los del usuario autónomo o cliente (role_id 3, 4, 5, 7) con only_mine
         if ($request->boolean('only_mine')) {
-            $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso']);
+            $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico']);
             if ($authUser && !in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
                     $q->whereHas('property.client', function ($qc) use ($authUser) {
@@ -117,6 +117,30 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             }
         } else {
             // 🌐 SOLICITUDES DISPONIBLES EN LA RED (Solo órdenes ABIERTAS, sin asignar y sin cotización aceptada)
+            // 🚫 FILTRO DE RESTRICCIÓN 24 HORAS POR CANCELACIÓN
+            if ($authUser) {
+                $activeBlocks = \Illuminate\Support\Facades\DB::table('technician_cancellations')
+                    ->where('technician_id', $authUser->id)
+                    ->where('expires_at', '>', now())
+                    ->get();
+
+                $blockedClientUserIds = $activeBlocks->pluck('client_user_id')->filter()->unique()->toArray();
+                $blockedTenantIds = $activeBlocks->pluck('tenant_id')->filter()->unique()->toArray();
+                $blockedWorkOrderIds = $activeBlocks->pluck('work_order_id')->filter()->unique()->toArray();
+
+                if (!empty($blockedWorkOrderIds)) {
+                    $query->whereNotIn('id', $blockedWorkOrderIds);
+                }
+                if (!empty($blockedClientUserIds)) {
+                    $query->whereDoesntHave('property.client', function ($qc) use ($blockedClientUserIds) {
+                        $qc->whereIn('user_id', $blockedClientUserIds);
+                    });
+                }
+                if (!empty($blockedTenantIds)) {
+                    $query->whereNotIn('tenant_id', $blockedTenantIds);
+                }
+            }
+
             $query->whereNotIn('status', ['Asignado', 'En Progreso', 'Terminado', 'Completado', 'Cancelado', 'Listo'])
                   ->where(function ($q) {
                       $q->whereNull('tecnico_id')
@@ -260,6 +284,24 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $job->priority = $job->priority ?: 'Normal';
             $job->is_urgent = in_array(strtolower($job->priority), ['urgente', 'sos', 'urgent']);
             $job->scheduled_at = $job->scheduled_at ? (\Carbon\Carbon::parse($job->scheduled_at)->format('Y-m-d H:i')) : null;
+            $job->cancelled_by_tech = (bool) $job->cancelled_by_tech;
+            $job->cancelled_technician_id = $job->cancelled_technician_id;
+            $job->cancellation_reason = $job->cancellation_reason;
+            $job->cancelled_at = $job->cancelled_at ? (\Carbon\Carbon::parse($job->cancelled_at)->format('Y-m-d H:i')) : null;
+            if ($job->cancelled_technician_id) {
+                $cTech = \App\Models\User::withoutGlobalScopes()->find($job->cancelled_technician_id);
+                if ($cTech) {
+                    $job->cancelled_technician = [
+                        'id' => $cTech->id,
+                        'name' => trim("{$cTech->first_name} {$cTech->last_name}") ?: $cTech->name,
+                        'first_name' => $cTech->first_name,
+                        'last_name' => $cTech->last_name,
+                        'profile_picture' => $cTech->profile_picture,
+                        'rating_stars_avg' => $cTech->rating_stars_avg,
+                        'rating_time_avg' => $cTech->rating_time_avg,
+                    ];
+                }
+            }
 
             $isMine = false;
             if ($authUser) {
@@ -1013,6 +1055,34 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Enviar una cotización a un trabajo de la red
     Route::post('/mercado-trabajos/{id}/cotizar', function (Request $request, $id) {
+        $user = auth('sanctum')->user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'No autorizado'], 401);
+
+        $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
+
+        // Validar restricción activa de 24h
+        $isBlocked = \Illuminate\Support\Facades\DB::table('technician_cancellations')
+            ->where('technician_id', $user->id)
+            ->where('expires_at', '>', now())
+            ->where(function ($q) use ($workOrder) {
+                $q->where('work_order_id', $workOrder->id);
+                if ($workOrder->property?->client?->user_id) {
+                    $q->orWhere('client_user_id', $workOrder->property->client->user_id);
+                }
+                $tId = $workOrder->tenant_id ?: ($workOrder->property?->tenant_id ?? null);
+                if ($tId) {
+                    $q->orWhere('tenant_id', $tId);
+                }
+            })
+            ->exists();
+
+        if ($isBlocked) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Tienes una restricción de 24 horas para cotizar a este usuario por haber cancelado un servicio recientemente.'
+            ], 403);
+        }
+
         $request->validate([
             'price' => 'required|numeric|min:0',
             'message' => 'nullable|string'
@@ -1262,6 +1332,142 @@ Route::middleware('auth:sanctum')->group(function () {
     })->middleware('auth:sanctum');
 
     // Eliminar / Cancelar publicación de servicio en la Red (Solo el Autor o Admin)
+    
+    // Cancelar servicio por parte del Técnico con motivo y penalización de 24h
+    Route::post('/mercado-trabajos/{id}/cancelar-tecnico', function (Request $request, $id) {
+        $request->validate([
+            'reason' => 'nullable|string|max:1000'
+        ]);
+
+        try {
+            $user = auth('sanctum')->user();
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'No autorizado'], 401);
+            }
+
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+
+            $clientUserId = $workOrder->property?->client?->user_id;
+            if (!$clientUserId && $workOrder->property?->client?->email) {
+                $u = \App\Models\User::withoutGlobalScopes()->where('email', $workOrder->property->client->email)->first();
+                if ($u) $clientUserId = $u->id;
+            }
+            $tenantId = $workOrder->tenant_id ?: ($workOrder->property?->tenant_id ?? null);
+            $reason = $request->input('reason') ?: 'Cancelado por el técnico por causas de fuerza mayor o imprevisto.';
+
+            // 1. Registrar bloqueo de 24 horas para el técnico hacia este cliente/inmueble
+            \Illuminate\Support\Facades\DB::table('technician_cancellations')->insert([
+                'technician_id'   => $user->id,
+                'work_order_id'   => $workOrder->id,
+                'client_user_id'  => $clientUserId,
+                'tenant_id'       => $tenantId,
+                'reason'          => $reason,
+                'cancelled_at'    => now(),
+                'expires_at'      => now()->addHours(24),
+                'rated'           => false,
+                'created_at'      => now(),
+                'updated_at'      => now(),
+            ]);
+
+            // 2. Actualizar la orden de trabajo
+            $workOrder->cancelled_by_tech = true;
+            $workOrder->cancelled_technician_id = $user->id;
+            $workOrder->cancellation_reason = $reason;
+            $workOrder->cancelled_at = now();
+            $workOrder->status = 'Cancelado_Tecnico';
+            $workOrder->tecnico_id = null;
+            $workOrder->save();
+
+            // 3. Registrar mensaje en el chat de la cotización si existe
+            $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)
+                ->where('technician_id', $user->id)
+                ->first();
+
+            $techName = trim("{$user->first_name} {$user->last_name}") ?: ($user->name ?: 'El Técnico');
+
+            if ($quote) {
+                $quote->status = 'rejected';
+                $history = $quote->chat_history ?? [];
+                $history[] = [
+                    'sender_id' => $user->id,
+                    'sender_name' => $techName,
+                    'sender_role' => 'Técnico de la Red',
+                    'message' => "🚫 [CANCELACIÓN DE SERVICIO]: He cancelado mi asistencia para este servicio. Motivo: \"{$reason}\"",
+                    'is_cancellation' => true,
+                    'created_at' => now()->toIso8601String(),
+                ];
+                $quote->chat_history = $history;
+                $quote->save();
+            }
+
+            // 4. Notificar a los clientes / propietarios
+            try {
+                $clientUsers = collect();
+                if ($clientUserId) {
+                    $u = \App\Models\User::withoutGlobalScopes()->find($clientUserId);
+                    if ($u) $clientUsers->push($u);
+                }
+                if ($tenantId) {
+                    $tenantUsers = \App\Models\User::withoutGlobalScopes()
+                        ->where('tenant_id', $tenantId)
+                        ->whereIn('role_id', [0, 1, 3, 4, 5, 7])
+                        ->get();
+                    foreach ($tenantUsers as $tu) $clientUsers->push($tu);
+                }
+                $clientUsers = $clientUsers->unique('id');
+
+                foreach ($clientUsers as $targetClient) {
+                    try {
+                        $targetClient->notify(new \App\Notifications\WorkOrderCancelledNotification($workOrder, 'client'));
+                    } catch (\Throwable $ne) {}
+                }
+            } catch (\Throwable $e) {
+                \Log::error("Error notificando cancelación del técnico: " . $e->getMessage());
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Servicio cancelado. Se ha notificado al cliente y aplicado la restricción de 24 horas.',
+                'work_order' => $workOrder
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error("Error cancelando servicio por técnico: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    })->middleware('auth:sanctum');
+
+    // Reenviar a la Red una orden cancelada por técnico
+    Route::post('/mercado-trabajos/{id}/reabrir-red', function (Request $request, $id) {
+        try {
+            $user = auth('sanctum')->user();
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+
+            // Resetear orden para que vuelva a estar disponible en la red
+            $workOrder->status = 'Por Hacer';
+            $workOrder->tecnico_id = null;
+            $workOrder->scheduled_at = null;
+            $workOrder->cancelled_by_tech = false;
+            $workOrder->publish_network = 1;
+            $workOrder->save();
+
+            // Rechazar cotizaciones previas asignadas
+            \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)
+                ->where('status', 'accepted')
+                ->update(['status' => 'rejected']);
+
+            return response()->json([
+                'success' => true,
+                'message' => '¡Solicitud reenviada a la Red! Otros técnicos podrán enviarte nuevas cotizaciones.',
+                'work_order' => $workOrder
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error("Error reenviando orden a la red: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    })->middleware('auth:sanctum');
+
     Route::delete('/mercado-trabajos/{id}', function ($id) {
         try {
             $user = auth('sanctum')->user();

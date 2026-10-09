@@ -19,7 +19,7 @@ class TechnicianReviewController extends Controller
     {
         $validated = $request->validate([
             'technician_id' => 'required|exists:users,id',
-            'rating_stars'  => 'required|numeric|min:1|max:5',
+            'rating_stars'  => 'nullable|numeric|min:1|max:5',
             'rating_time'   => 'required|numeric|min:1|max:5',
             'comment'       => 'nullable|string|max:1000',
             'work_order_id' => 'nullable|integer',
@@ -71,7 +71,7 @@ class TechnicianReviewController extends Controller
 
         if ($review) {
             $review->update([
-                'rating_stars'  => $validated['rating_stars'],
+                'rating_stars'  => $validated['rating_stars'] ?? $review->rating_stars,
                 'rating_time'   => $validated['rating_time'],
                 'comment'       => $validated['comment'] ?? $review->comment,
                 'scheduled_at'  => $scheduledAt ?? $review->scheduled_at,
@@ -84,13 +84,20 @@ class TechnicianReviewController extends Controller
                 'client_id'     => $clientId,
                 'work_order_id' => $validated['work_order_id'] ?? null,
                 'service_id'    => $validated['service_id'] ?? null,
-                'rating_stars'  => $validated['rating_stars'],
+                'rating_stars'  => $validated['rating_stars'] ?? null,
                 'rating_time'   => $validated['rating_time'],
                 'comment'       => $validated['comment'] ?? null,
                 'scheduled_at'  => $scheduledAt,
                 'arrived_at'    => $arrivedAt,
                 'delay_minutes' => $delayMinutes,
             ]);
+        }
+
+        if (!empty($validated['work_order_id'])) {
+            \Illuminate\Support\Facades\DB::table('technician_cancellations')
+                ->where('work_order_id', $validated['work_order_id'])
+                ->where('technician_id', $technicianId)
+                ->update(['rated' => true]);
         }
 
         // Recalculate technician rating stats
