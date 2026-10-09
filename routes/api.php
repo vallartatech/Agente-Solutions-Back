@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -1111,6 +1111,9 @@ Route::middleware('auth:sanctum')->group(function () {
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
             $scheduledDateTime = date('Y-m-d H:i:s', strtotime($request->scheduled_at));
             $workOrder->scheduled_at = $scheduledDateTime;
+            if (empty($workOrder->tecnico_id)) {
+                $workOrder->tecnico_id = $user->id;
+            }
             $workOrder->save();
 
             // Buscar la cotización aceptada o del técnico para registrar en el chat
@@ -1170,9 +1173,15 @@ Route::middleware('auth:sanctum')->group(function () {
                 $propName = $workOrder->property ? ($workOrder->property->nombre_propiedad ?: $workOrder->property->address) : 'Propiedad';
 
                 foreach ($clientUsers as $targetClient) {
-                    if ($quote) {
+                    try {
                         $targetClient->notify(new \App\Notifications\WorkOrderScheduledNotification($workOrder, $techName, $propName));
-                        $targetClient->notify(new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
+                    } catch (\Throwable $ne) {
+                        \Log::warning("Notification error: " . $ne->getMessage());
+                    }
+                    if ($quote) {
+                        try {
+                            $targetClient->notify(new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
+                        } catch (\Throwable $qe) {}
                     }
                 }
             } catch (\Throwable $e) {
