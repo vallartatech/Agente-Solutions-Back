@@ -117,7 +117,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             }
         } else {
             // 🌐 SOLICITUDES DISPONIBLES EN LA RED (Solo órdenes ABIERTAS, sin asignar y sin cotización aceptada)
-            // 🚫 FILTRO DE RESTRICCIÓN 24 HORAS POR CANCELACIÓN
+            // 🚫 FILTRO DE RESTRICCIÓN 24 HORAS POR CANCELACIÓN (DESACTIVADO TEMPORALMENTE A PETICIÓN)
+            /*
             if ($authUser) {
                 $activeBlocks = \Illuminate\Support\Facades\DB::table('technician_cancellations')
                     ->where('technician_id', $authUser->id)
@@ -140,6 +141,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     $query->whereNotIn('tenant_id', $blockedTenantIds);
                 }
             }
+            */
 
             $query->whereNotIn('status', ['Asignado', 'En Progreso', 'Terminado', 'Completado', 'Cancelado', 'Listo'])
                   ->where(function ($q) {
@@ -1060,7 +1062,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
 
-        // Validar restricción activa de 24h
+        // Validar restricción activa de 24h (DESACTIVADO TEMPORALMENTE A PETICIÓN DEL USUARIO PARA PRUEBAS)
+        $isBlocked = false;
+        /*
         $isBlocked = \Illuminate\Support\Facades\DB::table('technician_cancellations')
             ->where('technician_id', $user->id)
             ->where('expires_at', '>', now())
@@ -1082,6 +1086,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 'message' => 'Tienes una restricción de 24 horas para cotizar a este usuario por haber cancelado un servicio recientemente.'
             ], 403);
         }
+        */
 
         $request->validate([
             'price' => 'required|numeric|min:0',
@@ -1433,6 +1438,100 @@ Route::middleware('auth:sanctum')->group(function () {
             ]);
         } catch (\Throwable $e) {
             \Log::error("Error cancelando servicio por técnico: " . $e->getMessage());
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
+    })->middleware('auth:sanctum');
+
+    // Obtener cancelaciones de técnicos pendientes de calificación para el cliente autenticado
+    Route::get('/client/pending-cancellations', function (Request $request) {
+        try {
+            $user = auth('sanctum')->user();
+            if (!$user) return response()->json(['success' => false, 'cancellations' => []]);
+
+            $cancellations = \Illuminate\Support\Facades\DB::table('technician_cancellations')
+                ->where('rated', false)
+                ->where(function ($q) use ($user) {
+                    $q->where('client_user_id', $user->id);
+                    if ($user->tenant_id) {
+                        $q->orWhere('tenant_id', $user->tenant_id);
+                    }
+                })
+                ->orderBy('cancelled_at', 'desc')
+                ->get();
+
+            $result = [];
+            foreach ($cancellations as $canc) {
+                $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->find($canc->work_order_id);
+                $tech = \App\Models\User::withoutGlobalScopes()->find($canc->technician_id);
+
+                $result[] = [
+                    'cancellation_id'   => $canc->id,
+                    'work_order_id'     => $canc->work_order_id,
+                    'work_order_title'  => $workOrder ? ($workOrder->type . ($workOrder->equipment ? ' - ' . $workOrder->equipment : '')) : 'Servicio Solicitado',
+                    'work_order'        => $workOrder,
+                    'reason'            => $canc->reason,
+                    'cancelled_at'      => $canc->cancelled_at,
+                    'technician'        => $tech ? [
+                        'id'              => $tech->id,
+                        'name'            => trim("{$tech->first_name} {$tech->last_name}") ?: ($tech->name ?: 'Técnico Especialista'),
+                        'picture'         => $tech->profile_picture,
+                        'specialty'       => 'Técnico de la Red',
+                        'rating_time_avg' => $tech->rating_time_avg ?? 5.0
+                    ] : null
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'cancellations' => $result
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error("Error obteniendo cancelaciones pendientes: " . $e->getMessage());
+            return response()->json(['success' => false, 'cancellations' => []]);
+        }
+    })->middleware('auth:sanctum');
+
+    // Resolver orden de trabajo cancelada (Reenviar a la Red o Borrar)
+    Route::post('/client/resolve-cancelled-work-order/{id}', function (Request $request, $id) {
+        $request->validate([
+            'action' => 'required|in:reopen,delete'
+        ]);
+
+        try {
+            $user = auth('sanctum')->user();
+            $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+
+            if ($request->action === 'reopen') {
+                $workOrder->status = 'Por Hacer';
+                $workOrder->tecnico_id = null;
+                $workOrder->scheduled_at = null;
+                $workOrder->cancelled_by_tech = false;
+                $workOrder->cancelled_technician_id = null;
+                $workOrder->publish_network = 1;
+                $workOrder->save();
+
+                \App\Models\NetworkQuote::withoutGlobalScopes()
+                    ->where('work_order_id', $workOrder->id)
+                    ->where('status', 'accepted')
+                    ->update(['status' => 'rejected']);
+
+                return response()->json([
+                    'success' => true,
+                    'message' => '¡Solicitud reenviada a la Red! Otros técnicos podrán enviarte nuevas cotizaciones.',
+                    'work_order' => $workOrder
+                ]);
+            } else {
+                $workOrder->status = 'Cancelado';
+                $workOrder->cancelled_by_tech = false;
+                $workOrder->save();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Servicio eliminado correctamente.'
+                ]);
+            }
+        } catch (\Throwable $e) {
+            \Log::error("Error resolviendo orden cancelada: " . $e->getMessage());
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     })->middleware('auth:sanctum');
