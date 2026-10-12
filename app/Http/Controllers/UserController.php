@@ -358,19 +358,18 @@ class UserController extends Controller
                         $q->where('id', $currentUser->id);
                     }
                 })->where('role_id', '!=', 0);
-            } elseif ($currentUser && $currentUser->role_id === 3) {
-                // CLIENTE (de la Red / Particular): Solo ve técnicos propios, técnicos de la red y su propia cuenta
+            } elseif ($currentUser && in_array($currentUser->role_id, [3, 4, 5])) {
+                // CLIENTE (de la Red / Particular / Autónomo): Ve técnicos propios, técnicos de la red (8), técnicos Agente (2) y contratistas (6)
                 $usersQuery->where(function($q) use ($currentUser) {
                     $q->where('id', $currentUser->id)
                       ->orWhere(function($sub) use ($currentUser) {
                           if (!empty($currentUser->tenant_id)) {
-                              $sub->where('tenant_id', $currentUser->tenant_id)->where('role_id', 2);
+                              $sub->where('tenant_id', $currentUser->tenant_id)->whereIn('role_id', [2, 6, 8]);
                           } else {
-                              $sub->where('role_id', 2);
+                              $sub->whereIn('role_id', [2, 6, 8]);
                           }
                       })
-                      ->orWhere('role_id', 8) // Técnicos de la red
-                      ->orWhere('role_id', 2); // Técnicos Agente
+                      ->orWhereIn('role_id', [2, 6, 8]);
                 })->where('role_id', '!=', 0);
             } elseif ($currentUser && !empty($currentUser->tenant_id)) {
                 // Usuario con Tenant (Autónomo, Gestor, etc.):
@@ -443,7 +442,7 @@ class UserController extends Controller
             });
 
             // Si es un cliente, no incluimos la tabla clients externa ya que solo le interesan sus técnicos
-            if ($currentUser && $currentUser->role_id === 3) {
+            if ($currentUser && in_array($currentUser->role_id, [3, 4, 5])) {
                 return response()->json($usuarios->values(), 200);
             }
 
