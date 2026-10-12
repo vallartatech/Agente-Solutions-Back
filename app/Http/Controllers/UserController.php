@@ -348,6 +348,16 @@ class UserController extends Controller
             
             if ($currentUser && $currentUser->role_id === 0) {
                 // ROOT: Visión global completa de todos los usuarios
+            } elseif ($currentUser && $currentUser->role_id === 1) {
+                // ADMIN (Rol 1): Exclusivo de su propia administración/tenant.
+                // No se mezcla con ROOT ni con otros administradores/tenants ni la red pública.
+                $usersQuery->where(function($q) use ($currentUser) {
+                    if (!empty($currentUser->tenant_id)) {
+                        $q->where('tenant_id', $currentUser->tenant_id);
+                    } else {
+                        $q->where('id', $currentUser->id);
+                    }
+                })->where('role_id', '!=', 0);
             } elseif ($currentUser && $currentUser->role_id === 3) {
                 // CLIENTE (de la Red / Particular): Solo ve técnicos propios, técnicos de la red y su propia cuenta
                 $usersQuery->where(function($q) use ($currentUser) {

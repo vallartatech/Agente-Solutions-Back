@@ -1845,7 +1845,25 @@ Route::middleware('auth:sanctum')->group(function () {
             'workOrder.property.client'
         ]);
 
-        if ($user && $user->role_id == 4) {
+        if ($user && in_array((int)$user->role_id, [2, 6, 8])) {
+            $query->where(function ($q) use ($user) {
+                $q->where('technician_id', $user->id)
+                  ->orWhere('user_id', $user->id)
+                  ->orWhereHas('technician', function ($qt) use ($user) {
+                      $qt->where('id', $user->id)->orWhere('email', $user->email);
+                  })
+                  ->orWhereHas('service', function ($qs) use ($user) {
+                      $qs->where('technician_id', $user->id)
+                         ->orWhere('assigned_technician_id', $user->id)
+                         ->orWhere('user_id', $user->id);
+                  })
+                  ->orWhereHas('workOrder', function ($qw) use ($user) {
+                      $qw->where('technician_id', $user->id)
+                         ->orWhere('assigned_technician_id', $user->id)
+                         ->orWhere('user_id', $user->id);
+                  });
+            });
+        } elseif ($user && $user->role_id == 4) {
             $query->where(function ($q) use ($user) {
                 $q->whereHas('technician', function ($qt) use ($user) {
                     $qt->where('tenant_id', $user->tenant_id)->orWhere('id', $user->id);
