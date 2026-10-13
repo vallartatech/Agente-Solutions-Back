@@ -391,34 +391,35 @@ class UserController extends Controller
             $usuarios = $usuariosQuery->map(function ($u) use ($currentUser) {
                 $fotoUrl = $u->profile_picture ? (str_starts_with($u->profile_picture, 'http') ? $u->profile_picture : asset('storage/' . $u->profile_picture)) : null;
 
-                // Obtener reseña específica dada por el cliente actual a este técnico (si existe)
                 $myReview = null;
                 $jobsCount = 0;
                 if ($currentUser && in_array((int)$u->role_id, [2, 6, 8])) {
-                    $reviewDb = \App\Models\TechnicianReview::where('technician_id', $u->id)
-                        ->where('client_id', $currentUser->id)
-                        ->orderBy('created_at', 'desc')
-                        ->first();
-                    if ($reviewDb) {
-                        $myReview = [
-                            'rating_stars' => (float)$reviewDb->rating_stars,
-                            'rating_time'  => (float)$reviewDb->rating_time,
-                            'comment'      => $reviewDb->comment,
-                            'created_at'   => $reviewDb->created_at ? $reviewDb->created_at->format('d/m/Y H:i') : null,
-                        ];
-                    }
+                    try {
+                        $reviewDb = \App\Models\TechnicianReview::where('technician_id', $u->id)
+                            ->where('client_id', $currentUser->id)
+                            ->orderBy('created_at', 'desc')
+                            ->first();
+                        if ($reviewDb) {
+                            $myReview = [
+                                'rating_stars' => (float)$reviewDb->rating_stars,
+                                'rating_time'  => (float)$reviewDb->rating_time,
+                                'comment'      => $reviewDb->comment,
+                                'created_at'   => $reviewDb->created_at ? $reviewDb->created_at->format('d/m/Y H:i') : null,
+                            ];
+                        }
 
-                    $jobsCount = \App\Models\WorkOrder::withoutGlobalScopes()
-                        ->where('tecnico_id', $u->id)
-                        ->where(function($q) use ($currentUser) {
-                            $q->whereHas('property', function($pq) use ($currentUser) {
-                                $pq->withoutGlobalScopes()->where('user_id', $currentUser->id);
+                        $jobsQuery = \App\Models\WorkOrder::withoutGlobalScopes()->where('tecnico_id', $u->id);
+                        if (!empty($currentUser->tenant_id)) {
+                            $jobsQuery->where('tenant_id', $currentUser->tenant_id);
+                        } else {
+                            $jobsQuery->whereHas('property', function($pq) use ($currentUser) {
+                                $pq->withoutGlobalScopes()->where('client_id', $currentUser->id);
                             });
-                            if (!empty($currentUser->tenant_id)) {
-                                $q->orWhere('tenant_id', $currentUser->tenant_id);
-                            }
-                        })
-                        ->count();
+                        }
+                        $jobsCount = $jobsQuery->count();
+                    } catch (\Throwable $e) {
+                        \Log::warning("Error calculando jobsCount/review para tecnico {$u->id}: " . $e->getMessage());
+                    }
                 }
 
                 return [
