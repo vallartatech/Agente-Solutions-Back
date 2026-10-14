@@ -301,10 +301,16 @@ class ServiceController extends Controller
                 }
             }
 
+            $rawTecnicoId = $request->filled('technician_id') ? $request->technician_id : ($request->filled('tecnico_id') ? $request->tecnico_id : null);
+            $tecnicoId = !empty($rawTecnicoId) ? (int) str_replace('u_', '', (string)$rawTecnicoId) : null;
+            if ($tecnicoId === 0) {
+                $tecnicoId = null;
+            }
+
             $servicio->service_category_id = $request->service_category_id ?? 1;
             $servicio->service_type = $request->service_type ?? $request->type ?? 'Mantenimiento';
             $servicio->priority = $request->priority ?? 'Media';
-            $servicio->status = 'Por Asignar';
+            $servicio->status = $tecnicoId ? 'Programado' : 'Por Asignar';
 
             // Generar título si no viene
             if (!$request->filled('title')) {
@@ -319,14 +325,36 @@ class ServiceController extends Controller
                 $servicio->title = $request->title;
             }
 
-            $servicio->supervisor_name = $request->supervisor_name;
+            $servicio->supervisor_name = $request->filled('supervisor_name') ? $request->supervisor_name : 'El propietario';
             $servicio->description = $request->description;
 
-            $servicio->assigned_to = $request->filled('technician_id') ? $request->technician_id : null;
+            $servicio->assigned_to = $tecnicoId;
             $servicio->scheduled_start = $request->filled('scheduled_start') ? $request->scheduled_start : ($request->filled('date') ? $request->date : now());
             $servicio->scheduled_end = $request->scheduled_end;
 
             $servicio->save();
+
+            if ($tecnicoId) {
+                try {
+                    DB::table('service_technician')->insertOrIgnore([
+                        'service_id' => $servicio->id,
+                        'technician_id' => $tecnicoId,
+                        'created_at' => now(),
+                        'updated_at' => now()
+                    ]);
+                } catch (\Exception $e) {
+                    Log::warning('No se pudo asociar a service_technician: ' . $e->getMessage());
+                }
+
+                try {
+                    $tecnicoUser = User::find($tecnicoId);
+                    if ($tecnicoUser) {
+                        Notification::send($tecnicoUser, new \App\Notifications\VisitRescheduled($servicio));
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('No se pudo notificar al técnico: ' . $e->getMessage());
+                }
+            }
 
             try {
                 $admins = User::where('role_id', 0)->get();
@@ -443,7 +471,9 @@ class ServiceController extends Controller
                 return response()->json(['success' => false, 'message' => 'Servicio no encontrado'], 404);
             }
 
-            $servicio->assigned_to = $request->tecnico_id;
+            $cleanTechId = $request->filled('tecnico_id') ? (int) str_replace('u_', '', (string)$request->tecnico_id) : null;
+            if ($cleanTechId === 0) $cleanTechId = null;
+            $servicio->assigned_to = $cleanTechId;
             $servicio->scheduled_start = $request->scheduled_start;
             $servicio->arrival_status = 'PENDIENTE';
             $servicio->arrived_at = null;
@@ -483,15 +513,22 @@ class ServiceController extends Controller
             }
 
             if ($request->has('tecnicos_ids') && is_array($request->tecnicos_ids)) {
-                $servicio->technicians()->sync($request->tecnicos_ids);
-                if (count($request->tecnicos_ids) > 0) {
-                    $servicio->assigned_to = $request->tecnicos_ids[0]; // backward compatibility
+                $cleanedIds = array_map(function($id) {
+                    return (int) str_replace('u_', '', (string)$id);
+                }, $request->tecnicos_ids);
+                $servicio->technicians()->sync($cleanedIds);
+                if (count($cleanedIds) > 0) {
+                    $servicio->assigned_to = $cleanedIds[0]; // backward compatibility
                 } else {
                     $servicio->assigned_to = null;
                 }
             } else if ($request->has('tecnico_id')) {
-                $servicio->assigned_to = $request->tecnico_id;
-                $servicio->technicians()->sync([$request->tecnico_id]);
+                $cleanTech = $request->tecnico_id ? (int) str_replace('u_', '', (string)$request->tecnico_id) : null;
+                if ($cleanTech === 0) $cleanTech = null;
+                $servicio->assigned_to = $cleanTech;
+                if ($cleanTech) {
+                    $servicio->technicians()->sync([$cleanTech]);
+                }
             }
 
             if ($request->has('scheduled_start')) {
