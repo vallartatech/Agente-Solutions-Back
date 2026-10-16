@@ -21,7 +21,8 @@ class LiveLocationController extends Controller
     private const MIN_LIVE_SECONDS = 20;
     private const RETENTION_DAYS = 30;
 
-    // Estado del usuario actual: consentimiento, permiso de mapa y quién puede verlo
+    // Estado del usuario actual: consentimiento y permiso de mapa
+    // (no se expone quién puede ver el mapa)
     public function status(Request $request)
     {
         $user = $request->user();
@@ -32,10 +33,6 @@ class LiveLocationController extends Controller
             'consent' => !is_null($user->location_consent_at),
             'consent_at' => $user->location_consent_at,
             'can_view_map' => (bool) $user->can_view_live_map,
-            // Transparencia: quién puede ver la ubicación de este usuario
-            'viewers' => $tracked
-                ? $this->viewersFor($user)->map(fn ($u) => trim("{$u->first_name} {$u->last_name}"))->values()
-                : [],
         ]);
     }
 
@@ -198,13 +195,6 @@ class LiveLocationController extends Controller
             ->whereIn('role_id', self::TRACKED_ROLES);
 
         return $this->sameTeam($query, $viewer)->orderBy('first_name');
-    }
-
-    private function viewersFor(User $user)
-    {
-        $query = User::withoutGlobalScopes()->where('can_view_live_map', true)->where('is_active', 1);
-
-        return $this->sameTeam($query, $user)->get(['first_name', 'last_name']);
     }
 
     // Mismo equipo: mismo tenant; tenant nulo y tenant 1 son el equipo de Agente Solutions
