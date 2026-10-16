@@ -38,6 +38,6 @@ return [
         'app_id' => env('ONESIGNAL_APP_ID'),
         'rest_api_key' => env('ONESIGNAL_REST_API_KEY'),
         // Dominio del frontend: al tocar la notificación se abre aquí (no en el dominio de la API)
-        'frontend_url' => env('FRONTEND_URL', 'https://agentesolutions-production.up.railway.app'),
+        'frontend_url' => env('FRONTEND_URL', 'https://agente-solutions-production.up.railway.app'),
     ],
 ];
