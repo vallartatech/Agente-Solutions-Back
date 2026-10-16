@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 namespace App\Http\Controllers;
 
@@ -156,7 +156,11 @@ class CalendarEventController extends Controller
                 return response()->json(['error' => 'Evento no encontrado.'], 404);
             }
 
-            if ($user->role_id !== 0 && !empty($user->tenant_id) && $event->tenant_id !== $user->tenant_id) {
+            $isRoot = (int)$user->role_id === 0;
+            $isCreator = (int)$event->created_by === (int)$user->id;
+            $isSameTenant = !empty($user->tenant_id) && (int)$event->tenant_id === (int)$user->tenant_id;
+
+            if (!$isRoot && !$isCreator && !$isSameTenant) {
                 return response()->json(['error' => 'No autorizado para eliminar este evento.'], 403);
             }
 
