@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 namespace App\Http\Controllers;
 
@@ -7,6 +7,7 @@ use App\Models\CalendarEvent;
 use App\Models\User;
 use Illuminate\Support\Facades\Notification;
 use App\Notifications\TeamCalendarNoticeNotification;
+use App\Services\OneSignalPush;
 
 class CalendarEventController extends Controller
 {
@@ -110,6 +111,7 @@ class CalendarEventController extends Controller
             $event->save();
 
             // Enviar notificacion al equipo si esta marcado
+            $push = null;
             if ($event->notify_team) {
                 try {
                     $teamQuery = User::withoutGlobalScopes()
@@ -126,16 +128,31 @@ class CalendarEventController extends Controller
 
                     $recipients = $teamQuery->get();
                     if ($recipients->isNotEmpty()) {
-                        Notification::send($recipients, new TeamCalendarNoticeNotification($event));
+                        // Campanita (base de datos) para cada miembro
+                        $notification = new TeamCalendarNoticeNotification($event);
+                        Notification::send($recipients, $notification);
+
+                        // Push: una sola petición a OneSignal para todo el equipo
+                        $push = OneSignalPush::sendToUsers(
+                            $recipients->pluck('id')->all(),
+                            $notification->pushTitle(),
+                            $notification->pushBody(),
+                            '/calendario',
+                            ['event_id' => $event->id, 'alert_type' => 'calendar_event']
+                        );
+                    } else {
+                        $push = ['sent' => false, 'recipients' => 0, 'subscribed' => 0, 'id' => null, 'error' => 'No hay administradores ni técnicos activos en el equipo.'];
                     }
                 } catch (\Throwable $notifErr) {
                     \Log::error("Error enviando notificaciones de evento calendario: " . $notifErr->getMessage());
+                    $push = ['sent' => false, 'recipients' => 0, 'subscribed' => null, 'id' => null, 'error' => 'Error interno al notificar al equipo.'];
                 }
             }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Aviso registrado exitosamente.',
+                'push' => $push,
                 'event' => $event->load('creator:id,first_name,last_name,profile_picture')
             ], 201);
         } catch (\Exception $e) {

@@ -4,9 +4,11 @@ namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
-use NotificationChannels\OneSignal\OneSignalChannel;
-use NotificationChannels\OneSignal\OneSignalMessage;
 
+/**
+ * Aviso de calendario para la campanita (base de datos).
+ * La notificación push se envía en lote desde CalendarEventController con App\Services\OneSignalPush.
+ */
 class TeamCalendarNoticeNotification extends Notification
 {
     use Queueable;
@@ -24,11 +26,17 @@ class TeamCalendarNoticeNotification extends Notification
 
     public function via($notifiable)
     {
-        $channels = ['database'];
-        if (config('services.onesignal.app_id') && config('services.onesignal.rest_api_key')) {
-            $channels[] = OneSignalChannel::class;
-        }
-        return $channels;
+        return ['database'];
+    }
+
+    public function pushTitle(): string
+    {
+        return $this->title;
+    }
+
+    public function pushBody(): string
+    {
+        return $this->message;
     }
 
     public function toDatabase($notifiable)
@@ -44,13 +52,5 @@ class TeamCalendarNoticeNotification extends Notification
             'alert_type' => 'calendar_event',
             'url' => '/calendario'
         ];
-    }
-
-    public function toOneSignal($notifiable)
-    {
-        return OneSignalMessage::create()
-            ->setSubject($this->title)
-            ->setBody($this->message)
-            ->setUrl(url('/calendario'));
     }
 }
