@@ -45,7 +45,12 @@ class LiveLocationController extends Controller
             return response()->json(['error' => 'Tu rol no comparte ubicación.'], 403);
         }
 
-        $user->location_consent_at = $validated['enabled'] ? now() : null;
+        // Una vez activada, el usuario no puede desactivarla (decisión de la empresa)
+        if (!$validated['enabled']) {
+            return response()->json(['error' => 'La ubicación no se puede desactivar desde la app.'], 403);
+        }
+
+        $user->location_consent_at = $user->location_consent_at ?? now();
         $user->save();
 
         return response()->json(['consent' => $validated['enabled']]);
