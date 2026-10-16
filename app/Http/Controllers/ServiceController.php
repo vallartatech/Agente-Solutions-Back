@@ -394,7 +394,9 @@ class ServiceController extends Controller
     {
         try {
             $user = $request->user();
-            $query = Service::with(['property.client', 'technician'])->orderByDesc('created_at');
+            $query = Service::with(['property.client', 'technician'])
+                ->whereHas('property')
+                ->orderByDesc('created_at');
 
             if ($user && $user->role_id == 3) {
                 $cliente = DB::table('clients')->where('user_id', $user->id)->first();
@@ -417,11 +419,34 @@ class ServiceController extends Controller
                             $qt->where('tenant_id', $user->tenant_id);
                         });
                 });
+            } elseif ($user && $user->role_id == 1) {
+                // ADMIN (Rol 1): Solo ve levantamientos vinculados a su tenant / administración y sus técnicos
+                $query->where(function ($q) use ($user) {
+                    if (!empty($user->tenant_id)) {
+                        $q->where('tenant_id', $user->tenant_id)
+                            ->orWhereHas('property', function ($qp) use ($user) {
+                                $qp->where('tenant_id', $user->tenant_id);
+                            })
+                            ->orWhereHas('technician', function ($qt) use ($user) {
+                                $qt->where('tenant_id', $user->tenant_id);
+                            });
+                    } else {
+                        // Admin matriz sin tenant asignado: solo servicios de la matriz (sin tenant o tenant_id = 1)
+                        $q->whereNull('tenant_id')
+                            ->orWhere('tenant_id', 1)
+                            ->orWhereHas('property', function ($qp) {
+                                $qp->whereNull('tenant_id')->orWhere('tenant_id', 1);
+                            });
+                    }
+                });
             } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
                 $query->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
                         ->orWhereHas('property', function ($qp) use ($user) {
                             $qp->where('tenant_id', $user->tenant_id);
+                        })
+                        ->orWhereHas('technician', function ($qt) use ($user) {
+                            $qt->where('tenant_id', $user->tenant_id);
                         });
                 });
             }
@@ -431,11 +456,13 @@ class ServiceController extends Controller
             $formateados = $servicios->map(function ($s) {
                 return [
                     'id' => $s->id,
+                    'tenant_id' => $s->tenant_id ?: ($s->property ? $s->property->tenant_id : null),
                     'property_id' => $s->property_id,
                     'title' => $s->title,
                     'priority' => $s->priority,
                     'status' => $s->status,
                     'assigned_to' => $s->assigned_to,
+                    'tecnico_id' => $s->technician ? $s->technician->id : $s->assigned_to,
                     'tecnico_nombre' => $s->technician
                         ? ($s->technician->first_name . ' ' . $s->technician->last_name)
                         : '⚠️ Por Asignar',

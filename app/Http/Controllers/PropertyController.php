@@ -297,6 +297,9 @@ class PropertyController extends Controller
                 Storage::disk('public')->delete($property->facade_photo_path);
             }
 
+            // Eliminar servicios y levantamientos huérfanos asociados a esta propiedad
+            DB::table('services')->where('property_id', $id)->delete();
+
             $property->delete();
 
             return response()->json(['message' => 'Propiedad eliminada con éxito'], 200);
