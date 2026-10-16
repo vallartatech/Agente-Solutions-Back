@@ -38,7 +38,11 @@ class OneSignalPush
             'contents' => ['en' => $body, 'es' => $body],
         ];
         if ($path) {
-            $payload['url'] = rtrim(config('services.onesignal.frontend_url'), '/') . '/' . ltrim($path, '/');
+            // Rutas del frontend ("/vista-cotizaciones?filtro=Por Pagar") o URL completas
+            $url = preg_match('#^https?://#i', $path)
+                ? $path
+                : rtrim(config('services.onesignal.frontend_url'), '/') . '/' . ltrim($path, '/');
+            $payload['url'] = str_replace(' ', '%20', $url);
         }
         if (!empty($data)) {
             $payload['data'] = $data;
@@ -65,7 +69,8 @@ class OneSignalPush
             if (empty($json['id'])) {
                 $result['subscribed'] = 0;
                 $result['error'] = 'Ningún dispositivo del equipo está suscrito a notificaciones (deben tocar "Activar" en la campanita).';
-                Log::warning('[OneSignal] Sin suscriptores', ['users' => $userIds, 'errors' => $errors]);
+                // Normal: el usuario aún no activa notificaciones en su dispositivo
+                Log::info('[OneSignal] Sin suscriptores', ['users' => $userIds]);
                 return $result;
             }
 
