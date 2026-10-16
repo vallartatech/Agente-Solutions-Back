@@ -520,125 +520,130 @@ class QuoteController extends Controller
                     ];
                 });
 
-            // Cargar Cotizaciones de la Red (NetworkQuotes)
-            try {
-                $networkQuotesQuery = \App\Models\NetworkQuote::withoutGlobalScopes()
-                    ->with([
-                        'workOrder' => function ($q) {
-                            $q->withoutGlobalScopes()->with([
-                                'property' => function ($qp) {
-                                    $qp->withoutGlobalScopes()->with('client'); }
-                            ]);
-                        },
-                        'technician' => function ($q) {
-                            $q->withoutGlobalScopes(); }
-                    ]);
+            // Cargar Cotizaciones de la Red (NetworkQuotes).
+            // Los admins de Agente Solutions (rol 1) no las ven: son del ecosistema de Agente Market
+            // (técnicos independientes). Root las sigue viendo porque administra Mercado / Red.
+            $excluirRed = $user && (int) $user->role_id === 1;
+            if (!$excluirRed) {
+                try {
+                    $networkQuotesQuery = \App\Models\NetworkQuote::withoutGlobalScopes()
+                        ->with([
+                            'workOrder' => function ($q) {
+                                $q->withoutGlobalScopes()->with([
+                                    'property' => function ($qp) {
+                                        $qp->withoutGlobalScopes()->with('client'); }
+                                ]);
+                            },
+                            'technician' => function ($q) {
+                                $q->withoutGlobalScopes(); }
+                        ]);
 
-                if ($user) {
-                    if ($user->role_id === 8 || $user->role_id === 2) {
-                        $networkQuotesQuery->where('technician_id', $user->id);
-                    } elseif ($user->role_id === 4) {
-                        $networkQuotesQuery->whereHas('workOrder', function ($q) use ($user) {
-                            $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
-                        });
-                    } elseif ($user->role_id === 3) {
-                        $networkQuotesQuery->whereHas('workOrder.property.client', function ($q) use ($user) {
-                            $q->where('user_id', $user->id)->orWhere('email', $user->email);
-                        });
+                    if ($user) {
+                        if ($user->role_id === 8 || $user->role_id === 2) {
+                            $networkQuotesQuery->where('technician_id', $user->id);
+                        } elseif ($user->role_id === 4) {
+                            $networkQuotesQuery->whereHas('workOrder', function ($q) use ($user) {
+                                $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
+                            });
+                        } elseif ($user->role_id === 3) {
+                            $networkQuotesQuery->whereHas('workOrder.property.client', function ($q) use ($user) {
+                                $q->where('user_id', $user->id)->orWhere('email', $user->email);
+                            });
+                        }
                     }
-                }
 
-                $networkQuotes = $networkQuotesQuery->orderBy('created_at', 'desc')->get()->map(function ($nq) use ($user) {
-                    $wo = $nq->workOrder;
-                    $prop = $wo?->property;
-                    $client = $prop?->client;
-                    $clientName = $client ? (trim($client->first_name . ' ' . $client->last_name) ?: $client->name) : ($wo?->owner_name ?? ($user && $user->role_id === 3 ? trim($user->first_name . ' ' . $user->last_name) : 'Cliente de la Red'));
-                    $propName = $prop?->property_name ?: 'Propiedad en Red';
-                    $propAddress = $prop?->address ?: 'Dirección no especificada';
-                    $techName = $nq->technician ? trim($nq->technician->first_name . ' ' . $nq->technician->last_name) : 'Técnico de la Red';
+                    $networkQuotes = $networkQuotesQuery->orderBy('created_at', 'desc')->get()->map(function ($nq) use ($user) {
+                        $wo = $nq->workOrder;
+                        $prop = $wo?->property;
+                        $client = $prop?->client;
+                        $clientName = $client ? (trim($client->first_name . ' ' . $client->last_name) ?: $client->name) : ($wo?->owner_name ?? ($user && $user->role_id === 3 ? trim($user->first_name . ' ' . $user->last_name) : 'Cliente de la Red'));
+                        $propName = $prop?->property_name ?: 'Propiedad en Red';
+                        $propAddress = $prop?->address ?: 'Dirección no especificada';
+                        $techName = $nq->technician ? trim($nq->technician->first_name . ' ' . $nq->technician->last_name) : 'Técnico de la Red';
 
-                    $statusMapped = match ($nq->status) {
-                        'accepted' => 'Aprobado',
-                        'rejected' => 'Rechazado',
-                        default => 'Por Pagar'
-                    };
+                        $statusMapped = match ($nq->status) {
+                            'accepted' => 'Aprobado',
+                            'rejected' => 'Rechazado',
+                            default => 'Por Pagar'
+                        };
 
-                    $tipoFalla = $wo?->type ?: 'Mantenimiento en Red';
-                    $equipo = $wo?->equipment ?: 'otro';
-                    $zona = $wo?->zone ?: 'General';
-                    $descLimpia = $wo?->description ?: ($nq->message ?: 'Trabajo publicado en la Red');
+                        $tipoFalla = $wo?->type ?: 'Mantenimiento en Red';
+                        $equipo = $wo?->equipment ?: 'otro';
+                        $zona = $wo?->zone ?: 'General';
+                        $descLimpia = $wo?->description ?: ($nq->message ?: 'Trabajo publicado en la Red');
                     
-                    $rEvidencias = [];
-                    if ($wo?->evidence_path) $rEvidencias[] = str_starts_with($wo->evidence_path, 'http') ? $wo->evidence_path : asset('storage/' . ltrim($wo->evidence_path, '/'));
-                    if ($wo?->evidence_path_2) $rEvidencias[] = str_starts_with($wo->evidence_path_2, 'http') ? $wo->evidence_path_2 : asset('storage/' . ltrim($wo->evidence_path_2, '/'));
+                        $rEvidencias = [];
+                        if ($wo?->evidence_path) $rEvidencias[] = str_starts_with($wo->evidence_path, 'http') ? $wo->evidence_path : asset('storage/' . ltrim($wo->evidence_path, '/'));
+                        if ($wo?->evidence_path_2) $rEvidencias[] = str_starts_with($wo->evidence_path_2, 'http') ? $wo->evidence_path_2 : asset('storage/' . ltrim($wo->evidence_path_2, '/'));
 
-                    $fotoFachada = $prop?->facade_photo_path ?: ($wo?->evidence_path ?: $wo?->evidence_path_2);
-                    if ($fotoFachada && !str_starts_with($fotoFachada, 'http')) {
-                        $fotoFachada = asset('storage/' . ltrim($fotoFachada, '/'));
-                    }
+                        $fotoFachada = $prop?->facade_photo_path ?: ($wo?->evidence_path ?: $wo?->evidence_path_2);
+                        if ($fotoFachada && !str_starts_with($fotoFachada, 'http')) {
+                            $fotoFachada = asset('storage/' . ltrim($fotoFachada, '/'));
+                        }
 
-                    $conceptTitle = $wo ? ($wo->type . ($wo->equipment ? ' - ' . $wo->equipment : '')) : 'Trabajo de la Red';
+                        $conceptTitle = $wo ? ($wo->type . ($wo->equipment ? ' - ' . $wo->equipment : '')) : 'Trabajo de la Red';
 
-                    return [
-                        'id' => 'net_' . $nq->id,
-                        'network_quote_id' => $nq->id,
-                        'is_network_quote' => true,
-                        'property_id' => $wo?->property_id,
-                        'service_id' => null,
-                        'work_order_id' => $nq->work_order_id,
-                        'folio' => 'RED-' . str_pad($nq->id, 3, '0', STR_PAD_LEFT),
-                        'cliente' => $clientName ?: 'Cliente de la Red',
-                        'cliente_nombre' => $clientName ?: 'Cliente de la Red',
-                        'cliente_id' => $client?->id,
-                        'cliente_user_id' => $client?->user_id,
-                        'cliente_telefono' => $client?->phone ?? ($user && $user->role_id === 3 ? ($user->phone_number ?? '') : ''),
-                        'cliente_email' => $client?->email ?? ($user && $user->role_id === 3 ? $user->email : ''),
-                        'cliente_tipo_propiedad' => strtoupper($prop?->type ?? 'CASA'),
-                        'tecnico' => $techName,
-                        'tecnico_id' => $nq->technician_id,
-                        'tecnico_user_id' => $nq->technician_id,
-                        'propiedad_nombre' => $propName,
-                        'propiedad_direccion' => $propAddress,
-                        'propiedad_curp' => $prop?->custom_curp ?: "RED-{$nq->id}",
-                        'propiedad_coordenadas' => $prop?->coordinates ?? null,
-                        'propiedad_foto' => $fotoFachada,
-                        'foto_fachada' => $fotoFachada,
-                        'tipo_falla' => $tipoFalla,
-                        'zona' => $zona,
-                        'equipo' => $equipo,
-                        'descripcion_problema' => $descLimpia,
-                        'evidencias' => $rEvidencias,
-                        'problemas_lote' => [],
-                        'prioridad' => $wo?->priority ?? 'Normal',
-                        'scheduled_at' => $wo?->scheduled_at ? $wo->scheduled_at->format('d/m/Y') : ($nq->created_at ? $nq->created_at->format('d/m/Y') : 'Pendiente'),
-                        'fecha' => $nq->created_at ? $nq->created_at->format('Y-m-d') : date('Y-m-d'),
-                        'created_at' => $nq->created_at,
-                        'total' => (float) $nq->price,
-                        'estimated_amount' => (float) $nq->price,
-                        'status' => $statusMapped,
-                        'network_status' => $nq->status,
-                        'type' => 'manual',
-                        'concept' => json_encode([
-                            'conceptos' => [
-                                [
-                                    'descripcion' => $conceptTitle,
-                                    'cantidad' => 1,
-                                    'precio_u' => (float) $nq->price,
-                                    'precio' => (float) $nq->price
-                                ]
-                            ],
-                            'materiales' => []
-                        ]),
-                        'observations' => $nq->message ?: ($wo?->description ?? 'Cotización enviada en la Red de Trabajos'),
-                        'created_by_role' => 'Técnico de la Red',
-                        'payment_status' => $nq->status === 'accepted' ? 'Pagado' : 'Pendiente',
-                        'chat_history' => $nq->chat_history ?? [],
-                    ];
-                });
+                        return [
+                            'id' => 'net_' . $nq->id,
+                            'network_quote_id' => $nq->id,
+                            'is_network_quote' => true,
+                            'property_id' => $wo?->property_id,
+                            'service_id' => null,
+                            'work_order_id' => $nq->work_order_id,
+                            'folio' => 'RED-' . str_pad($nq->id, 3, '0', STR_PAD_LEFT),
+                            'cliente' => $clientName ?: 'Cliente de la Red',
+                            'cliente_nombre' => $clientName ?: 'Cliente de la Red',
+                            'cliente_id' => $client?->id,
+                            'cliente_user_id' => $client?->user_id,
+                            'cliente_telefono' => $client?->phone ?? ($user && $user->role_id === 3 ? ($user->phone_number ?? '') : ''),
+                            'cliente_email' => $client?->email ?? ($user && $user->role_id === 3 ? $user->email : ''),
+                            'cliente_tipo_propiedad' => strtoupper($prop?->type ?? 'CASA'),
+                            'tecnico' => $techName,
+                            'tecnico_id' => $nq->technician_id,
+                            'tecnico_user_id' => $nq->technician_id,
+                            'propiedad_nombre' => $propName,
+                            'propiedad_direccion' => $propAddress,
+                            'propiedad_curp' => $prop?->custom_curp ?: "RED-{$nq->id}",
+                            'propiedad_coordenadas' => $prop?->coordinates ?? null,
+                            'propiedad_foto' => $fotoFachada,
+                            'foto_fachada' => $fotoFachada,
+                            'tipo_falla' => $tipoFalla,
+                            'zona' => $zona,
+                            'equipo' => $equipo,
+                            'descripcion_problema' => $descLimpia,
+                            'evidencias' => $rEvidencias,
+                            'problemas_lote' => [],
+                            'prioridad' => $wo?->priority ?? 'Normal',
+                            'scheduled_at' => $wo?->scheduled_at ? $wo->scheduled_at->format('d/m/Y') : ($nq->created_at ? $nq->created_at->format('d/m/Y') : 'Pendiente'),
+                            'fecha' => $nq->created_at ? $nq->created_at->format('Y-m-d') : date('Y-m-d'),
+                            'created_at' => $nq->created_at,
+                            'total' => (float) $nq->price,
+                            'estimated_amount' => (float) $nq->price,
+                            'status' => $statusMapped,
+                            'network_status' => $nq->status,
+                            'type' => 'manual',
+                            'concept' => json_encode([
+                                'conceptos' => [
+                                    [
+                                        'descripcion' => $conceptTitle,
+                                        'cantidad' => 1,
+                                        'precio_u' => (float) $nq->price,
+                                        'precio' => (float) $nq->price
+                                    ]
+                                ],
+                                'materiales' => []
+                            ]),
+                            'observations' => $nq->message ?: ($wo?->description ?? 'Cotización enviada en la Red de Trabajos'),
+                            'created_by_role' => 'Técnico de la Red',
+                            'payment_status' => $nq->status === 'accepted' ? 'Pagado' : 'Pendiente',
+                            'chat_history' => $nq->chat_history ?? [],
+                        ];
+                    });
 
-                $quotes = $quotes->concat($networkQuotes);
-            } catch (\Throwable $netErr) {
-                \Log::warning("Error cargando network quotes en QuoteController: " . $netErr->getMessage());
+                    $quotes = $quotes->concat($networkQuotes);
+                } catch (\Throwable $netErr) {
+                    \Log::warning("Error cargando network quotes en QuoteController: " . $netErr->getMessage());
+                }
             }
 
             return response()->json($quotes, 200);
