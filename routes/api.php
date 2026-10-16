@@ -862,6 +862,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'store']);
     Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
 
+    // --- UBICACIÓN EN VIVO DEL EQUIPO (con consentimiento; mapa solo para can_view_live_map) ---
+    Route::get('/ubicacion/estado', [\App\Http\Controllers\LiveLocationController::class, 'status']);
+    Route::post('/ubicacion/consentimiento', [\App\Http\Controllers\LiveLocationController::class, 'consent']);
+    Route::post('/ubicacion', [\App\Http\Controllers\LiveLocationController::class, 'store']);
+    Route::get('/mapa-equipo', [\App\Http\Controllers\LiveLocationController::class, 'team']);
+    Route::get('/mapa-equipo/{userId}/recorrido', [\App\Http\Controllers\LiveLocationController::class, 'route']);
+    Route::put('/usuarios/{userId}/permiso-mapa', [\App\Http\Controllers\LiveLocationController::class, 'setViewer']);
+
     // --- RASTREO GPS Y CONFIRMACIÃ“N DE LLEGADA ---
     Route::post('/technician/update-location', [ServiceController::class, 'updateTechnicianLocation']);
     Route::post('/work-orders/{id}/confirm-arrival', [ServiceController::class, 'confirmArrival']);

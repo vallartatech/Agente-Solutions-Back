@@ -67,6 +67,8 @@ class User extends Authenticatable
             'rating_stars_avg' => 'float',
             'rating_time_avg' => 'float',
             'total_reviews_count' => 'integer',
+            'can_view_live_map' => 'boolean',
+            'location_consent_at' => 'datetime',
         ];
     }
 
