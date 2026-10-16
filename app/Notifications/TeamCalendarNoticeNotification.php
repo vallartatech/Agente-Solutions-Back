@@ -20,8 +20,23 @@ class TeamCalendarNoticeNotification extends Notification
     public function __construct($event, $title = null, $message = null)
     {
         $this->event = $event;
-        $this->title = $title ?: ("📅 " . $event->title);
-        $this->message = $message ?: ("Fecha: " . $event->event_date . ($event->start_time ? (" a las " . $event->start_time) : '') . ($event->description ? (" - " . $event->description) : ''));
+        $icon = ($event->type ?? null) === 'importante' ? '🔴' : '📅';
+        $this->title = $title ?: ($icon . ' ' . $event->title);
+        $this->message = $message ?: $this->buildMessage($event);
+    }
+
+    // "Viernes 16 de octubre · Detalles": el mismo formato de la vista previa del frontend
+    protected function buildMessage($event): string
+    {
+        $fecha = \Carbon\Carbon::parse($event->event_date)->locale('es')->isoFormat('dddd D [de] MMMM');
+        $texto = mb_strtoupper(mb_substr($fecha, 0, 1)) . mb_substr($fecha, 1);
+        if ($event->start_time) {
+            $texto .= ' a las ' . substr($event->start_time, 0, 5);
+        }
+        if ($event->description) {
+            $texto .= ' · ' . $event->description;
+        }
+        return $texto;
     }
 
     public function via($notifiable)

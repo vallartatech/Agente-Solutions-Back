@@ -107,7 +107,8 @@ class CalendarEventController extends Controller
             $event->end_time = $validated['end_time'] ?? null;
             $event->type = $validated['type'] ?? 'aviso';
             $event->color = $validated['color'] ?? '#F26522';
-            $event->notify_team = isset($validated['notify_team']) ? (bool)$validated['notify_team'] : true;
+            // Todo aviso se notifica siempre a todo el equipo
+            $event->notify_team = true;
             $event->save();
 
             // Enviar notificacion al equipo si esta marcado
@@ -116,7 +117,7 @@ class CalendarEventController extends Controller
                 try {
                     $teamQuery = User::withoutGlobalScopes()
                         ->where('is_active', 1)
-                        ->whereIn('role_id', [1, 2]);
+                        ->whereIn('role_id', [0, 1, 2]); // Root, admins y técnicos
 
                     if (!empty($user->tenant_id)) {
                         $teamQuery->where('tenant_id', $user->tenant_id);
