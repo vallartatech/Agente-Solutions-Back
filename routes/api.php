@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -29,7 +29,7 @@ use App\Http\Controllers\PropertyManagerController;
 use App\Http\Controllers\TechnicianReviewController;
 
 // ========================================================
-// 🟢 ZONA PÚBLICA (Sin Token - Cualquiera puede entrar)
+// ðŸŸ¢ ZONA PÃšBLICA (Sin Token - Cualquiera puede entrar)
 // ========================================================
 
 Route::post('/login', [AuthController::class, 'login']);
@@ -39,32 +39,32 @@ Route::get('/test-email', function () {
         \Illuminate\Support\Facades\Mail::raw('Este es un correo de prueba de Resend', function ($msg) {
             $msg->to('ppechkoh@gmail.com')->subject('Prueba Resend');
         });
-        return response()->json(['success' => true, 'message' => 'Correo enviado exitosamente con la configuración actual.']);
+        return response()->json(['success' => true, 'message' => 'Correo enviado exitosamente con la configuraciÃ³n actual.']);
     } catch (\Exception $e) {
         return response()->json(['success' => false, 'error' => $e->getMessage()]);
     }
 });
 
-// Verificación de Correo (rutas públicas)
+// VerificaciÃ³n de Correo (rutas pÃºblicas)
 Route::get('/email/verify/{id}/{hash}', [AuthController::class, 'verifyEmail'])->name('verification.verify');
 Route::post('/email/resend', [AuthController::class, 'resendVerificationEmail']);
 
-// Recuperación de contraseña (rutas públicas)
+// RecuperaciÃ³n de contraseÃ±a (rutas pÃºblicas)
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 Route::post('/vincular-empresa', [AuthController::class, 'linkCompany']);
 
-// Webhook de MercadoPago (Público para que MP pueda avisarnos del pago)
+// Webhook de MercadoPago (PÃºblico para que MP pueda avisarnos del pago)
 Route::post('/mercadopago/webhook', [MercadoPagoController::class, 'webhook']);
 Route::post('/mercadopago/verify', [MercadoPagoController::class, 'verifyPayment']);
-// Suscripción Autónomo (público: el usuario aún no está activo al pagar)
+// SuscripciÃ³n AutÃ³nomo (pÃºblico: el usuario aÃºn no estÃ¡ activo al pagar)
 Route::post('/mercadopago/subscription/{tenantId}', [MercadoPagoController::class, 'createSubscriptionPreference']);
 
-// Lista pública de empresas autónomas para registro y login
+// Lista pÃºblica de empresas autÃ³nomas para registro y login
 Route::get('/tenants/public-list', [TenantController::class, 'listTenants']);
 Route::get('/specialties', [SpecialtyController::class, 'index']);
 
-// Calificaciones de Técnicos (Dual-Factor: Relojes ⏱️ y Estrellas ⭐)
+// Calificaciones de TÃ©cnicos (Dual-Factor: Relojes â±ï¸ y Estrellas â­)
 Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) {
     $validated = $request->validate([
         'technician_id' => 'required|exists:users,id',
@@ -108,7 +108,7 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
         }
     }
 
-    // Asegurar que $clientId exista en la tabla users para evitar violación de Foreign Key
+    // Asegurar que $clientId exista en la tabla users para evitar violaciÃ³n de Foreign Key
     if (!$clientId || !\App\Models\User::withoutGlobalScopes()->where('id', $clientId)->exists()) {
         $clientId = \App\Models\User::withoutGlobalScopes()->value('id');
     }
@@ -172,7 +172,7 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
 
     return response()->json([
         'status' => 'success',
-        'message' => '¡Calificación registrada exitosamente!',
+        'message' => 'Â¡CalificaciÃ³n registrada exitosamente!',
         'review' => $review,
         'technician_stats' => [
             'rating_stars_avg'    => $technician ? $technician->rating_stars_avg : 5.00,
@@ -184,7 +184,7 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
 Route::get('/technicians/{id}/reviews', [TechnicianReviewController::class, 'getTechnicianReviews']);
 Route::get('/technician-reviews/status', [TechnicianReviewController::class, 'checkReviewStatus']);
 
-// 🌐 Mercado de Trabajos Abierto (Visible para técnicos y público, con personalización para usuarios logueados)
+// ðŸŒ Mercado de Trabajos Abierto (Visible para tÃ©cnicos y pÃºblico, con personalizaciÃ³n para usuarios logueados)
 Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
     try {
         $authUser = auth('sanctum')->user() ?: auth()->user();
@@ -210,7 +210,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             ->withCount('networkQuotes')
             ->where('publish_network', 1);
 
-        // Si se pide filtrar solo los del usuario autónomo o cliente (role_id 3, 4, 5, 7) con only_mine
+        // Si se pide filtrar solo los del usuario autÃ³nomo o cliente (role_id 3, 4, 5, 7) con only_mine
         if ($request->boolean('only_mine')) {
             $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico']);
             if ($authUser && !in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
@@ -231,8 +231,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 });
             }
         } else {
-            // 🌐 SOLICITUDES DISPONIBLES EN LA RED (Solo órdenes ABIERTAS, sin asignar y sin cotización aceptada)
-            // 🚫 FILTRO DE RESTRICCIÓN 24 HORAS POR CANCELACIÓN (DESACTIVADO TEMPORALMENTE A PETICIÓN)
+            // ðŸŒ SOLICITUDES DISPONIBLES EN LA RED (Solo Ã³rdenes ABIERTAS, sin asignar y sin cotizaciÃ³n aceptada)
+            // ðŸš« FILTRO DE RESTRICCIÃ“N 24 HORAS POR CANCELACIÃ“N (DESACTIVADO TEMPORALMENTE A PETICIÃ“N)
             /*
             if ($authUser) {
                 $activeBlocks = \Illuminate\Support\Facades\DB::table('technician_cancellations')
@@ -284,7 +284,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 }
             }
 
-            // 2. Si no o si es genérico, intentar por el Tenant del trabajo
+            // 2. Si no o si es genÃ©rico, intentar por el Tenant del trabajo
             if ((empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') && $ownerTenantId) {
                 $tenant = \App\Models\Tenant::withoutGlobalScopes()->find($ownerTenantId);
                 if ($tenant && $tenant->owner_user_id) {
@@ -309,7 +309,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 }
             }
 
-            // 3. Si aún está vacío o es genérico, intentar por el nombre del Cliente de la propiedad si no es de prueba
+            // 3. Si aÃºn estÃ¡ vacÃ­o o es genÃ©rico, intentar por el nombre del Cliente de la propiedad si no es de prueba
             if (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido') {
                 if ($job->property && $job->property->client) {
                     $client = $job->property->client;
@@ -321,7 +321,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 }
             }
 
-            // 4. Si el usuario autenticado es quien consulta y es el dueño de la orden, usar su nombre
+            // 4. Si el usuario autenticado es quien consulta y es el dueÃ±o de la orden, usar su nombre
             if ($authUser && (empty($ownerName) || strtolower($ownerName) === 'cliente de prueba' || strtolower($ownerName) === 'cliente desconocido')) {
                 if ($authUser->tenant_id && $authUser->tenant_id == $ownerTenantId) {
                     $ownerName = trim("{$authUser->first_name} {$authUser->last_name}") ?: $authUser->name;
@@ -357,7 +357,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 $rawLng = -89.6242 + (cos(deg2rad($seed)) * 0.025);
             }
 
-            // Área / Zona de cobertura aproximada (Protección de privacidad de la casa exacta)
+            // Ãrea / Zona de cobertura aproximada (ProtecciÃ³n de privacidad de la casa exacta)
             $areaLat = round($rawLat, 3);
             $areaLng = round($rawLng, 3);
             $job->area_lat = $areaLat;
@@ -365,9 +365,9 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $job->lat = $areaLat;
             $job->lng = $areaLng;
 
-            // Extracción limpia de Colonia / Fraccionamiento y Ciudad cercana (Privacidad de dirección)
+            // ExtracciÃ³n limpia de Colonia / Fraccionamiento y Ciudad cercana (Privacidad de direcciÃ³n)
             $fullAddress = $job->property ? ($job->property->address ?: '') : '';
-            $zonaColonia = 'Mérida, Yucatán';
+            $zonaColonia = 'MÃ©rida, YucatÃ¡n';
 
             if (!empty($fullAddress)) {
                 $city = '';
@@ -375,7 +375,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 if (preg_match('/(?:Col\.|Colonia|Fracc\.|Fraccionamiento)\s*([^,]+)/iu', $fullAddress, $matches)) {
                     $colonia = trim($matches[0]);
                 }
-                if (preg_match('/\b(M[eé]rida|Um[aá]n|Kanas[ií]n|Progreso|Conkal|Valladolid|Tizim[ií]n|Motul|Hunucm[aá]|Tekax|Ticul|Chelem|Chicxulub)\b/iu', $fullAddress, $cityMatches)) {
+                if (preg_match('/\b(M[eÃ©]rida|Um[aÃ¡]n|Kanas[iÃ­]n|Progreso|Conkal|Valladolid|Tizim[iÃ­]n|Motul|Hunucm[aÃ¡]|Tekax|Ticul|Chelem|Chicxulub)\b/iu', $fullAddress, $cityMatches)) {
                     $city = trim($cityMatches[1]);
                 }
                 if ($city && $colonia) {
@@ -383,7 +383,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 } elseif ($colonia) {
                     $zonaColonia = $colonia;
                 } elseif ($city) {
-                    $zonaColonia = "{$city}, Yucatán";
+                    $zonaColonia = "{$city}, YucatÃ¡n";
                 } else {
                     $parts = array_filter(array_map('trim', explode(',', $fullAddress)));
                     if (count($parts) >= 2) {
@@ -437,7 +437,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             return $job;
         });
 
-        // 🟢 Trabajos aceptados / asignados para este técnico
+        // ðŸŸ¢ Trabajos aceptados / asignados para este tÃ©cnico
         $acceptedJobs = [];
         if ($authUser) {
             $acceptedQuery = \App\Models\WorkOrder::withoutGlobalScopes()
@@ -511,7 +511,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'fotos' => $fotos,
                     'lat' => $rawLat,
                     'lng' => $rawLng,
-                    'full_address' => $order->property ? $order->property->address : 'Dirección confirmada',
+                    'full_address' => $order->property ? $order->property->address : 'DirecciÃ³n confirmada',
                     'property_name' => $order->property ? ($order->property->nombre_propiedad ?: $order->property->address) : '',
                     'client_name' => $clientName,
                     'client_phone' => $clientPhone,
@@ -548,7 +548,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 });
 
 
-// 🧹 RUTA DE EMERGENCIA (Temporalmente Pública para facilitar el Reset)
+// ðŸ§¹ RUTA DE EMERGENCIA (Temporalmente PÃºblica para facilitar el Reset)
 Route::get('/db-reset-pedro', function () {
     try {
         \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=0;');
@@ -577,7 +577,7 @@ Route::get('/db-reset-pedro', function () {
 
         return response()->json([
             'status' => 'success',
-            'message' => '¡Base de datos limpiada con éxito! (Modo Público)',
+            'message' => 'Â¡Base de datos limpiada con Ã©xito! (Modo PÃºblico)',
             'timestamp' => now()
         ]);
     } catch (\Exception $e) {
@@ -589,15 +589,15 @@ Route::get('/db-reset-pedro', function () {
 // Registro Privado (Exclusivo para el Admin)
 Route::post('/registro-usuario', [AuthController::class, 'registro']);
 
-// Registro Público (Exclusivo para Clientes)
+// Registro PÃºblico (Exclusivo para Clientes)
 Route::post('/registro-cliente', function (\Illuminate\Http\Request $request) {
     try {
         $request->validate([
             'email' => 'required|email|unique:users,email',
             'phone' => 'required|string|unique:users,phone_number',
         ], [
-            'email.unique' => 'Este correo electrónico ya está registrado en otra cuenta.',
-            'phone.unique' => 'Este número de teléfono ya está registrado en otra cuenta.'
+            'email.unique' => 'Este correo electrÃ³nico ya estÃ¡ registrado en otra cuenta.',
+            'phone.unique' => 'Este nÃºmero de telÃ©fono ya estÃ¡ registrado en otra cuenta.'
         ]);
 
         return \Illuminate\Support\Facades\DB::transaction(function () use ($request) {
@@ -624,7 +624,7 @@ Route::post('/registro-cliente', function (\Illuminate\Http\Request $request) {
                 'updated_at' => now(),
             ]);
 
-            return response()->json(['message' => '¡Registro exitoso, Pedro!'], 201);
+            return response()->json(['message' => 'Â¡Registro exitoso, Pedro!'], 201);
         });
     } catch (\Exception $e) {
         return response()->json(['error' => $e->getMessage()], 500);
@@ -647,13 +647,13 @@ Route::prefix('ui/settings')->group(function () {
     Route::get('/sidebar-links', [AppSettingController::class, 'getSidebarLinks']);
 });
 
-// Limpiar caché de Railway
+// Limpiar cachÃ© de Railway
 Route::get('/limpiar-cache', function () {
     Artisan::call('config:clear');
     Artisan::call('cache:clear');
     Artisan::call('route:clear');
     Artisan::call('view:clear');
-    return response()->json(['message' => '¡Memoria de Railway reseteada con éxito!']);
+    return response()->json(['message' => 'Â¡Memoria de Railway reseteada con Ã©xito!']);
 });
 
 Route::get('/run-migrations-pago', function () {
@@ -667,14 +667,14 @@ Route::get('/debug-quote-21', function () {
 });
 
 // ========================================================
-// 🔴 ZONA SEGURA (Solo entras si traes el Token de Sanctum)
+// ðŸ”´ ZONA SEGURA (Solo entras si traes el Token de Sanctum)
 // ========================================================
 
 Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/logout', [AuthController::class, 'logout']);
 
-    // --- GESTIÓN DE AUTÓNOMOS Y MULTI-TENANT ---
+    // --- GESTIÃ“N DE AUTÃ“NOMOS Y MULTI-TENANT ---
     Route::post('/tenants/request-membership', [TenantController::class, 'requestMembership']);
     Route::get('/tenants/my-membership-status', [TenantController::class, 'myMembershipStatus']);
     Route::get('/tenant/subscription-status', [TenantController::class, 'getSubscriptionStatus']);
@@ -816,7 +816,7 @@ Route::middleware('auth:sanctum')->group(function () {
             ];
         });
 
-        // ✅ REPARADO: Filtramos sin usar la notación de flecha que confundía a Laravel
+        // âœ… REPARADO: Filtramos sin usar la notaciÃ³n de flecha que confundÃ­a a Laravel
         $marcadoresLimpios = [];
         foreach ($marcadoresBrutos as $m) {
             if ($m['lat'] !== null && $m['lng'] !== null) {
@@ -856,7 +856,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tecnico/{id}/servicios', [ServiceController::class, 'getTecnicoServicios']);
     Route::get('/tecnico/{idTecnico}/propiedad/{idPropiedad}/servicios', [ServiceController::class, 'getServicesByProperty']);
 
-    // --- RASTREO GPS Y CONFIRMACIÓN DE LLEGADA ---
+    // --- EVENTOS DEL CALENDARIO Y CUMPLEAÑOS ---
+    Route::get('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'index']);
+    Route::get('/calendar/birthdays', [\App\Http\Controllers\CalendarEventController::class, 'getBirthdays']);
+    Route::post('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'store']);
+    Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
+
+    // --- RASTREO GPS Y CONFIRMACIÃ“N DE LLEGADA ---
     Route::post('/technician/update-location', [ServiceController::class, 'updateTechnicianLocation']);
     Route::post('/work-orders/{id}/confirm-arrival', [ServiceController::class, 'confirmArrival']);
     Route::get('/root/technicians-live-map', [ServiceController::class, 'getRootTechniciansLiveMap']);
@@ -868,7 +874,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/work-orders/batch/{batchId}/assign', [PropertyController::class, 'assignBatchWorkOrders']);
     Route::get('/work-orders/global-stats', [PropertyController::class, 'getGlobalServiceStats']);
 
-    // --- GESTIÓN DE ZONAS (NIVEL 3 y 4) ---
+    // --- GESTIÃ“N DE ZONAS (NIVEL 3 y 4) ---
     Route::post('/property-areas', [PropertyAreaController::class, 'store']);
     Route::get('/property-areas', [PropertyAreaController::class, 'index']);
     Route::get('/properties/{id}/areas', [PropertyAreaController::class, 'getByProperty']);
@@ -877,13 +883,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/property-areas/{id}', [PropertyAreaController::class, 'destroy']);
     Route::get('/areas/{id}/subareas', [PropertyAreaController::class, 'getSubAreas']);
 
-    // --- CATEGORÍAS Y COMPONENTES (NIVEL 5) ---
+    // --- CATEGORÃAS Y COMPONENTES (NIVEL 5) ---
     Route::get('/areas/{id}/categories', [PropertyCategoryController::class, 'getByArea']);
     Route::post('/property-categories', [PropertyCategoryController::class, 'store']);
     Route::put('/property-categories/{id}', [PropertyCategoryController::class, 'update']);
     Route::delete('/property-categories/{id}', [PropertyCategoryController::class, 'destroy']);
 
-    // --- CATEGORÍAS Y COMPONENTES (NIVEL 5) ---
+    // --- CATEGORÃAS Y COMPONENTES (NIVEL 5) ---
     Route::get('/areas/{id}/components', [PropertyComponentController::class, 'getByArea']);
     Route::post('/property-components', [PropertyComponentController::class, 'store']);
     Route::delete('/property-components/{id}', [PropertyComponentController::class, 'destroy']);
@@ -912,7 +918,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     ///Cotizaciones
     Route::put('/cotizaciones/{id}/observaciones', [QuoteController::class, 'updateObservations']);
-    //Finalizar Cotización
+    //Finalizar CotizaciÃ³n
     Route::post('/cotizaciones/{id}/finalizar', [QuoteController::class, 'finalizarCotizacion']);
 
     // Pagos de Cotizaciones
@@ -943,7 +949,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'evidence_2' => 'nullable|file|image|max:5120'
         ]);
 
-        // 2. Procesar las imágenes con Cloudinary
+        // 2. Procesar las imÃ¡genes con Cloudinary
         $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
         $path1 = null;
@@ -992,7 +998,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Obtenemos administradores (rol 1 y 0)
             $admins = User::whereIn('role_id', [0, 1])->get();
-            \Log::info("Enviando notificación de WorkOrder. Admins encontrados: " . $admins->count());
+            \Log::info("Enviando notificaciÃ³n de WorkOrder. Admins encontrados: " . $admins->count());
 
             // Notificamos a los admins y al usuario actual para confirmar
             $notifiables = $admins->merge([$user]);
@@ -1005,23 +1011,23 @@ Route::middleware('auth:sanctum')->group(function () {
             }
 
             Notification::send($notifiables, new NewWorkOrderNotification($workOrder, $userName, $propertyName));
-            \Log::info("Notificación enviada correctamente vía Eloquent.");
+            \Log::info("NotificaciÃ³n enviada correctamente vÃ­a Eloquent.");
         } catch (\Exception $e) {
-            \Log::error("Error enviando notificación de WorkOrder: " . $e->getMessage());
+            \Log::error("Error enviando notificaciÃ³n de WorkOrder: " . $e->getMessage());
         }
 
         return response()->json([
             'success' => true,
-            'message' => 'Servicio solicitado con éxito'
+            'message' => 'Servicio solicitado con Ã©xito'
         ], 201);
     });
 
-    // Aceptar Cotización de la Red
+    // Aceptar CotizaciÃ³n de la Red
     Route::post('/network-quotes/{id}/accept', function ($id) {
         try {
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['technician', 'workOrder'])->find($id);
             if (!$quote) {
-                return response()->json(['success' => false, 'message' => 'Cotización no encontrada'], 404);
+                return response()->json(['success' => false, 'message' => 'CotizaciÃ³n no encontrada'], 404);
             }
 
             $quote->status = 'accepted';
@@ -1046,18 +1052,18 @@ Route::middleware('auth:sanctum')->group(function () {
                 }
 
                 $title = $workOrder->type . ($workOrder->equipment ? ' - ' . $workOrder->equipment : '');
-                $techName = $quote->technician ? ($quote->technician->first_name . ' ' . $quote->technician->last_name) : 'Técnico';
+                $techName = $quote->technician ? ($quote->technician->first_name . ' ' . $quote->technician->last_name) : 'TÃ©cnico';
 
-                // 1. Notificar al Técnico
+                // 1. Notificar al TÃ©cnico
                 try {
                     if ($quote->technician) {
                         $quote->technician->notify(new \App\Notifications\NetworkQuoteAccepted($quote, $title));
                     }
                 } catch (\Throwable $e) {
-                    \Log::error("Error notificando al técnico: " . $e->getMessage());
+                    \Log::error("Error notificando al tÃ©cnico: " . $e->getMessage());
                 }
 
-                // 2. Notificar al Cliente/Autónomo
+                // 2. Notificar al Cliente/AutÃ³nomo
                 try {
                     $user = auth('sanctum')->user();
                     if (!$user && $workOrder->tenant_id) {
@@ -1073,22 +1079,22 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return response()->json([
                 'success' => true,
-                'message' => '¡Cotización aceptada con éxito! El trabajo ha sido asignado al técnico.'
+                'message' => 'Â¡CotizaciÃ³n aceptada con Ã©xito! El trabajo ha sido asignado al tÃ©cnico.'
             ]);
         } catch (\Throwable $e) {
-            \Log::error("Error aceptando cotización: " . $e->getMessage());
+            \Log::error("Error aceptando cotizaciÃ³n: " . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Error interno al aceptar cotización: ' . $e->getMessage()
+                'message' => 'Error interno al aceptar cotizaciÃ³n: ' . $e->getMessage()
             ], 500);
         }
     });
 
-    // Rechazar Cotización de la Red
+    // Rechazar CotizaciÃ³n de la Red
     Route::post('/network-quotes/{id}/reject', function ($id) {
         $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->find($id);
         if (!$quote) {
-            return response()->json(['message' => 'Cotización no encontrada'], 404);
+            return response()->json(['message' => 'CotizaciÃ³n no encontrada'], 404);
         }
 
         $quote->status = 'rejected';
@@ -1098,14 +1104,14 @@ Route::middleware('auth:sanctum')->group(function () {
             $quote->technician->notify(new \App\Notifications\NetworkQuoteRejected($quote));
         }
 
-        return response()->json(['success' => true, 'message' => 'Cotización rechazada exitosamente']);
+        return response()->json(['success' => true, 'message' => 'CotizaciÃ³n rechazada exitosamente']);
     });
 
-    // Obtener historial de chat de una Cotización de la Red
+    // Obtener historial de chat de una CotizaciÃ³n de la Red
     Route::get('/network-quotes/{id}/chat', function ($id) {
         $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['technician', 'workOrder.property.client'])->find($id);
         if (!$quote) {
-            return response()->json(['message' => 'Cotización no encontrada'], 404);
+            return response()->json(['message' => 'CotizaciÃ³n no encontrada'], 404);
         }
         return response()->json([
             'success' => true,
@@ -1114,7 +1120,7 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     });
 
-    // Enviar mensaje en el chat de una Cotización de la Red
+    // Enviar mensaje en el chat de una CotizaciÃ³n de la Red
     Route::post('/network-quotes/{id}/chat', function (\Illuminate\Http\Request $request, $id) {
         $request->validate([
             'message' => 'required|string'
@@ -1122,7 +1128,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->find($id);
         if (!$quote) {
-            return response()->json(['message' => 'Cotización no encontrada'], 404);
+            return response()->json(['message' => 'CotizaciÃ³n no encontrada'], 404);
         }
 
         $user = auth('sanctum')->user() ?: auth()->user();
@@ -1134,7 +1140,7 @@ Route::middleware('auth:sanctum')->group(function () {
         if (in_array((int)$user->role_id, [3, 4, 5, 7]))
             $senderRole = 'Cliente';
         elseif (in_array((int)$user->role_id, [2, 6, 8]))
-            $senderRole = 'Técnico de la Red';
+            $senderRole = 'TÃ©cnico de la Red';
         elseif (in_array((int)$user->role_id, [0, 1]))
             $senderRole = 'Admin';
 
@@ -1155,7 +1161,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Disparar Notificaciones
         if (in_array((int)$user->role_id, [2, 6, 8])) {
-            // El técnico envió el mensaje -> notificar al Cliente / Autónomo dueño del reporte
+            // El tÃ©cnico enviÃ³ el mensaje -> notificar al Cliente / AutÃ³nomo dueÃ±o del reporte
             $clientUser = null;
             if ($quote->workOrder?->property?->client?->user_id) {
                 $clientUser = \App\Models\User::withoutGlobalScopes()->find($quote->workOrder->property->client->user_id);
@@ -1164,10 +1170,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 $clientUser = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $quote->workOrder->tenant_id)->first();
             }
             if ($clientUser) {
-                \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'Técnico'));
+                \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'TÃ©cnico'));
             }
         } else {
-            // El Cliente / Autónomo envió el mensaje -> notificar al Técnico
+            // El Cliente / AutÃ³nomo enviÃ³ el mensaje -> notificar al TÃ©cnico
             if ($quote->technician) {
                 \Illuminate\Support\Facades\Notification::send($quote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, $senderRole));
             }
@@ -1180,14 +1186,14 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     });
 
-    // Enviar una cotización a un trabajo de la red
+    // Enviar una cotizaciÃ³n a un trabajo de la red
     Route::post('/mercado-trabajos/{id}/cotizar', function (Request $request, $id) {
         $user = auth('sanctum')->user();
         if (!$user) return response()->json(['success' => false, 'message' => 'No autorizado'], 401);
 
         $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
 
-        // Validar restricción activa de 24h (DESACTIVADO TEMPORALMENTE A PETICIÓN DEL USUARIO PARA PRUEBAS)
+        // Validar restricciÃ³n activa de 24h (DESACTIVADO TEMPORALMENTE A PETICIÃ“N DEL USUARIO PARA PRUEBAS)
         $isBlocked = false;
         /*
         $isBlocked = \Illuminate\Support\Facades\DB::table('technician_cancellations')
@@ -1208,7 +1214,7 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($isBlocked) {
             return response()->json([
                 'success' => false,
-                'message' => 'Tienes una restricción de 24 horas para cotizar a este usuario por haber cancelado un servicio recientemente.'
+                'message' => 'Tienes una restricciÃ³n de 24 horas para cotizar a este usuario por haber cancelado un servicio recientemente.'
             ], 403);
         }
         */
@@ -1233,7 +1239,7 @@ Route::middleware('auth:sanctum')->group(function () {
             ]
         );
 
-        // Notificar al dueño de la orden de trabajo (el Autónomo o Cliente)
+        // Notificar al dueÃ±o de la orden de trabajo (el AutÃ³nomo o Cliente)
         try {
             $owner = null;
             if ($workOrder->property && $workOrder->property->client && $workOrder->property->client->user_id) {
@@ -1248,17 +1254,17 @@ Route::middleware('auth:sanctum')->group(function () {
                 \Illuminate\Support\Facades\Notification::send($owner, new \App\Notifications\NetworkQuoteReceived($quote, $techName, $propName));
             }
         } catch (\Throwable $e) {
-            \Log::error("Error enviando notificación de cotización: " . $e->getMessage());
+            \Log::error("Error enviando notificaciÃ³n de cotizaciÃ³n: " . $e->getMessage());
         }
 
         return response()->json([
             'success' => true,
-            'message' => 'Cotización enviada con éxito',
+            'message' => 'CotizaciÃ³n enviada con Ã©xito',
             'quote' => $quote
         ]);
     })->middleware('auth:sanctum');
 
-    // Iniciar o recuperar chat directo entre Técnico y Cliente para un trabajo
+    // Iniciar o recuperar chat directo entre TÃ©cnico y Cliente para un trabajo
     Route::post('/mercado-trabajos/{id}/iniciar-chat', function ($id) {
         try {
             $user = auth('sanctum')->user();
@@ -1268,7 +1274,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client'])->findOrFail($id);
 
-            // Buscar si ya existe una cotización / chat de este técnico para este trabajo
+            // Buscar si ya existe una cotizaciÃ³n / chat de este tÃ©cnico para este trabajo
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
                 ->where('work_order_id', $workOrder->id)
                 ->where('technician_id', $user->id)
@@ -1279,7 +1285,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     'work_order_id' => $workOrder->id,
                     'technician_id' => $user->id,
                     'price' => 0,
-                    'message' => 'Chat iniciado por el técnico',
+                    'message' => 'Chat iniciado por el tÃ©cnico',
                     'status' => 'pending',
                     'chat_history' => []
                 ]);
@@ -1295,7 +1301,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
     })->middleware('auth:sanctum');
 
-    // Programar hora estimada de visita / llegada del Técnico
+    // Programar hora estimada de visita / llegada del TÃ©cnico
     Route::post('/mercado-trabajos/{id}/programar-visita', function (Request $request, $id) {
         $request->validate([
             'scheduled_at' => 'required|string',
@@ -1316,22 +1322,22 @@ Route::middleware('auth:sanctum')->group(function () {
             }
             $workOrder->save();
 
-            // Buscar la cotización aceptada o del técnico para registrar en el chat
+            // Buscar la cotizaciÃ³n aceptada o del tÃ©cnico para registrar en el chat
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
                 ->where('work_order_id', $workOrder->id)
                 ->where('technician_id', $user->id)
                 ->first();
 
             $formattedTime = date('d/m/Y \a \l\a\s h:i A', strtotime($scheduledDateTime));
-            $techName = $user->first_name ? "{$user->first_name} {$user->last_name}" : ($user->name ?: 'El Técnico');
-            $msgText = "📅 {$techName} ha programado la visita para el {$formattedTime}." . ($request->notes ? " Nota: \"{$request->notes}\"" : "");
+            $techName = $user->first_name ? "{$user->first_name} {$user->last_name}" : ($user->name ?: 'El TÃ©cnico');
+            $msgText = "ðŸ“… {$techName} ha programado la visita para el {$formattedTime}." . ($request->notes ? " Nota: \"{$request->notes}\"" : "");
 
             if ($quote) {
                 $history = $quote->chat_history ?? [];
                 $history[] = [
                     'sender_id' => $user->id,
                     'sender_name' => $techName,
-                    'sender_role' => 'Técnico de la Red',
+                    'sender_role' => 'TÃ©cnico de la Red',
                     'message' => $msgText,
                     'is_schedule' => true,
                     'scheduled_at' => $scheduledDateTime,
@@ -1342,7 +1348,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 $quote->save();
             }
 
-            // Notificar al Cliente / Autónomo dueño de la publicación
+            // Notificar al Cliente / AutÃ³nomo dueÃ±o de la publicaciÃ³n
             try {
                 $clientUsers = collect();
                 // 1. Por el cliente asociado a la propiedad
@@ -1380,7 +1386,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     }
                     if ($quote) {
                         try {
-                            $targetClient->notify(new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
+                            $targetClient->notify(new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'TÃ©cnico'));
                         } catch (\Throwable $qe) {}
                     }
                 }
@@ -1400,7 +1406,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
     })->middleware('auth:sanctum');
 
-    // Responder (Aceptar o Re-coordinar) horario propuesto por el técnico
+    // Responder (Aceptar o Re-coordinar) horario propuesto por el tÃ©cnico
     Route::post('/mercado-trabajos/{id}/responder-visita-cliente', function (Request $request, $id) {
         $request->validate([
             'action' => 'required|in:confirm,reschedule',
@@ -1427,8 +1433,8 @@ Route::middleware('auth:sanctum')->group(function () {
             $clientName = $user ? (trim("{$user->first_name} {$user->last_name}") ?: $user->name) : 'El Cliente';
 
             $msgText = $isConfirmed
-                ? "✅ {$clientName} CONFIRMÓ el horario de visita propuesto."
-                : "⚠️ {$clientName} solicita re-coordinar el horario de visita: " . ($request->message ? "\"{$request->message}\"" : "Por favor acuerden un nuevo horario por chat.");
+                ? "âœ… {$clientName} CONFIRMÃ“ el horario de visita propuesto."
+                : "âš ï¸ {$clientName} solicita re-coordinar el horario de visita: " . ($request->message ? "\"{$request->message}\"" : "Por favor acuerden un nuevo horario por chat.");
 
             if ($quote) {
                 $history = $quote->chat_history ?? [];
@@ -1444,7 +1450,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 $quote->chat_history = $history;
                 $quote->save();
 
-                // Notificar al Técnico
+                // Notificar al TÃ©cnico
                 if ($quote->technician) {
                     \Illuminate\Support\Facades\Notification::send($quote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $clientName, 'Cliente'));
                 }
@@ -1452,7 +1458,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return response()->json([
                 'success' => true,
-                'message' => $isConfirmed ? 'Horario confirmado correctamente.' : 'Solicitud de reprogramación enviada.',
+                'message' => $isConfirmed ? 'Horario confirmado correctamente.' : 'Solicitud de reprogramaciÃ³n enviada.',
                 'chat_history' => $quote?->chat_history ?? []
             ]);
         } catch (\Throwable $e) {
@@ -1461,9 +1467,9 @@ Route::middleware('auth:sanctum')->group(function () {
         }
     })->middleware('auth:sanctum');
 
-    // Eliminar / Cancelar publicación de servicio en la Red (Solo el Autor o Admin)
+    // Eliminar / Cancelar publicaciÃ³n de servicio en la Red (Solo el Autor o Admin)
     
-    // Cancelar servicio por parte del Técnico con motivo y penalización de 24h
+    // Cancelar servicio por parte del TÃ©cnico con motivo y penalizaciÃ³n de 24h
     Route::post('/mercado-trabajos/{id}/cancelar-tecnico', function (Request $request, $id) {
         $request->validate([
             'reason' => 'nullable|string|max:1000'
@@ -1483,9 +1489,9 @@ Route::middleware('auth:sanctum')->group(function () {
                 if ($u) $clientUserId = $u->id;
             }
             $tenantId = $workOrder->tenant_id ?: ($workOrder->property?->tenant_id ?? null);
-            $reason = $request->input('reason') ?: 'Cancelado por el técnico por causas de fuerza mayor o imprevisto.';
+            $reason = $request->input('reason') ?: 'Cancelado por el tÃ©cnico por causas de fuerza mayor o imprevisto.';
 
-            // 1. Registrar bloqueo de 24 horas para el técnico hacia este cliente/inmueble
+            // 1. Registrar bloqueo de 24 horas para el tÃ©cnico hacia este cliente/inmueble
             \Illuminate\Support\Facades\DB::table('technician_cancellations')->insert([
                 'technician_id'   => $user->id,
                 'work_order_id'   => $workOrder->id,
@@ -1508,13 +1514,13 @@ Route::middleware('auth:sanctum')->group(function () {
             $workOrder->tecnico_id = null;
             $workOrder->save();
 
-            // 3. Registrar mensaje en el chat de la cotización si existe
+            // 3. Registrar mensaje en el chat de la cotizaciÃ³n si existe
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
                 ->where('work_order_id', $workOrder->id)
                 ->where('technician_id', $user->id)
                 ->first();
 
-            $techName = trim("{$user->first_name} {$user->last_name}") ?: ($user->name ?: 'El Técnico');
+            $techName = trim("{$user->first_name} {$user->last_name}") ?: ($user->name ?: 'El TÃ©cnico');
 
             if ($quote) {
                 $quote->status = 'rejected';
@@ -1522,8 +1528,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 $history[] = [
                     'sender_id' => $user->id,
                     'sender_name' => $techName,
-                    'sender_role' => 'Técnico de la Red',
-                    'message' => "🚫 [CANCELACIÓN DE SERVICIO]: He cancelado mi asistencia para este servicio. Motivo: \"{$reason}\"",
+                    'sender_role' => 'TÃ©cnico de la Red',
+                    'message' => "ðŸš« [CANCELACIÃ“N DE SERVICIO]: He cancelado mi asistencia para este servicio. Motivo: \"{$reason}\"",
                     'is_cancellation' => true,
                     'created_at' => now()->toIso8601String(),
                 ];
@@ -1553,21 +1559,21 @@ Route::middleware('auth:sanctum')->group(function () {
                     } catch (\Throwable $ne) {}
                 }
             } catch (\Throwable $e) {
-                \Log::error("Error notificando cancelación del técnico: " . $e->getMessage());
+                \Log::error("Error notificando cancelaciÃ³n del tÃ©cnico: " . $e->getMessage());
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Servicio cancelado. Se ha notificado al cliente y aplicado la restricción de 24 horas.',
+                'message' => 'Servicio cancelado. Se ha notificado al cliente y aplicado la restricciÃ³n de 24 horas.',
                 'work_order' => $workOrder
             ]);
         } catch (\Throwable $e) {
-            \Log::error("Error cancelando servicio por técnico: " . $e->getMessage());
+            \Log::error("Error cancelando servicio por tÃ©cnico: " . $e->getMessage());
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     })->middleware('auth:sanctum');
 
-    // Obtener cancelaciones de técnicos pendientes de calificación para el cliente autenticado
+    // Obtener cancelaciones de tÃ©cnicos pendientes de calificaciÃ³n para el cliente autenticado
     Route::get('/client/pending-cancellations', function (Request $request) {
         try {
             $user = auth('sanctum')->user();
@@ -1587,7 +1593,7 @@ Route::middleware('auth:sanctum')->group(function () {
             $result = [];
             foreach ($cancellations as $canc) {
                 $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->find($canc->work_order_id);
-                // Si la orden ya no existe o ya no tiene la marca de cancelada por técnico
+                // Si la orden ya no existe o ya no tiene la marca de cancelada por tÃ©cnico
                 if (!$workOrder || (!$workOrder->cancelled_by_tech && $workOrder->status !== 'Cancelado_Tecnico')) {
                     \Illuminate\Support\Facades\DB::table('technician_cancellations')
                         ->where('id', $canc->id)
@@ -1606,9 +1612,9 @@ Route::middleware('auth:sanctum')->group(function () {
                     'cancelled_at'      => $canc->cancelled_at,
                     'technician'        => $tech ? [
                         'id'              => $tech->id,
-                        'name'            => trim("{$tech->first_name} {$tech->last_name}") ?: ($tech->name ?: 'Técnico Especialista'),
+                        'name'            => trim("{$tech->first_name} {$tech->last_name}") ?: ($tech->name ?: 'TÃ©cnico Especialista'),
                         'picture'         => $tech->profile_picture,
-                        'specialty'       => 'Técnico de la Red',
+                        'specialty'       => 'TÃ©cnico de la Red',
                         'rating_time_avg' => $tech->rating_time_avg ?? 5.0
                     ] : null
                 ];
@@ -1634,7 +1640,7 @@ Route::middleware('auth:sanctum')->group(function () {
             $user = auth('sanctum')->user();
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
 
-            // Marcar cualquier registro de cancelación como evaluado/resuelto
+            // Marcar cualquier registro de cancelaciÃ³n como evaluado/resuelto
             \Illuminate\Support\Facades\DB::table('technician_cancellations')
                 ->where('work_order_id', $workOrder->id)
                 ->update(['rated' => true, 'updated_at' => now()]);
@@ -1655,7 +1661,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
                 return response()->json([
                     'success' => true,
-                    'message' => '¡Solicitud reenviada a la Red! Otros técnicos podrán enviarte nuevas cotizaciones.',
+                    'message' => 'Â¡Solicitud reenviada a la Red! Otros tÃ©cnicos podrÃ¡n enviarte nuevas cotizaciones.',
                     'work_order' => $workOrder
                 ]);
             } else {
@@ -1674,7 +1680,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
     })->middleware('auth:sanctum');
 
-    // Descartar aviso de cancelación para que no vuelva a aparecer
+    // Descartar aviso de cancelaciÃ³n para que no vuelva a aparecer
     Route::post('/client/dismiss-cancellation/{id}', function (Request $request, $id) {
         try {
             \Illuminate\Support\Facades\DB::table('technician_cancellations')
@@ -1687,7 +1693,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
     })->middleware('auth:sanctum');
 
-    // Reenviar a la Red una orden cancelada por técnico
+    // Reenviar a la Red una orden cancelada por tÃ©cnico
     Route::post('/mercado-trabajos/{id}/reabrir-red', function (Request $request, $id) {
         try {
             $user = auth('sanctum')->user();
@@ -1709,7 +1715,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return response()->json([
                 'success' => true,
-                'message' => '¡Solicitud reenviada a la Red! Otros técnicos podrán enviarte nuevas cotizaciones.',
+                'message' => 'Â¡Solicitud reenviada a la Red! Otros tÃ©cnicos podrÃ¡n enviarte nuevas cotizaciones.',
                 'work_order' => $workOrder
             ]);
         } catch (\Throwable $e) {
@@ -1735,17 +1741,17 @@ Route::middleware('auth:sanctum')->group(function () {
                         elseif ($service->property?->client?->user_id == $user->id || $service->client_id == $user->id) $isOwner = true;
                     }
                     if (!$isOwner && $user) {
-                        return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicación porque fue creada por otro usuario.'], 403);
+                        return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicaciÃ³n porque fue creada por otro usuario.'], 403);
                     }
 
                     \App\Models\NetworkQuote::withoutGlobalScopes()->where('work_order_id', $service->id)->delete();
                     $service->delete();
                     return response()->json([
                         'success' => true,
-                        'message' => 'Publicación eliminada correctamente de la Red.'
+                        'message' => 'PublicaciÃ³n eliminada correctamente de la Red.'
                     ]);
                 }
-                return response()->json(['success' => false, 'message' => 'Publicación no encontrada.'], 404);
+                return response()->json(['success' => false, 'message' => 'PublicaciÃ³n no encontrada.'], 404);
             }
 
             // Validar permisos: solo autor o admin
@@ -1756,7 +1762,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 elseif ($workOrder->property?->client?->user_id == $user->id || $workOrder->client_id == $user->id) $isOwner = true;
             }
             if (!$isOwner && $user) {
-                return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicación porque fue creada por otro usuario.'], 403);
+                return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicaciÃ³n porque fue creada por otro usuario.'], 403);
             }
 
             // Eliminar cotizaciones de la red asociadas y relaciones
@@ -1766,7 +1772,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return response()->json([
                 'success' => true,
-                'message' => 'Publicación eliminada y cancelada con éxito.'
+                'message' => 'PublicaciÃ³n eliminada y cancelada con Ã©xito.'
             ]);
         } catch (\Throwable $e) {
             return response()->json([
@@ -1800,7 +1806,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return response()->json([
             'success' => true,
-            'message' => 'Todos los servicios han sido borrados de la base de datos con éxito.'
+            'message' => 'Todos los servicios han sido borrados de la base de datos con Ã©xito.'
         ]);
     });
 
@@ -1836,7 +1842,7 @@ Route::middleware('auth:sanctum')->group(function () {
         return $query->orderBy('created_at', 'desc')->get();
     });
 
-    // Nuevo: Obtener todos los reportes globales (Galería Global de Administradores)
+    // Nuevo: Obtener todos los reportes globales (GalerÃ­a Global de Administradores)
     Route::get('/reportes-globales', function () {
         $user = auth('sanctum')->user();
         $query = \App\Models\WorkReport::with([

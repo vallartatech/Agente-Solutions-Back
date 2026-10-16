@@ -135,6 +135,9 @@ class UserController extends Controller
             if ($request->has('is_active') && $request->input('is_active') !== null) {
                 $user->is_active = $request->input('is_active');
             }
+            if ($request->has('birth_date')) {
+                $user->birth_date = $request->input('birth_date') ?: null;
+            }
 
             if ($profilePicturePath) {
                 if ($user->profile_picture && !str_starts_with($user->profile_picture, 'http')) {
