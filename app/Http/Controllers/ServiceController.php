@@ -861,6 +861,7 @@ class ServiceController extends Controller
                     'properties.address',
                     'properties.coordinates',
                     'properties.custom_curp',
+                    'properties.levantamiento_realizado',
                     'properties.facade_photo_path as facade_photo',
                     'clients.name as client_name',
                     'clients.phone as client_phone'
@@ -895,6 +896,7 @@ class ServiceController extends Controller
                     'properties.address',
                     'properties.coordinates',
                     'properties.custom_curp',
+                    'properties.levantamiento_realizado',
                     'properties.facade_photo_path as facade_photo',
                     'clients.name as client_name',
                     'clients.phone as client_phone'
@@ -905,6 +907,24 @@ class ServiceController extends Controller
                 })
                 ->distinct('work_orders.id')
                 ->get();
+
+            // Levantamiento: el título/tipo dice "levantamiento" (misma regla que al finalizarlo).
+            // La propiedad "ya tiene levantamiento" si tiene zonas registradas o está marcada como realizado.
+            $propertyIds = $servicios->pluck('property_id')->concat($workOrders->pluck('property_id'))->filter()->unique()->values();
+            $areasPorPropiedad = $propertyIds->isEmpty() ? collect() : DB::table('property_areas')
+                ->whereIn('property_id', $propertyIds)
+                ->groupBy('property_id')
+                ->select('property_id', DB::raw('COUNT(*) as total'))
+                ->pluck('total', 'property_id');
+            $marcarLevantamiento = function ($item, $texto) use ($areasPorPropiedad) {
+                $zonas = (int) ($areasPorPropiedad[$item->property_id] ?? 0);
+                $item->es_levantamiento = str_contains(mb_strtolower((string) $texto), 'levantamiento');
+                $item->zonas_registradas = $zonas;
+                $item->tiene_levantamiento = $zonas > 0 || (bool) ($item->levantamiento_realizado ?? false);
+                return $item;
+            };
+            $servicios = $servicios->map(fn ($s) => $marcarLevantamiento($s, $s->title));
+            $workOrders = $workOrders->map(fn ($w) => $marcarLevantamiento($w, $w->type ?? ''));
 
             // 3. Unificar normalizando campos para el frontend
             $unificados = $servicios->map(function ($s) {
