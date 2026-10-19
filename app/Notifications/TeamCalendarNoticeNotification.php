@@ -39,6 +39,10 @@ class TeamCalendarNoticeNotification extends Notification
         if ($event->description) {
             $texto .= ' · ' . $event->description;
         }
+        // Seguimiento: "… · Sigue de: Visita a cliente"
+        if ($event->parent_id && $event->parent) {
+            $texto .= ' · Sigue de: ' . $event->parent->title;
+        }
         return $texto;
     }
 

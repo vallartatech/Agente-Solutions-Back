@@ -16,7 +16,10 @@ class CalendarEventController extends Controller
     {
         try {
             $user = $request->user();
-            $query = CalendarEvent::with('creator:id,first_name,last_name,profile_picture')
+            $query = CalendarEvent::with([
+                    'creator:id,first_name,last_name,profile_picture',
+                    'completer:id,first_name,last_name',
+                ])
                 ->orderBy('event_date', 'asc');
 
             if ($user && $user->role_id === 0) {
@@ -130,6 +133,7 @@ class CalendarEventController extends Controller
                 'color' => 'nullable|string|max:30',
                 'notify_team' => 'nullable|boolean',
                 'label' => 'nullable|string|max:60',
+                'parent_id' => 'nullable|integer',
             ], [
                 'start_time.regex' => 'La hora de inicio no es válida.',
                 'end_time.regex' => 'La hora de fin no es válida.',
@@ -155,7 +159,17 @@ class CalendarEventController extends Controller
                 $label = $existente ?: $label;
             }
 
+            // Seguimiento: el aviso anterior debe ser del mismo equipo
+            $parent = null;
+            if (!empty($validated['parent_id'])) {
+                $parent = $this->teamEvents($user)->find($validated['parent_id']);
+                if (!$parent) {
+                    return response()->json(['error' => 'El aviso anterior ya no existe.'], 422);
+                }
+            }
+
             $event = new CalendarEvent();
+            $event->parent_id = $parent?->id;
             $event->tenant_id = $user->tenant_id;
             $event->created_by = $user->id;
             $event->title = $validated['title'];
@@ -170,56 +184,108 @@ class CalendarEventController extends Controller
             $event->notify_team = true;
             $event->save();
 
-            // Enviar notificacion al equipo si esta marcado
-            $push = null;
-            if ($event->notify_team) {
-                try {
-                    $teamQuery = User::withoutGlobalScopes()
-                        ->where('is_active', 1)
-                        ->whereIn('role_id', [0, 1, 2]); // Root, admins y técnicos
-
-                    if (!empty($user->tenant_id)) {
-                        $teamQuery->where('tenant_id', $user->tenant_id);
-                    } else {
-                        $teamQuery->where(function($q) {
-                            $q->whereNull('tenant_id')->orWhere('tenant_id', 1);
-                        });
-                    }
-
-                    $recipients = $teamQuery->get();
-                    if ($recipients->isNotEmpty()) {
-                        // Campanita (base de datos) para cada miembro
-                        $notification = new TeamCalendarNoticeNotification($event);
-                        Notification::send($recipients, $notification);
-
-                        // Push: una sola petición a OneSignal para todo el equipo
-                        $push = OneSignalPush::sendToUsers(
-                            $recipients->pluck('id')->all(),
-                            $notification->pushTitle(),
-                            $notification->pushBody(),
-                            '/calendario',
-                            ['event_id' => $event->id, 'alert_type' => 'calendar_event']
-                        );
-                    } else {
-                        $push = ['sent' => false, 'recipients' => 0, 'subscribed' => 0, 'id' => null, 'error' => 'No hay administradores ni técnicos activos en el equipo.'];
-                    }
-                } catch (\Throwable $notifErr) {
-                    \Log::error("Error enviando notificaciones de evento calendario: " . $notifErr->getMessage());
-                    $push = ['sent' => false, 'recipients' => 0, 'subscribed' => null, 'id' => null, 'error' => 'Error interno al notificar al equipo.'];
-                }
-            }
+            $event->setRelation('parent', $parent);
+            $push = $event->notify_team
+                ? $this->notifyTeam($user, $event, new TeamCalendarNoticeNotification($event))
+                : null;
 
             return response()->json([
                 'success' => true,
                 'message' => 'Aviso registrado exitosamente.',
                 'push' => $push,
-                'event' => $event->load('creator:id,first_name,last_name,profile_picture')
+                'event' => $event->unsetRelation('parent')->load('creator:id,first_name,last_name,profile_picture')
             ], 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             // Datos inválidos del formulario: 422 con el mensaje (no un error del servidor)
             return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
         } catch (\Exception $e) {
             return response()->json(['error' => 'Error al crear evento: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // Marca el aviso como completado. El comentario (opcional) le llega a todo el equipo.
+    public function complete(Request $request, $id)
+    {
+        try {
+            $user = $request->user();
+            if (!$user || !in_array((int)$user->role_id, [0, 1])) {
+                return response()->json(['error' => 'No autorizado. Solo administradores pueden completar avisos.'], 403);
+            }
+
+            $validated = $request->validate([
+                'note' => 'nullable|string|max:1000',
+            ]);
+
+            $event = $this->teamEvents($user)->find($id);
+            if (!$event) {
+                return response()->json(['error' => 'Aviso no encontrado.'], 404);
+            }
+            if ($event->completed_at) {
+                return response()->json(['error' => 'Este aviso ya estaba completado.'], 422);
+            }
+
+            $note = trim((string) ($validated['note'] ?? ''));
+            $event->completed_at = now();
+            $event->completed_by = $user->id;
+            $event->completion_note = $note !== '' ? $note : null;
+            $event->save();
+
+            $push = null;
+            if ($note !== '') {
+                $autor = trim("{$user->first_name} {$user->last_name}");
+                $titulo = '✅ Completado · ' . (!empty($event->label) ? "{$event->label} · " : '') . $event->title;
+                $push = $this->notifyTeam($user, $event, new TeamCalendarNoticeNotification($event, $titulo, "{$autor}: {$note}"));
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Aviso completado.',
+                'push' => $push,
+                'event' => $event->load(['creator:id,first_name,last_name,profile_picture', 'completer:id,first_name,last_name'])
+            ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al completar el aviso: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // Campanita + push a root, admins y técnicos activos del equipo del usuario.
+    // Devuelve el resultado de OneSignal para que el frontend avise si no se envió.
+    private function notifyTeam($user, CalendarEvent $event, TeamCalendarNoticeNotification $notification): array
+    {
+        try {
+            $teamQuery = User::withoutGlobalScopes()
+                ->where('is_active', 1)
+                ->whereIn('role_id', [0, 1, 2]); // Root, admins y técnicos
+
+            if (!empty($user->tenant_id)) {
+                $teamQuery->where('tenant_id', $user->tenant_id);
+            } else {
+                $teamQuery->where(function($q) {
+                    $q->whereNull('tenant_id')->orWhere('tenant_id', 1);
+                });
+            }
+
+            $recipients = $teamQuery->get();
+            if ($recipients->isEmpty()) {
+                return ['sent' => false, 'recipients' => 0, 'subscribed' => 0, 'id' => null, 'error' => 'No hay administradores ni técnicos activos en el equipo.'];
+            }
+
+            // Campanita (base de datos) para cada miembro
+            Notification::send($recipients, $notification);
+
+            // Push: una sola petición a OneSignal para todo el equipo
+            return OneSignalPush::sendToUsers(
+                $recipients->pluck('id')->all(),
+                $notification->pushTitle(),
+                $notification->pushBody(),
+                '/calendario',
+                ['event_id' => $event->id, 'alert_type' => 'calendar_event']
+            );
+        } catch (\Throwable $notifErr) {
+            \Log::error("Error enviando notificaciones de evento calendario: " . $notifErr->getMessage());
+            return ['sent' => false, 'recipients' => 0, 'subscribed' => null, 'id' => null, 'error' => 'Error interno al notificar al equipo.'];
         }
     }
 

@@ -23,15 +23,36 @@ class CalendarEvent extends Model
         'color',
         'notify_team',
         'label',
+        'parent_id',
+        'completed_at',
+        'completed_by',
+        'completion_note',
     ];
 
     protected $casts = [
         'notify_team' => 'boolean',
+        'completed_at' => 'datetime',
     ];
 
     public function creator()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function completer()
+    {
+        return $this->belongsTo(User::class, 'completed_by');
+    }
+
+    // Aviso anterior del que este es el seguimiento
+    public function parent()
+    {
+        return $this->belongsTo(CalendarEvent::class, 'parent_id');
+    }
+
+    public function followUps()
+    {
+        return $this->hasMany(CalendarEvent::class, 'parent_id');
     }
 
     public function tenant()

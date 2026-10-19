@@ -868,6 +868,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/calendar/labels', [\App\Http\Controllers\CalendarEventController::class, 'labels']);
     Route::post('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'store']);
     Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
+    Route::post('/calendar/events/{id}/complete', [\App\Http\Controllers\CalendarEventController::class, 'complete']);
 
     // --- UBICACIÓN EN VIVO DEL EQUIPO (con consentimiento; mapa solo para can_view_live_map) ---
     Route::get('/ubicacion/estado', [\App\Http\Controllers\LiveLocationController::class, 'status']);
