@@ -865,6 +865,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // --- EVENTOS DEL CALENDARIO Y CUMPLEAÑOS ---
     Route::get('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'index']);
     Route::get('/calendar/birthdays', [\App\Http\Controllers\CalendarEventController::class, 'getBirthdays']);
+    Route::get('/calendar/labels', [\App\Http\Controllers\CalendarEventController::class, 'labels']);
     Route::post('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'store']);
     Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
 

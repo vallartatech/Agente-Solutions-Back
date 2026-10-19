@@ -22,6 +22,7 @@ class CalendarEvent extends Model
         'type',
         'color',
         'notify_team',
+        'label',
     ];
 
     protected $casts = [

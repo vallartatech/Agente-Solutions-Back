@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\Notification;
 use App\Notifications\TeamCalendarNoticeNotification;
 use App\Services\OneSignalPush;
+use Illuminate\Support\Facades\DB;
 
 class CalendarEventController extends Controller
 {
@@ -78,6 +79,39 @@ class CalendarEventController extends Controller
         }
     }
 
+    // Etiquetas ya usadas por el equipo, las más usadas primero (sugerencias del formulario)
+    public function labels(Request $request)
+    {
+        try {
+            $labels = $this->teamEvents($request->user())
+                ->whereNotNull('label')
+                ->where('label', '!=', '')
+                ->select('label', DB::raw('COUNT(*) as usos'), DB::raw('MAX(created_at) as ultimo'))
+                ->groupBy('label')
+                ->orderByDesc('usos')
+                ->orderByDesc('ultimo')
+                ->limit(30)
+                ->pluck('label');
+
+            return response()->json($labels->values(), 200);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al obtener etiquetas: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // Avisos del mismo equipo que el usuario (misma regla que index)
+    private function teamEvents($user)
+    {
+        $query = CalendarEvent::query();
+        if ($user && (int) $user->role_id === 0) {
+            return $query;
+        }
+        if ($user && !empty($user->tenant_id)) {
+            return $query->where('tenant_id', $user->tenant_id);
+        }
+        return $query->where(fn ($q) => $q->whereNull('tenant_id')->orWhere('tenant_id', 1));
+    }
+
     public function store(Request $request)
     {
         try {
@@ -90,12 +124,36 @@ class CalendarEventController extends Controller
                 'title' => 'required|string|max:255',
                 'event_date' => 'required|date',
                 'description' => 'nullable|string|max:1000',
-                'start_time' => 'nullable|string|max:20',
-                'end_time' => 'nullable|string|max:20',
+                'start_time' => ['nullable', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
+                'end_time' => ['nullable', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
                 'type' => 'nullable|string|max:50',
                 'color' => 'nullable|string|max:30',
                 'notify_team' => 'nullable|boolean',
+                'label' => 'nullable|string|max:60',
+            ], [
+                'start_time.regex' => 'La hora de inicio no es válida.',
+                'end_time.regex' => 'La hora de fin no es válida.',
             ]);
+
+            // Horario: la hora de fin requiere inicio y debe ser posterior
+            $inicio = $validated['start_time'] ?? null;
+            $fin = $validated['end_time'] ?? null;
+            if ($fin && !$inicio) {
+                return response()->json(['error' => 'Indica también la hora de inicio.'], 422);
+            }
+            if ($inicio && $fin && substr($fin, 0, 5) <= substr($inicio, 0, 5)) {
+                return response()->json(['error' => 'La hora de fin debe ser posterior a la de inicio.'], 422);
+            }
+
+            // Etiqueta libre: se reutiliza la ya escrita por el equipo (mismas mayúsculas) si coincide
+            $label = trim(preg_replace('/\s+/', ' ', (string) ($validated['label'] ?? '')));
+            if ($label !== '') {
+                $existente = $this->teamEvents($user)
+                    ->whereNotNull('label')
+                    ->whereRaw('LOWER(label) = ?', [mb_strtolower($label)])
+                    ->value('label');
+                $label = $existente ?: $label;
+            }
 
             $event = new CalendarEvent();
             $event->tenant_id = $user->tenant_id;
@@ -103,8 +161,9 @@ class CalendarEventController extends Controller
             $event->title = $validated['title'];
             $event->description = $validated['description'] ?? null;
             $event->event_date = $validated['event_date'];
-            $event->start_time = $validated['start_time'] ?? null;
-            $event->end_time = $validated['end_time'] ?? null;
+            $event->start_time = $inicio ? substr($inicio, 0, 5) : null;
+            $event->end_time = $fin ? substr($fin, 0, 5) : null;
+            $event->label = $label !== '' ? $label : null;
             $event->type = $validated['type'] ?? 'aviso';
             $event->color = $validated['color'] ?? '#F26522';
             // Todo aviso se notifica siempre a todo el equipo
@@ -156,6 +215,9 @@ class CalendarEventController extends Controller
                 'push' => $push,
                 'event' => $event->load('creator:id,first_name,last_name,profile_picture')
             ], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // Datos inválidos del formulario: 422 con el mensaje (no un error del servidor)
+            return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
         } catch (\Exception $e) {
             return response()->json(['error' => 'Error al crear evento: ' . $e->getMessage()], 500);
         }
