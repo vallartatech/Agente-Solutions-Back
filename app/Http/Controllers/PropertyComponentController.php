@@ -37,6 +37,10 @@ class PropertyComponentController extends Controller
                 $component->galleries = DB::table('component_galleries')
                     ->where('property_component_id', $component->id)
                     ->get();
+                // Ficha técnica opcional (JSON) como objeto
+                $component->specs = isset($component->specs) && $component->specs
+                    ? (json_decode($component->specs, true) ?: null)
+                    : null;
             }
 
             return response()->json($components, 200);
@@ -97,6 +101,7 @@ class PropertyComponentController extends Controller
                 'observations' => $request->observations ?? '',
                 'image_path' => $imagePath,
                 'image_path_secondary' => $imagePathSecondary,
+                'specs' => $this->parseSpecs($request),
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
@@ -320,7 +325,7 @@ class PropertyComponentController extends Controller
                 $imagePathSecondary = $resSec['secure_url'];
             }
 
-            DB::table('property_components')->where('id', $id)->update([
+            $cambios = [
                 'sub_category' => $request->sub_category,
                 'brand' => $request->brand ?? '',
                 'model_or_color' => $request->model_or_color ?? '',
@@ -331,7 +336,12 @@ class PropertyComponentController extends Controller
                 'image_path' => $imagePath,
                 'image_path_secondary' => $imagePathSecondary,
                 'updated_at' => now(),
-            ]);
+            ];
+            // La ficha técnica solo se toca si el formulario la envía (no se borra desde otras pantallas)
+            if ($request->has('specs')) {
+                $cambios['specs'] = $this->parseSpecs($request);
+            }
+            DB::table('property_components')->where('id', $id)->update($cambios);
 
             // GUARDAR NUEVAS FOTOS EN LA GALERÍA AL EDITAR
             if ($request->hasFile('gallery')) {
@@ -353,5 +363,33 @@ class PropertyComponentController extends Controller
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * Ficha técnica opcional del elemento (JSON). Acepta un objeto o un texto JSON;
+     * guarda solo valores simples no vacíos (máx. 120 caracteres, 30 campos). Null si no hay datos.
+     */
+    private function parseSpecs(Request $request): ?string
+    {
+        $raw = $request->input('specs');
+        if (is_string($raw)) {
+            $raw = json_decode($raw, true);
+        }
+        if (!is_array($raw)) {
+            return null;
+        }
+
+        $limpio = [];
+        foreach (array_slice($raw, 0, 30, true) as $clave => $valor) {
+            if (!is_string($clave) || !preg_match('/^[a-z0-9_]{1,40}$/', $clave) || !is_scalar($valor)) {
+                continue;
+            }
+            $valor = trim(mb_substr((string) $valor, 0, 120));
+            if ($valor !== '') {
+                $limpio[$clave] = $valor;
+            }
+        }
+
+        return $limpio ? json_encode($limpio, JSON_UNESCAPED_UNICODE) : null;
     }
 }
