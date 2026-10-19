@@ -249,6 +249,43 @@ class ServiceController extends Controller
                 'evidencia_2' => 'nullable|image|mimes:jpeg,png,jpg,webp|max:10240',
             ]);
 
+            // Un solo levantamiento abierto por propiedad: si ya existe, se suma el técnico al mismo
+            // (equipo) en lugar de crear un duplicado.
+            if (str_contains(mb_strtolower((string) $request->title), 'levantamiento')) {
+                $abierto = DB::table('services')
+                    ->where('property_id', $request->property_id)
+                    ->where('title', 'like', '%evantamiento%')
+                    ->whereNotIn('status', ['completed', 'Finalizado', 'Listo', 'Cancelado'])
+                    ->orderByDesc('id')
+                    ->first();
+
+                if ($abierto) {
+                    $rawTec = $request->input('technician_id', $request->input('tecnico_id'));
+                    $tecId = !empty($rawTec) ? (int) str_replace('u_', '', (string) $rawTec) : null;
+                    if ($tecId) {
+                        DB::table('service_technician')->insertOrIgnore([
+                            'service_id' => $abierto->id,
+                            'technician_id' => $tecId,
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                        $cambios = ['updated_at' => now()];
+                        if (empty($abierto->assigned_to)) {
+                            $cambios['assigned_to'] = $tecId;
+                            $cambios['status'] = 'Programado';
+                        }
+                        DB::table('services')->where('id', $abierto->id)->update($cambios);
+                    }
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'La propiedad ya tenía un levantamiento abierto; el técnico se sumó a ese mismo levantamiento.',
+                        'service' => Service::withoutGlobalScopes()->find($abierto->id),
+                        'reused' => true,
+                    ], 200);
+                }
+            }
+
             $servicio = new Service();
             $servicio->property_id = $request->property_id;
             $servicio->property_area_id = $request->property_area_id;
