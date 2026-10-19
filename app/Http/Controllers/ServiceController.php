@@ -974,6 +974,18 @@ class ServiceController extends Controller
                 return $s;
             });
 
+            // Un solo levantamiento por propiedad: si hay registros repetidos (históricos), se entrega
+            // el abierto más reciente; si todos están cerrados, el finalizado más reciente.
+            $cerrados = ['completed', 'Finalizado', 'Listo'];
+            [$levantamientos, $otros] = $servicios->partition(fn ($s) => $s->es_levantamiento);
+            $levantamientos = $levantamientos->groupBy('property_id')->map(function ($grupo) use ($cerrados) {
+                $abiertos = $grupo->reject(fn ($s) => in_array($s->status, $cerrados, true));
+                $elegido = ($abiertos->isNotEmpty() ? $abiertos : $grupo)->sortByDesc('id')->first();
+                $elegido->equipo_count = max($grupo->max('equipo_count'), $elegido->equipo_count);
+                return $elegido;
+            })->values();
+            $servicios = $otros->values()->concat($levantamientos);
+
             // 3. Unificar normalizando campos para el frontend
             $unificados = $servicios->map(function ($s) {
                 $s->composite_id = "servicio-{$s->id}";
