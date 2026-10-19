@@ -249,6 +249,43 @@ class ServiceController extends Controller
                 'evidencia_2' => 'nullable|image|mimes:jpeg,png,jpg,webp|max:10240',
             ]);
 
+            // Un solo levantamiento abierto por propiedad: si ya existe, se suma el técnico al mismo
+            // (equipo) en lugar de crear un duplicado.
+            if (str_contains(mb_strtolower((string) $request->title), 'levantamiento')) {
+                $abierto = DB::table('services')
+                    ->where('property_id', $request->property_id)
+                    ->where('title', 'like', '%evantamiento%')
+                    ->whereNotIn('status', ['completed', 'Finalizado', 'Listo', 'Cancelado'])
+                    ->orderByDesc('id')
+                    ->first();
+
+                if ($abierto) {
+                    $rawTec = $request->input('technician_id', $request->input('tecnico_id'));
+                    $tecId = !empty($rawTec) ? (int) str_replace('u_', '', (string) $rawTec) : null;
+                    if ($tecId) {
+                        DB::table('service_technician')->insertOrIgnore([
+                            'service_id' => $abierto->id,
+                            'technician_id' => $tecId,
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                        $cambios = ['updated_at' => now()];
+                        if (empty($abierto->assigned_to)) {
+                            $cambios['assigned_to'] = $tecId;
+                            $cambios['status'] = 'Programado';
+                        }
+                        DB::table('services')->where('id', $abierto->id)->update($cambios);
+                    }
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'La propiedad ya tenía un levantamiento abierto; el técnico se sumó a ese mismo levantamiento.',
+                        'service' => Service::withoutGlobalScopes()->find($abierto->id),
+                        'reused' => true,
+                    ], 200);
+                }
+            }
+
             $servicio = new Service();
             $servicio->property_id = $request->property_id;
             $servicio->property_area_id = $request->property_area_id;
@@ -926,6 +963,29 @@ class ServiceController extends Controller
             $servicios = $servicios->map(fn ($s) => $marcarLevantamiento($s, $s->title));
             $workOrders = $workOrders->map(fn ($w) => $marcarLevantamiento($w, $w->type ?? ''));
 
+            // Tamaño del equipo de cada servicio (técnicos en service_technician + responsable)
+            $equipos = $servicios->isEmpty() ? collect() : DB::table('service_technician')
+                ->whereIn('service_id', $servicios->pluck('id'))
+                ->get(['service_id', 'technician_id'])
+                ->groupBy('service_id');
+            $servicios = $servicios->map(function ($s) use ($equipos) {
+                $s->equipo_count = ($equipos[$s->id] ?? collect())->pluck('technician_id')
+                    ->push($s->assigned_to)->filter()->unique()->count();
+                return $s;
+            });
+
+            // Un solo levantamiento por propiedad: si hay registros repetidos (históricos), se entrega
+            // el abierto más reciente; si todos están cerrados, el finalizado más reciente.
+            $cerrados = ['completed', 'Finalizado', 'Listo'];
+            [$levantamientos, $otros] = $servicios->partition(fn ($s) => $s->es_levantamiento);
+            $levantamientos = $levantamientos->groupBy('property_id')->map(function ($grupo) use ($cerrados) {
+                $abiertos = $grupo->reject(fn ($s) => in_array($s->status, $cerrados, true));
+                $elegido = ($abiertos->isNotEmpty() ? $abiertos : $grupo)->sortByDesc('id')->first();
+                $elegido->equipo_count = max($grupo->max('equipo_count'), $elegido->equipo_count);
+                return $elegido;
+            })->values();
+            $servicios = $otros->values()->concat($levantamientos);
+
             // 3. Unificar normalizando campos para el frontend
             $unificados = $servicios->map(function ($s) {
                 $s->composite_id = "servicio-{$s->id}";
@@ -972,6 +1032,14 @@ class ServiceController extends Controller
                     return response()->json(['success' => true, 'message' => 'Orden de Trabajo actualizada', 'work_order' => $workOrder], 200);
                 }
                 return response()->json(['success' => false, 'message' => 'No encontrado'], 404);
+            }
+
+            // Solo los administradores pueden finalizar un levantamiento (los técnicos pueden editarlo siempre)
+            $esCierre = in_array($request->status, ['completed', 'Finalizado', 'Listo'], true);
+            $actor = auth('sanctum')->user();
+            if ($esCierre && str_contains(mb_strtolower((string) $servicio->title), 'levantamiento')
+                && (!$actor || !in_array((int) $actor->role_id, [0, 1], true))) {
+                return response()->json(['success' => false, 'message' => 'Solo un administrador puede finalizar el levantamiento.'], 403);
             }
 
             if ($request->has('status')) {

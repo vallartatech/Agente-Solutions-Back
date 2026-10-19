@@ -21,16 +21,19 @@ class TeamCalendarNoticeNotification extends Notification
     {
         $this->event = $event;
         $icon = ($event->type ?? null) === 'importante' ? '🔴' : '📅';
-        $this->title = $title ?: ($icon . ' ' . $event->title);
+        // "📅 Junta · Revisión mensual" (la etiqueta va primero si existe)
+        $this->title = $title ?: ($icon . ' ' . (!empty($event->label) ? "{$event->label} · " : '') . $event->title);
         $this->message = $message ?: $this->buildMessage($event);
     }
 
-    // "Viernes 16 de octubre · Detalles": el mismo formato de la vista previa del frontend
+    // "Viernes 16 de octubre · 09:00 a 11:00 · Detalles": el mismo formato de la vista previa del frontend
     protected function buildMessage($event): string
     {
         $fecha = \Carbon\Carbon::parse($event->event_date)->locale('es')->isoFormat('dddd D [de] MMMM');
         $texto = mb_strtoupper(mb_substr($fecha, 0, 1)) . mb_substr($fecha, 1);
-        if ($event->start_time) {
+        if ($event->start_time && $event->end_time) {
+            $texto .= ' · ' . substr($event->start_time, 0, 5) . ' a ' . substr($event->end_time, 0, 5);
+        } elseif ($event->start_time) {
             $texto .= ' a las ' . substr($event->start_time, 0, 5);
         }
         if ($event->description) {
