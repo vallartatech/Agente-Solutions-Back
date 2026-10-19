@@ -747,6 +747,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/propiedades/{id}/share/{clientId}', [PropertyController::class, 'revokeShare']);
     Route::get('/propiedades/{id}/shared-users', [PropertyController::class, 'getSharedUsers']);
 
+    // --- CARPETAS DEL CATÁLOGO DE PROPIEDADES (solo admins) ---
+    Route::get('/property-folders', [\App\Http\Controllers\PropertyFolderController::class, 'index']);
+    Route::post('/property-folders', [\App\Http\Controllers\PropertyFolderController::class, 'store']);
+    Route::put('/property-folders/{id}', [\App\Http\Controllers\PropertyFolderController::class, 'update']);
+    Route::delete('/property-folders/{id}', [\App\Http\Controllers\PropertyFolderController::class, 'destroy']);
+    Route::put('/propiedades/{id}/folder', [\App\Http\Controllers\PropertyFolderController::class, 'moverPropiedad']);
+
     Route::get('/map', function () {
         $user = auth('sanctum')->user();
 

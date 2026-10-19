@@ -12,6 +12,7 @@ class Property extends Model
 
     protected $fillable = [
         'tenant_id',
+        'folder_id',
         'client_id', 
         'type', 
         'state', 
@@ -33,6 +34,11 @@ class Property extends Model
         return $this->belongsTo(Client::class, 'client_id');
     }
     
+    public function folder()
+    {
+        return $this->belongsTo(PropertyFolder::class, 'folder_id');
+    }
+
     public function areas()
     {
         return $this->hasMany(PropertyArea::class);

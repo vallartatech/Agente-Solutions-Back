@@ -243,6 +243,7 @@ class PropertyController extends Controller
                 return [
                     'id' => $p->id,
                     'tenant_id' => $p->tenant_id,
+                    'folder_id' => $p->folder_id,
                     'tenant_name' => $p->tenant ? $p->tenant->name : ($p->tenant_id == 1 ? 'Agente Solutions' : null),
                     'client_id' => $p->client_id,
                     'client_email' => $p->client ? $p->client->email : null,
