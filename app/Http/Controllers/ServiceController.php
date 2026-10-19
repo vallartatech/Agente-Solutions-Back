@@ -926,6 +926,17 @@ class ServiceController extends Controller
             $servicios = $servicios->map(fn ($s) => $marcarLevantamiento($s, $s->title));
             $workOrders = $workOrders->map(fn ($w) => $marcarLevantamiento($w, $w->type ?? ''));
 
+            // Tamaño del equipo de cada servicio (técnicos en service_technician + responsable)
+            $equipos = $servicios->isEmpty() ? collect() : DB::table('service_technician')
+                ->whereIn('service_id', $servicios->pluck('id'))
+                ->get(['service_id', 'technician_id'])
+                ->groupBy('service_id');
+            $servicios = $servicios->map(function ($s) use ($equipos) {
+                $s->equipo_count = ($equipos[$s->id] ?? collect())->pluck('technician_id')
+                    ->push($s->assigned_to)->filter()->unique()->count();
+                return $s;
+            });
+
             // 3. Unificar normalizando campos para el frontend
             $unificados = $servicios->map(function ($s) {
                 $s->composite_id = "servicio-{$s->id}";
@@ -972,6 +983,14 @@ class ServiceController extends Controller
                     return response()->json(['success' => true, 'message' => 'Orden de Trabajo actualizada', 'work_order' => $workOrder], 200);
                 }
                 return response()->json(['success' => false, 'message' => 'No encontrado'], 404);
+            }
+
+            // Solo los administradores pueden finalizar un levantamiento (los técnicos pueden editarlo siempre)
+            $esCierre = in_array($request->status, ['completed', 'Finalizado', 'Listo'], true);
+            $actor = auth('sanctum')->user();
+            if ($esCierre && str_contains(mb_strtolower((string) $servicio->title), 'levantamiento')
+                && (!$actor || !in_array((int) $actor->role_id, [0, 1], true))) {
+                return response()->json(['success' => false, 'message' => 'Solo un administrador puede finalizar el levantamiento.'], 403);
             }
 
             if ($request->has('status')) {

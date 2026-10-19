@@ -742,6 +742,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/properties/{id}/inventory-report', [PropertyController::class, 'getPropertyReport']);
     Route::post('/properties/{id}/finalize-survey', [PropertyController::class, 'finalizeSurvey']);
 
+    // --- EQUIPO DE TRABAJO DEL LEVANTAMIENTO (solo admins administran y finalizan) ---
+    Route::get('/propiedades/{id}/equipo-levantamiento', [\App\Http\Controllers\SurveyTeamController::class, 'show']);
+    Route::post('/propiedades/{id}/equipo-levantamiento', [\App\Http\Controllers\SurveyTeamController::class, 'add']);
+    Route::delete('/propiedades/{id}/equipo-levantamiento/{technicianId}', [\App\Http\Controllers\SurveyTeamController::class, 'remove']);
+    Route::post('/propiedades/{id}/equipo-levantamiento/finalizar', [\App\Http\Controllers\SurveyTeamController::class, 'finalize']);
+
     // --- COMPARTIR PROPIEDAD (HERENCIA) ---
     Route::post('/propiedades/{id}/share', [PropertyController::class, 'shareProperty']);
     Route::delete('/propiedades/{id}/share/{clientId}', [PropertyController::class, 'revokeShare']);
