@@ -21,7 +21,13 @@ class Property extends Model
         'coordinates',
         'property_name',       // 👈 Campo nuevo para el nombre
         'facade_photo_path',    // 👈 Campo nuevo para la foto
-        'levantamiento_realizado'
+        'levantamiento_realizado',
+        // Partes de la dirección (address guarda el texto completo)
+        'municipio',
+        'colonia',
+        'calle',
+        'numero',
+        'cruzamientos',
     ];
 
     public function services()

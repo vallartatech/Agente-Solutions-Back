@@ -98,11 +98,7 @@ class PropertyController extends Controller
         $random = strtoupper(Str::random(3));
         $custom_curp = "{$tipo}-{$estado_curp}-{$municipio_curp}-{$colonia}-{$calle_curp}-{$numero_curp}-{$random}";
 
-        $direccion_completa = "Calle {$request->calle} #{$request->numero}";
-        if ($request->cruzamientos) {
-            $direccion_completa .= " x {$request->cruzamientos}";
-        }
-        $direccion_completa .= ", Col. {$request->colonia}, {$request->municipio}, {$request->estado}";
+        $direccion_completa = $this->componerDireccion($request->only(['calle', 'numero', 'cruzamientos', 'colonia', 'municipio', 'estado']));
 
         // Verificar límite de propiedades en el Plan del Autónomo
         if ($user->tenant_id) {
@@ -131,6 +127,11 @@ class PropertyController extends Controller
         $property->type = $request->type;
         $property->state = $request->estado;
         $property->address = $direccion_completa;
+        $property->municipio = $request->municipio;
+        $property->colonia = $request->colonia;
+        $property->calle = $request->calle;
+        $property->numero = $request->numero;
+        $property->cruzamientos = $request->cruzamientos ?: null;
         $property->coordinates = $request->coordinates;
         $property->custom_curp = $custom_curp;
         $property->property_name = $request->property_name;
@@ -252,6 +253,14 @@ class PropertyController extends Controller
                     'direccion' => $p->address,
                     'fecha' => $p->created_at ? $p->created_at->format('Y-m-d') : 'Sin fecha',
                     'tipo' => strtoupper($p->type),
+                    // Datos por separado para el formulario de edición
+                    'type' => $p->type,
+                    'estado' => $p->state,
+                    'municipio' => $p->municipio,
+                    'colonia' => $p->colonia,
+                    'calle' => $p->calle,
+                    'numero' => $p->numero,
+                    'cruzamientos' => $p->cruzamientos,
                     'curp' => $p->custom_curp,
                     'coordenadas' => $p->coordinates,
                     'foto_url' => $p->facade_photo_path,
@@ -309,8 +318,19 @@ class PropertyController extends Controller
         }
     }
 
+    // "Calle 60 #100 x 62 y 64, Col. Centro, Mérida, Yucatán" (mismo formato desde siempre)
+    private function componerDireccion(array $d): string
+    {
+        $direccion = "Calle {$d['calle']} #{$d['numero']}";
+        if (!empty($d['cruzamientos'])) {
+            $direccion .= " x {$d['cruzamientos']}";
+        }
+        return $direccion . ", Col. {$d['colonia']}, {$d['municipio']}, {$d['estado']}";
+    }
+
     // ---------------------------------------------------
-    // 8. ACTUALIZAR PROPIEDAD (Nombre y Foto)
+    // 8. ACTUALIZAR PROPIEDAD (todos los datos del formulario de registro)
+    //    Solo cambia lo que se envía. El código (custom_curp) no cambia.
     // ---------------------------------------------------
     public function updateProperty(Request $request, $id)
     {
@@ -321,15 +341,62 @@ class PropertyController extends Controller
 
             $property = Property::findOrFail($id);
 
-            // Validación
-            $request->validate([
-                'property_name' => 'nullable|string|max:191',
-                'facade_photo' => 'nullable|image|mimes:jpeg,png,jpg,webp|max:10240',
-            ]);
+            // Un cliente solo edita las suyas (no las que le compartieron)
+            if ((int) $user->role_id === 3) {
+                $cliente = DB::table('clients')->where('user_id', $user->id)->first();
+                if (!$cliente || $property->client_id !== $cliente->id) {
+                    return response()->json(['error' => 'Solo el dueño principal puede editar esta propiedad.'], 403);
+                }
+            }
 
-            // 1. Actualizar Nombre
+            // Validación
+            try {
+                $request->validate([
+                    'property_name' => 'nullable|string|max:191',
+                    'facade_photo' => 'nullable|image|mimes:jpeg,png,jpg,webp|max:10240',
+                    'type' => 'nullable|string|max:50',
+                    'estado' => 'nullable|string|max:191',
+                    'municipio' => 'nullable|string|max:191',
+                    'colonia' => 'nullable|string|max:191',
+                    'calle' => 'nullable|string|max:191',
+                    'numero' => 'nullable|string|max:191',
+                    'cruzamientos' => 'nullable|string|max:191',
+                    'coordinates' => 'nullable|string|max:100',
+                ]);
+            } catch (\Illuminate\Validation\ValidationException $e) {
+                return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
+            }
+
+            // 1. Nombre, tipo y ubicación GPS
             if ($request->has('property_name')) {
                 $property->property_name = $request->property_name;
+            }
+            if ($request->filled('type')) {
+                $property->type = $request->type;
+            }
+            if ($request->filled('coordinates')) {
+                $property->coordinates = $request->coordinates;
+            }
+
+            // Dirección: se rearma solo si llegan las partes obligatorias del registro
+            $partes = [
+                'estado' => trim((string) ($request->estado ?? $property->state)),
+                'municipio' => trim((string) $request->municipio),
+                'colonia' => trim((string) $request->colonia),
+                'calle' => trim((string) $request->calle),
+                'numero' => trim((string) $request->numero),
+                'cruzamientos' => trim((string) $request->cruzamientos),
+            ];
+            if ($partes['calle'] !== '' && $partes['numero'] !== '' && $partes['colonia'] !== '' && $partes['municipio'] !== '') {
+                $property->state = $partes['estado'];
+                $property->municipio = $partes['municipio'];
+                $property->colonia = $partes['colonia'];
+                $property->calle = $partes['calle'];
+                $property->numero = $partes['numero'];
+                $property->cruzamientos = $partes['cruzamientos'] !== '' ? $partes['cruzamientos'] : null;
+                $property->address = $this->componerDireccion($partes);
+            } elseif ($request->filled('estado')) {
+                $property->state = $partes['estado'];
             }
 
             // 2. Actualizar Foto
