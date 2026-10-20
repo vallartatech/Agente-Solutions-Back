@@ -17,7 +17,7 @@ use Illuminate\Validation\Rule;
  * Comprobantes de gastos (notas, tickets, facturas).
  * - Root, admins y técnicos suben comprobantes eligiendo la empresa (Agente Solutions / Mantenere).
  * - Le llegan al secretario de esa empresa (users.billing_company), que los confirma como recibidos.
- * - Solo los secretarios (su empresa) y root (ambas) ven comprobantes e historial; quien sube no ve la lista.
+ * - Root ve los de ambas empresas. Todo queda en el historial.
  */
 class ExpenseReceiptController extends Controller
 {
@@ -45,15 +45,21 @@ class ExpenseReceiptController extends Controller
         ]);
     }
 
-    // Solo secretarios (su empresa) y root (ambas) ven comprobantes; los demás solo pueden subir.
-    // ?estado=pendiente|confirmado &empresa=agente|mantenere &q=texto &page=N
+    // ?vista=mios|bandeja &estado=pendiente|confirmado &empresa=agente|mantenere &q=texto &page=N
     public function index(Request $request)
     {
-        $inbox = $this->inboxCompanies($request->user());
-        if (!$inbox) {
-            return response()->json(['error' => 'No tienes acceso a los comprobantes.'], 403);
+        $user = $request->user();
+        $query = ExpenseReceipt::with(self::WITH)->latest();
+
+        if ($request->query('vista') === 'bandeja') {
+            $inbox = $this->inboxCompanies($user);
+            if (!$inbox) {
+                return response()->json(['error' => 'No tienes acceso a la bandeja de comprobantes.'], 403);
+            }
+            $query->whereIn('company', $inbox);
+        } else {
+            $query->where('user_id', $user->id);
         }
-        $query = ExpenseReceipt::with(self::WITH)->latest()->whereIn('company', $inbox);
 
         if (in_array($request->query('estado'), ['pendiente', 'confirmado'], true)) {
             $query->where('status', $request->query('estado'));
@@ -194,7 +200,7 @@ class ExpenseReceiptController extends Controller
         return response()->json(['success' => true, 'receipt' => $receipt]);
     }
 
-    // Solo root puede borrar (quien sube ya no ve la lista)
+    // Quien lo envió puede borrarlo mientras siga pendiente (por si se equivocó); root siempre
     public function destroy(Request $request, $id)
     {
         $user = $request->user();
@@ -202,8 +208,11 @@ class ExpenseReceiptController extends Controller
         if (!$receipt) {
             return response()->json(['error' => 'Comprobante no encontrado.'], 404);
         }
-        if ((int) $user->role_id !== 0) {
-            return response()->json(['error' => 'No autorizado.'], 403);
+
+        $esRoot = (int) $user->role_id === 0;
+        $esSuyoPendiente = (int) $receipt->user_id === (int) $user->id && $receipt->status === 'pendiente';
+        if (!$esRoot && !$esSuyoPendiente) {
+            return response()->json(['error' => 'Solo puedes borrar tus comprobantes que aún no se confirman.'], 403);
         }
 
         $receipt->delete();
