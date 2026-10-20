@@ -877,6 +877,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
     Route::post('/calendar/events/{id}/complete', [\App\Http\Controllers\CalendarEventController::class, 'complete']);
 
+    // Comprobantes de gastos (Agente Solutions / Mantenere)
+    Route::get('/comprobantes/estado', [\App\Http\Controllers\ExpenseReceiptController::class, 'status']);
+    Route::get('/comprobantes', [\App\Http\Controllers\ExpenseReceiptController::class, 'index']);
+    Route::post('/comprobantes', [\App\Http\Controllers\ExpenseReceiptController::class, 'store']);
+    Route::post('/comprobantes/{id}/confirmar', [\App\Http\Controllers\ExpenseReceiptController::class, 'confirm']);
+    Route::delete('/comprobantes/{id}', [\App\Http\Controllers\ExpenseReceiptController::class, 'destroy']);
+
     // --- UBICACIÓN EN VIVO DEL EQUIPO (con consentimiento; mapa solo para can_view_live_map) ---
     Route::get('/ubicacion/estado', [\App\Http\Controllers\LiveLocationController::class, 'status']);
     Route::post('/ubicacion/consentimiento', [\App\Http\Controllers\LiveLocationController::class, 'consent']);
