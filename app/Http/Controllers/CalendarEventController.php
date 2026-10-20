@@ -12,14 +12,17 @@ use Illuminate\Support\Facades\DB;
 
 class CalendarEventController extends Controller
 {
+    private const EVENT_RELATIONS = [
+        'creator:id,first_name,last_name,profile_picture',
+        'completer:id,first_name,last_name',
+        'participants:id,first_name,last_name,profile_picture,role_id',
+    ];
+
     public function index(Request $request)
     {
         try {
             $user = $request->user();
-            $query = CalendarEvent::with([
-                    'creator:id,first_name,last_name,profile_picture',
-                    'completer:id,first_name,last_name',
-                ])
+            $query = CalendarEvent::with(self::EVENT_RELATIONS)
                 ->orderBy('event_date', 'asc');
 
             if ($user && $user->role_id === 0) {
@@ -29,6 +32,15 @@ class CalendarEventController extends Controller
             } else {
                 $query->where(function($q) {
                     $q->whereNull('tenant_id')->orWhere('tenant_id', 1);
+                });
+            }
+
+            // Los admins ven todo; los demás solo los avisos de todo el equipo o en los que participan
+            if ($user && !in_array((int) $user->role_id, [0, 1], true)) {
+                $query->where(function ($q) use ($user) {
+                    $q->whereDoesntHave('participants')
+                        ->orWhereHas('participants', fn ($p) => $p->where('users.id', $user->id))
+                        ->orWhere('created_by', $user->id);
                 });
             }
 
@@ -102,6 +114,34 @@ class CalendarEventController extends Controller
         }
     }
 
+    // Admins y técnicos activos del equipo: opciones del selector de participantes
+    public function team(Request $request)
+    {
+        try {
+            $members = $this->teamMembers($request->user())
+                ->orderBy('role_id')
+                ->orderBy('first_name')
+                ->get(['id', 'first_name', 'last_name', 'profile_picture', 'role_id']);
+
+            return response()->json($members, 200);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al obtener el equipo: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // Root, admins y técnicos activos del mismo equipo que el usuario
+    private function teamMembers($user)
+    {
+        $query = User::withoutGlobalScopes()
+            ->where('is_active', 1)
+            ->whereIn('role_id', [0, 1, 2]);
+
+        if (!empty($user?->tenant_id)) {
+            return $query->where('tenant_id', $user->tenant_id);
+        }
+        return $query->where(fn ($q) => $q->whereNull('tenant_id')->orWhere('tenant_id', 1));
+    }
+
     // Avisos del mismo equipo que el usuario (misma regla que index)
     private function teamEvents($user)
     {
@@ -134,6 +174,8 @@ class CalendarEventController extends Controller
                 'notify_team' => 'nullable|boolean',
                 'label' => 'nullable|string|max:60',
                 'parent_id' => 'nullable|integer',
+                'participant_ids' => 'nullable|array|max:100',
+                'participant_ids.*' => 'integer',
             ], [
                 'start_time.regex' => 'La hora de inicio no es válida.',
                 'end_time.regex' => 'La hora de fin no es válida.',
@@ -168,6 +210,18 @@ class CalendarEventController extends Controller
                 }
             }
 
+            // Participantes: solo se aceptan miembros del equipo; vacío = todo el equipo
+            $participantIds = [];
+            if (!empty($validated['participant_ids'])) {
+                $participantIds = $this->teamMembers($user)
+                    ->whereIn('id', array_unique($validated['participant_ids']))
+                    ->pluck('id')
+                    ->all();
+                if (!$participantIds) {
+                    return response()->json(['error' => 'Las personas elegidas ya no están activas en el equipo.'], 422);
+                }
+            }
+
             $event = new CalendarEvent();
             $event->parent_id = $parent?->id;
             $event->tenant_id = $user->tenant_id;
@@ -180,9 +234,12 @@ class CalendarEventController extends Controller
             $event->label = $label !== '' ? $label : null;
             $event->type = $validated['type'] ?? 'aviso';
             $event->color = $validated['color'] ?? '#F26522';
-            // Todo aviso se notifica siempre a todo el equipo
+            // Todo aviso se notifica: a sus participantes o, si no tiene, a todo el equipo
             $event->notify_team = true;
             $event->save();
+            if ($participantIds) {
+                $event->participants()->sync($participantIds);
+            }
 
             $event->setRelation('parent', $parent);
             $push = $event->notify_team
@@ -193,7 +250,7 @@ class CalendarEventController extends Controller
                 'success' => true,
                 'message' => 'Aviso registrado exitosamente.',
                 'push' => $push,
-                'event' => $event->unsetRelation('parent')->load('creator:id,first_name,last_name,profile_picture')
+                'event' => $event->unsetRelation('parent')->load(self::EVENT_RELATIONS)
             ], 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             // Datos inválidos del formulario: 422 con el mensaje (no un error del servidor)
@@ -203,7 +260,7 @@ class CalendarEventController extends Controller
         }
     }
 
-    // Marca el aviso como completado. El comentario (opcional) le llega a todo el equipo.
+    // Marca el aviso como completado. El comentario (opcional) le llega a sus participantes o a todo el equipo.
     public function complete(Request $request, $id)
     {
         try {
@@ -241,7 +298,7 @@ class CalendarEventController extends Controller
                 'success' => true,
                 'message' => 'Aviso completado.',
                 'push' => $push,
-                'event' => $event->load(['creator:id,first_name,last_name,profile_picture', 'completer:id,first_name,last_name'])
+                'event' => $event->load(self::EVENT_RELATIONS)
             ], 200);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
@@ -250,26 +307,20 @@ class CalendarEventController extends Controller
         }
     }
 
-    // Campanita + push a root, admins y técnicos activos del equipo del usuario.
+    // Campanita + push a los participantes del aviso o, si no tiene, a root, admins y técnicos activos del equipo.
     // Devuelve el resultado de OneSignal para que el frontend avise si no se envió.
     private function notifyTeam($user, CalendarEvent $event, TeamCalendarNoticeNotification $notification): array
     {
         try {
-            $teamQuery = User::withoutGlobalScopes()
-                ->where('is_active', 1)
-                ->whereIn('role_id', [0, 1, 2]); // Root, admins y técnicos
-
-            if (!empty($user->tenant_id)) {
-                $teamQuery->where('tenant_id', $user->tenant_id);
-            } else {
-                $teamQuery->where(function($q) {
-                    $q->whereNull('tenant_id')->orWhere('tenant_id', 1);
-                });
+            $participantIds = $event->participants()->pluck('users.id');
+            $teamQuery = $this->teamMembers($user);
+            if ($participantIds->isNotEmpty()) {
+                $teamQuery->whereIn('id', $participantIds);
             }
 
             $recipients = $teamQuery->get();
             if ($recipients->isEmpty()) {
-                return ['sent' => false, 'recipients' => 0, 'subscribed' => 0, 'id' => null, 'error' => 'No hay administradores ni técnicos activos en el equipo.'];
+                return ['sent' => false, 'recipients' => 0, 'subscribed' => 0, 'id' => null, 'error' => 'No hay administradores ni técnicos activos para notificar.'];
             }
 
             // Campanita (base de datos) para cada miembro

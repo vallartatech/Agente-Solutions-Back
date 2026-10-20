@@ -873,6 +873,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'index']);
     Route::get('/calendar/birthdays', [\App\Http\Controllers\CalendarEventController::class, 'getBirthdays']);
     Route::get('/calendar/labels', [\App\Http\Controllers\CalendarEventController::class, 'labels']);
+    Route::get('/calendar/team', [\App\Http\Controllers\CalendarEventController::class, 'team']);
     Route::post('/calendar/events', [\App\Http\Controllers\CalendarEventController::class, 'store']);
     Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
     Route::post('/calendar/events/{id}/complete', [\App\Http\Controllers\CalendarEventController::class, 'complete']);

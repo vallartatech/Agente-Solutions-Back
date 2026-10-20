@@ -44,6 +44,13 @@ class CalendarEvent extends Model
         return $this->belongsTo(User::class, 'completed_by');
     }
 
+    // Personas invitadas (junta, trabajo...); vacío = aviso para todo el equipo
+    public function participants()
+    {
+        return $this->belongsToMany(User::class, 'calendar_event_participants', 'calendar_event_id', 'user_id')
+            ->withTimestamps();
+    }
+
     // Aviso anterior del que este es el seguimiento
     public function parent()
     {
