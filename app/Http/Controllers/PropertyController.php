@@ -422,6 +422,162 @@ class PropertyController extends Controller
     }
 
     // ---------------------------------------------------
+    // EXPEDIENTE DE LA PROPIEDAD (vista "Detalle de la propiedad")
+    // Propiedad + encargado (cliente dueño) + todos sus trabajos con técnicos,
+    // visitas, cotizaciones, pagos y reportes, en el formato que espera el frontend.
+    // ---------------------------------------------------
+    public function expediente($id)
+    {
+        try {
+            $user = auth('sanctum')->user();
+            if (!$user) {
+                return response()->json(['error' => 'No autorizado.'], 401);
+            }
+
+            $property = Property::withoutGlobalScopes()->with('client')->find($id);
+            if (!$property) {
+                return response()->json(['error' => 'No se encontró la propiedad.'], 404);
+            }
+            if (!$this->puedeVerPropiedad($user, $property)) {
+                return response()->json(['error' => 'No tienes acceso a esta propiedad.'], 403);
+            }
+
+            $workOrders = WorkOrder::withoutGlobalScopes()->with(['tecnico', 'technicians'])
+                ->where('property_id', $property->id)->get();
+            $services = \App\Models\Service::withoutGlobalScopes()->with(['technician', 'technicians'])
+                ->where('property_id', $property->id)->get();
+
+            // Cotizaciones y reportes de todos los trabajos en dos consultas
+            $quotes = \App\Models\Quote::withoutGlobalScopes()
+                ->where(fn ($q) => $q->whereIn('work_order_id', $workOrders->pluck('id'))->orWhereIn('service_id', $services->pluck('id')))
+                ->orderBy('created_at')->get();
+            $reports = \App\Models\WorkReport::with('technician:id,first_name,last_name')
+                ->where(fn ($q) => $q->whereIn('work_order_id', $workOrders->pluck('id'))->orWhereIn('service_id', $services->pluck('id')))
+                ->orderBy('created_at')->get();
+
+            $fecha = fn ($v) => $v ? \Carbon\Carbon::parse($v)->toIso8601String() : null;
+            $limpiar = fn ($d) => trim(preg_replace('/\[LOTE-[A-Z0-9]+\]\s*(\(\d+\/\d+\))?\s*/i', '', (string) $d));
+            $tecnico = fn ($u) => [
+                'id' => $u->id,
+                'nombre' => trim("{$u->first_name} {$u->last_name}") ?: ($u->name ?? 'Técnico'),
+                'telefono' => $u->phone_number,
+                'email' => $u->email,
+                'foto' => $u->profile_picture,
+            ];
+            $tecnicos = fn ($principal, $lista) => collect([$principal])->merge($lista)->filter()
+                ->unique('id')->map($tecnico)->values();
+            $cotizacion = fn ($c) => [
+                'id' => $c->id,
+                'folio' => null,
+                'status' => $c->status,
+                'payment_status' => $c->payment_status,
+                'cash_confirmed' => (bool) $c->cash_confirmed,
+                'advance_paid' => (bool) $c->advance_paid,
+                'remaining_paid' => (bool) $c->remaining_paid,
+                'total' => $c->estimated_amount,
+                'file_path' => $c->file_path,
+                'created_at' => $fecha($c->created_at),
+                'updated_at' => $fecha($c->updated_at),
+                'cash_confirmed_at' => $fecha($c->cash_confirmed_at),
+                'advance_paid_at' => $fecha($c->advance_paid_at),
+            ];
+            $reporte = fn ($r) => [
+                'id' => $r->id,
+                'description' => $r->description,
+                'image_url' => $r->image_url,
+                'tecnico_nombre' => $r->technician ? trim("{$r->technician->first_name} {$r->technician->last_name}") : null,
+                'created_at' => $fecha($r->created_at),
+            ];
+
+            $trabajos = $workOrders->map(fn ($wo) => [
+                'uid' => "wo-{$wo->id}",
+                'id' => $wo->id,
+                'kind' => 'trabajo',
+                'titulo' => $wo->type ? trim($wo->type . ($wo->equipment ? " - {$wo->equipment}" : '')) : ($wo->zone ?: 'Trabajo'),
+                'tipo' => $wo->type,
+                'zona' => $wo->zone,
+                'descripcion' => $limpiar($wo->description),
+                'status' => $wo->status,
+                'prioridad' => $wo->priority,
+                'scheduled_at' => $fecha($wo->scheduled_at),
+                'arrival_status' => $wo->arrival_status,
+                'arrived_at' => $fecha($wo->arrived_at),
+                'second_visit_proposed_date' => $wo->second_visit_proposed_date,
+                'second_visit_reason' => $wo->second_visit_reason,
+                'created_at' => $fecha($wo->created_at),
+                'updated_at' => $fecha($wo->updated_at),
+                'fotos' => array_values(array_filter([$wo->evidence_path, $wo->evidence_path_2])),
+                'tecnicos' => $tecnicos($wo->tecnico, $wo->technicians),
+                'cotizaciones' => $quotes->where('work_order_id', $wo->id)->map($cotizacion)->values(),
+                'reportes' => $reports->where('work_order_id', $wo->id)->map($reporte)->values(),
+            ])->concat($services->map(fn ($s) => [
+                'uid' => "sv-{$s->id}",
+                'id' => $s->id,
+                'kind' => (stripos((string) $s->title, 'levantamiento') !== false || stripos((string) $s->service_type, 'levantamiento') !== false)
+                    ? 'levantamiento' : 'servicio',
+                'titulo' => $s->title ?: 'Servicio',
+                'tipo' => $s->service_type,
+                'zona' => null,
+                'descripcion' => $limpiar($s->description),
+                'status' => $s->status,
+                'prioridad' => $s->priority,
+                'scheduled_at' => $fecha($s->scheduled_start),
+                'arrival_status' => $s->arrival_status,
+                'arrived_at' => $fecha($s->arrived_at),
+                'second_visit_proposed_date' => $s->second_visit_proposed_date,
+                'second_visit_reason' => $s->second_visit_reason,
+                'created_at' => $fecha($s->created_at),
+                'updated_at' => $fecha($s->updated_at),
+                'fotos' => array_values(array_filter([$s->evidence_path])),
+                'tecnicos' => $tecnicos($s->technician, $s->technicians),
+                'cotizaciones' => $quotes->where('service_id', $s->id)->whereNull('work_order_id')->map($cotizacion)->values(),
+                'reportes' => $reports->where('service_id', $s->id)->map($reporte)->values(),
+            ]))->sortByDesc('created_at')->values();
+
+            $cliente = $property->client;
+
+            return response()->json([
+                'propiedad' => array_merge($property->toArray(), [
+                    'nombre_propiedad' => $property->property_name,
+                ]),
+                'encargado' => $cliente ? [
+                    'name' => $cliente->name,
+                    'phone' => $cliente->phone,
+                    'email' => $cliente->email,
+                    'profile_picture' => $cliente->profile_picture,
+                ] : null,
+                'trabajos' => $trabajos,
+            ], 200);
+        } catch (\Exception $e) {
+            \Log::error('Error en expediente de propiedad: ' . $e->getMessage());
+            return response()->json(['error' => 'No se pudo cargar la información de la propiedad.'], 500);
+        }
+    }
+
+    // Misma regla de acceso que la lista de propiedades (index)
+    private function puedeVerPropiedad($user, Property $property): bool
+    {
+        $rol = (int) $user->role_id;
+        if ($rol === 0) {
+            return true;
+        }
+        if ($rol === 3) {
+            $cliente = DB::table('clients')->where('user_id', $user->id)->first();
+            if (!$cliente) {
+                return false;
+            }
+            return (int) $property->client_id === (int) $cliente->id
+                || DB::table('property_shares')->where('property_id', $property->id)->where('client_id', $cliente->id)->exists();
+        }
+        // Tenant nulo y tenant 1 son el mismo equipo (Agente Solutions)
+        if (empty($user->tenant_id) || (int) $user->tenant_id === 1) {
+            return true;
+        }
+        return (int) $property->tenant_id === (int) $user->tenant_id
+            || (int) optional($property->client)->tenant_id === (int) $user->tenant_id;
+    }
+
+    // ---------------------------------------------------
     // 4. DATOS DEL DASHBOARD DE LA PROPIEDAD
     // ---------------------------------------------------
     public function getDashboardData($id)

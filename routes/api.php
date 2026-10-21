@@ -736,6 +736,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/propiedades/{id}', [PropertyController::class, 'destroy']);
     Route::get('/propiedades/{id}/survey', [PropertyController::class, 'getPropertySurvey']);
     Route::get('/propiedades/{id}/dashboard', [PropertyController::class, 'getDashboardData']);
+    Route::get('/propiedades/{id}/expediente', [PropertyController::class, 'expediente']);
 
     Route::post('/propiedades/{id}/update', [PropertyController::class, 'updateProperty']);
     Route::get('/properties/by-curp/{curp}', [PropertyController::class, 'getByCurp']);
