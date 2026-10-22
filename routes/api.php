@@ -880,6 +880,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/calendar/events/{id}/complete', [\App\Http\Controllers\CalendarEventController::class, 'complete']);
 
     // Comprobantes de gastos (Agente Solutions / Mantenere)
+    // Chat interno del equipo
+    Route::get('/chats', [\App\Http\Controllers\ChatController::class, 'index']);
+    Route::get('/chats/no-leidos', [\App\Http\Controllers\ChatController::class, 'noLeidos']);
+    Route::get('/chats/contactos', [\App\Http\Controllers\ChatController::class, 'contactos']);
+    Route::post('/chats', [\App\Http\Controllers\ChatController::class, 'store']);
+    Route::get('/chats/{id}/mensajes', [\App\Http\Controllers\ChatController::class, 'mensajes']);
+    Route::post('/chats/{id}/mensajes', [\App\Http\Controllers\ChatController::class, 'enviar']);
+    Route::post('/chats/{id}/participantes', [\App\Http\Controllers\ChatController::class, 'agregar']);
+    Route::delete('/chats/{id}/participantes/{userId}', [\App\Http\Controllers\ChatController::class, 'quitar']);
+    Route::put('/chats/{id}', [\App\Http\Controllers\ChatController::class, 'renombrar']);
+
     Route::get('/comprobantes/estado', [\App\Http\Controllers\ExpenseReceiptController::class, 'status']);
     Route::get('/comprobantes', [\App\Http\Controllers\ExpenseReceiptController::class, 'index']);
     Route::post('/comprobantes', [\App\Http\Controllers\ExpenseReceiptController::class, 'store']);
@@ -889,6 +900,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // --- UBICACIÓN EN VIVO DEL EQUIPO (con consentimiento; mapa solo para can_view_live_map) ---
     Route::get('/ubicacion/estado', [\App\Http\Controllers\LiveLocationController::class, 'status']);
     Route::post('/ubicacion/consentimiento', [\App\Http\Controllers\LiveLocationController::class, 'consent']);
+    Route::post('/ubicacion/pausa', [\App\Http\Controllers\LiveLocationController::class, 'pause']);
     Route::post('/ubicacion', [\App\Http\Controllers\LiveLocationController::class, 'store']);
     Route::get('/mapa-equipo', [\App\Http\Controllers\LiveLocationController::class, 'team']);
     Route::get('/mapa-equipo/{userId}/recorrido', [\App\Http\Controllers\LiveLocationController::class, 'route']);

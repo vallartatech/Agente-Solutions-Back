@@ -35,8 +35,9 @@ class CalendarEventController extends Controller
                 });
             }
 
-            // Los admins ven todo; los demás solo los avisos de todo el equipo o en los que participan
-            if ($user && !in_array((int) $user->role_id, [0, 1], true)) {
+            // Solo quien tiene "ver todo el calendario" ve todos los avisos; los demás (admins incluidos)
+            // ven los de todo el equipo, en los que participan y los que publicaron
+            if ($user && !$user->can_view_all_calendar) {
                 $query->where(function ($q) use ($user) {
                     $q->whereDoesntHave('participants')
                         ->orWhereHas('participants', fn ($p) => $p->where('users.id', $user->id))

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\UserLocation;
+use App\Services\PlaceVisitService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,8 @@ use Illuminate\Support\Facades\DB;
  * - Solo se guarda la ubicación de quien dio su consentimiento.
  * - Solo los usuarios con can_view_live_map pueden consultar el mapa (validado aquí, no solo en la UI).
  * - Cada consulta al mapa queda registrada en location_access_logs.
+ * - Quien tiene can_pause_location puede pausar su ubicación: no se guarda nada y el mapa
+ *   muestra "Ubicación pausada" en lugar de su posición (visible para quien consulta el mapa).
  */
 class LiveLocationController extends Controller
 {
@@ -33,6 +36,43 @@ class LiveLocationController extends Controller
             'consent' => !is_null($user->location_consent_at),
             'consent_at' => $user->location_consent_at,
             'can_view_map' => (bool) $user->can_view_live_map,
+            'can_pause' => (bool) $user->can_pause_location,
+            'paused' => !is_null($user->location_paused_at),
+            'paused_at' => $user->location_paused_at,
+            'pause_status' => $user->location_pause_status,
+        ]);
+    }
+
+    // Pausar (con un estado: "En junta", "Ocupado"...) o reanudar la ubicación propia.
+    // Solo con el permiso can_pause_location.
+    public function pause(Request $request)
+    {
+        $user = $request->user();
+        if (!$user->can_pause_location) {
+            return response()->json(['error' => 'No tienes permiso para pausar tu ubicación.'], 403);
+        }
+
+        $validated = $request->validate([
+            'paused' => 'required|boolean',
+            'status' => 'nullable|string|max:40',
+        ]);
+
+        if ($validated['paused']) {
+            $estado = trim((string) ($validated['status'] ?? ''));
+            $user->location_paused_at = $user->location_paused_at ?? now();
+            $user->location_pause_status = $estado !== '' ? $estado : 'Ocupado';
+            // Mientras está pausada no se sabe dónde está: se cierra su visita sin avisar
+            app(PlaceVisitService::class)->cerrarSinAviso($user);
+        } else {
+            $user->location_paused_at = null;
+            $user->location_pause_status = null;
+        }
+        $user->save();
+
+        return response()->json([
+            'paused' => !is_null($user->location_paused_at),
+            'paused_at' => $user->location_paused_at,
+            'pause_status' => $user->location_pause_status,
         ]);
     }
 
@@ -63,6 +103,10 @@ class LiveLocationController extends Controller
         if (!in_array((int) $user->role_id, self::TRACKED_ROLES, true) || is_null($user->location_consent_at)) {
             return response()->json(['stored' => false, 'reason' => 'no_consent'], 202);
         }
+        // Ubicación pausada: no se guarda nada aunque llegue
+        if ($user->can_pause_location && !is_null($user->location_paused_at)) {
+            return response()->json(['stored' => false, 'reason' => 'paused'], 202);
+        }
 
         $validated = $request->validate([
             'lat' => 'required|numeric|between:-90,90',
@@ -92,6 +136,14 @@ class LiveLocationController extends Controller
             'recorded_at' => now(),
         ]);
 
+        // ¿Llegó a una propiedad registrada o se fue de ella? (avisa a quienes ven el mapa)
+        app(PlaceVisitService::class)->procesar(
+            $user,
+            (float) $validated['lat'],
+            (float) $validated['lng'],
+            isset($validated['accuracy']) ? (float) $validated['accuracy'] : null
+        );
+
         return response()->json(['stored' => true], 201);
     }
 
@@ -107,7 +159,7 @@ class LiveLocationController extends Controller
         $this->logAccess($viewer->id, null, 'view_team');
 
         $members = $this->teamQuery($viewer)
-            ->get(['id', 'first_name', 'last_name', 'role_id', 'profile_picture', 'phone_number', 'location_consent_at']);
+            ->get(['id', 'first_name', 'last_name', 'role_id', 'profile_picture', 'phone_number', 'location_consent_at', 'location_paused_at', 'location_pause_status']);
 
         $latestIds = UserLocation::whereIn('user_id', $members->pluck('id'))
             ->groupBy('user_id')
@@ -116,9 +168,13 @@ class LiveLocationController extends Controller
         $latest = UserLocation::whereIn('id', $latestIds)->get()->keyBy('user_id');
 
         $onlineSince = now()->subMinutes(self::ONLINE_MINUTES);
+        // En qué propiedad registrada está cada quien ahora (detectado por GPS)
+        $lugares = app(PlaceVisitService::class)->lugaresActuales($members->pluck('id')->all());
 
-        $data = $members->map(function ($m) use ($latest, $onlineSince) {
-            $loc = $latest->get($m->id);
+        $data = $members->map(function ($m) use ($latest, $onlineSince, $lugares) {
+            // Pausada: se informa que está pausada y no se muestra ninguna posición
+            $pausada = !is_null($m->location_paused_at);
+            $loc = $pausada ? null : $latest->get($m->id);
             return [
                 'id' => $m->id,
                 'name' => trim("{$m->first_name} {$m->last_name}"),
@@ -126,6 +182,10 @@ class LiveLocationController extends Controller
                 'profile_picture' => $m->profile_picture,
                 'phone_number' => $m->phone_number,
                 'sharing' => !is_null($m->location_consent_at),
+                'paused' => $pausada,
+                'paused_at' => $pausada ? Carbon::parse($m->location_paused_at)->toIso8601String() : null,
+                'pause_status' => $pausada ? ($m->location_pause_status ?: 'Ocupado') : null,
+                'place' => $pausada ? null : ($lugares[$m->id] ?? null),
                 'online' => $loc && $loc->recorded_at->greaterThanOrEqualTo($onlineSince),
                 'last_location' => $loc ? [
                     'lat' => $loc->lat,
