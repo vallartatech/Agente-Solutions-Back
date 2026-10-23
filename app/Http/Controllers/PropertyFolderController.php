@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Models\Property;
 use App\Models\PropertyFolder;
+use Cloudinary\Cloudinary;
 
 /**
  * Carpetas del catálogo de propiedades.
@@ -50,7 +51,7 @@ class PropertyFolderController extends Controller
                     $q->withoutGlobalScopes();
                 }])
                 ->orderBy('name')
-                ->get(['id', 'tenant_id', 'name', 'color', 'created_by', 'created_at']);
+                ->get(['id', 'tenant_id', 'name', 'color', 'logo_url', 'created_by', 'created_at']);
 
             return response()->json($carpetas, 200);
         } catch (\Exception $e) {
@@ -107,6 +108,58 @@ class PropertyFolderController extends Controller
         $carpeta->save();
 
         return response()->json($carpeta, 200);
+    }
+
+    // Logo de la empresa de la carpeta: subir (logo=archivo) o quitar (DELETE)
+    public function subirLogo(Request $request, $id)
+    {
+        $user = $request->user();
+        if (!$this->esAdmin($user)) {
+            return response()->json(['error' => 'No autorizado'], 403);
+        }
+        $carpeta = $this->carpetasVisibles($user)->find($id);
+        if (!$carpeta) {
+            return response()->json(['error' => 'Carpeta no encontrada'], 404);
+        }
+
+        try {
+            $request->validate(
+                ['logo' => 'required|file|mimes:jpeg,png,jpg,webp,svg|max:4096'],
+                ['logo.required' => 'Elige una imagen para el logo.', 'logo.max' => 'El logo debe pesar menos de 4 MB.', 'logo.mimes' => 'El logo debe ser una imagen (PNG, JPG, WebP o SVG).']
+            );
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
+        }
+
+        try {
+            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
+            $url = $cloudinary->uploadApi()->upload($request->file('logo')->getRealPath(), ['folder' => 'agente_logos_empresas'])['secure_url'];
+        } catch (\Throwable $e) {
+            \Log::error('Error subiendo logo de carpeta: ' . $e->getMessage());
+            return response()->json(['error' => 'No se pudo subir el logo.'], 500);
+        }
+
+        $carpeta->logo_url = $url;
+        $carpeta->save();
+
+        return response()->json(['logo_url' => $url], 200);
+    }
+
+    public function quitarLogo(Request $request, $id)
+    {
+        $user = $request->user();
+        if (!$this->esAdmin($user)) {
+            return response()->json(['error' => 'No autorizado'], 403);
+        }
+        $carpeta = $this->carpetasVisibles($user)->find($id);
+        if (!$carpeta) {
+            return response()->json(['error' => 'Carpeta no encontrada'], 404);
+        }
+
+        $carpeta->logo_url = null;
+        $carpeta->save();
+
+        return response()->json(['logo_url' => null], 200);
     }
 
     // Borrar la carpeta NO borra las propiedades: solo quedan fuera de carpeta

@@ -16,6 +16,7 @@ class PropertyFolder extends Model
         'created_by',
         'name',
         'color',
+        'logo_url', // logo de la empresa (catálogo y Mapa de propiedades)
     ];
 
     public function properties()
