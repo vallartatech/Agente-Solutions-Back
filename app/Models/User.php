@@ -71,6 +71,8 @@ class User extends Authenticatable
             'can_view_all_calendar' => 'boolean',
             'can_pause_location' => 'boolean',
             'location_paused_at' => 'datetime',
+            'chat_last_seen_at' => 'datetime',
+            'can_manage_stickers' => 'boolean',
             'location_consent_at' => 'datetime',
         ];
     }

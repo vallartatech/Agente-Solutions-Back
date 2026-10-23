@@ -10,6 +10,7 @@ class ChatParticipant extends Model
 
     protected $fillable = [
         'chat_id', 'user_id', 'added_by', 'from_message_id', 'until_message_id', 'left_at', 'last_read_message_id',
+        'cleared_until_message_id',
     ];
 
     protected $casts = [

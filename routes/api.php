@@ -885,11 +885,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/chats/no-leidos', [\App\Http\Controllers\ChatController::class, 'noLeidos']);
     Route::get('/chats/contactos', [\App\Http\Controllers\ChatController::class, 'contactos']);
     Route::post('/chats', [\App\Http\Controllers\ChatController::class, 'store']);
-    Route::get('/chats/{id}/mensajes', [\App\Http\Controllers\ChatController::class, 'mensajes']);
-    Route::post('/chats/{id}/mensajes', [\App\Http\Controllers\ChatController::class, 'enviar']);
-    Route::post('/chats/{id}/participantes', [\App\Http\Controllers\ChatController::class, 'agregar']);
-    Route::delete('/chats/{id}/participantes/{userId}', [\App\Http\Controllers\ChatController::class, 'quitar']);
-    Route::put('/chats/{id}', [\App\Http\Controllers\ChatController::class, 'renombrar']);
+    Route::get('/chats/stickers', [\App\Http\Controllers\ChatController::class, 'stickers']);
+    Route::post('/chats/stickers', [\App\Http\Controllers\ChatController::class, 'crearSticker']);
+    Route::post('/chats/stickers/guardar', [\App\Http\Controllers\ChatController::class, 'guardarSticker']);
+    Route::delete('/chats/stickers/{stickerId}', [\App\Http\Controllers\ChatController::class, 'borrarSticker'])->whereNumber('stickerId');
+    Route::get('/chats/preferencias', [\App\Http\Controllers\ChatController::class, 'preferencias']);
+    Route::post('/chats/fondo', [\App\Http\Controllers\ChatController::class, 'cambiarFondo']);
+    Route::get('/chats/{id}/mensajes', [\App\Http\Controllers\ChatController::class, 'mensajes'])->whereNumber('id');
+    Route::post('/chats/{id}/mensajes', [\App\Http\Controllers\ChatController::class, 'enviar'])->whereNumber('id');
+    Route::delete('/chats/{id}/mensajes/{mensajeId}', [\App\Http\Controllers\ChatController::class, 'eliminarMensaje'])->whereNumber(['id', 'mensajeId']);
+    Route::post('/chats/{id}/participantes', [\App\Http\Controllers\ChatController::class, 'agregar'])->whereNumber('id');
+    Route::delete('/chats/{id}/participantes/{userId}', [\App\Http\Controllers\ChatController::class, 'quitar'])->whereNumber(['id', 'userId']);
+    Route::put('/chats/{id}', [\App\Http\Controllers\ChatController::class, 'renombrar'])->whereNumber('id');
+    Route::delete('/chats/{id}', [\App\Http\Controllers\ChatController::class, 'eliminarChat'])->whereNumber('id');
 
     Route::get('/comprobantes/estado', [\App\Http\Controllers\ExpenseReceiptController::class, 'status']);
     Route::get('/comprobantes', [\App\Http\Controllers\ExpenseReceiptController::class, 'index']);

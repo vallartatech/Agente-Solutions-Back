@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\ChatParticipant;
+use App\Models\ChatSticker;
 use App\Models\User;
 use App\Services\OneSignalPush;
 use Cloudinary\Cloudinary;
@@ -25,6 +26,10 @@ class ChatController extends Controller
 {
     private const TEAM_ROLES = [0, 1, 2];
     private const PAGE = 50;
+    private const MAX_MEDIA_KB = 12288; // 12 MB (límite de subida del servidor)
+    private const EN_LINEA_SEGUNDOS = 60;
+    // Fondos predefinidos válidos (el frontend los dibuja); también se acepta la URL de una imagen subida
+    private const FONDOS = ['default', 'noche', 'atardecer', 'oceano', 'bosque', 'naranja', 'claro', 'puntos'];
 
     // Mis chats: título, último mensaje visible y no leídos
     public function index(Request $request)
@@ -34,18 +39,24 @@ class ChatController extends Controller
             return response()->json(['error' => 'El chat es solo para el equipo.'], 403);
         }
 
-        $participaciones = ChatParticipant::with(['chat.participants.user:id,first_name,last_name,profile_picture,role_id'])
+        $participaciones = ChatParticipant::with(['chat.participants.user:id,first_name,last_name,profile_picture,role_id,chat_last_seen_at'])
             ->where('user_id', $user->id)->get();
+
+        $this->tocarPresencia($user);
 
         $chats = $participaciones->map(function (ChatParticipant $p) use ($user) {
             $ultimo = $this->visibles($p)->orderByDesc('id')->first();
+            // "Eliminar chat": oculto hasta que llegue un mensaje nuevo
+            if (!$ultimo && $p->cleared_until_message_id > 0) {
+                return null;
+            }
             return array_merge($this->formatoChat($p->chat, $user), [
                 'activo' => $p->isActive(),
                 'no_leidos' => $this->noLeidosDe($p, $user),
                 'ultimo_mensaje' => $ultimo ? $this->formatoMensaje($ultimo, $p->chat) : null,
                 'orden' => $ultimo?->id ?? 0,
             ]);
-        })->sortByDesc('orden')->values();
+        })->filter()->sortByDesc('orden')->values();
 
         return response()->json($chats);
     }
@@ -54,6 +65,7 @@ class ChatController extends Controller
     public function noLeidos(Request $request)
     {
         $user = $request->user();
+        $this->tocarPresencia($user); // el encabezado consulta esto cada 20 s: sirve para "En línea"
         $total = ChatParticipant::where('user_id', $user->id)->get()
             ->sum(fn (ChatParticipant $p) => $this->noLeidosDe($p, $user));
 
@@ -137,6 +149,7 @@ class ChatController extends Controller
         if (!$p) {
             return response()->json(['error' => 'No perteneces a este chat.'], 403);
         }
+        $this->tocarPresencia($user);
 
         $query = $this->visibles($p);
         if ($request->filled('after_id')) {
@@ -155,7 +168,7 @@ class ChatController extends Controller
             $p->save();
         }
 
-        $chat->load('participants.user:id,first_name,last_name,profile_picture,role_id');
+        $chat->load('participants.user:id,first_name,last_name,profile_picture,role_id,chat_last_seen_at');
 
         return response()->json([
             'chat' => $this->formatoChat($chat, $user),
@@ -170,6 +183,8 @@ class ChatController extends Controller
             ))->values(),
             'mensajes' => $mensajes->map(fn ($m) => $this->formatoMensaje($m, $chat)),
             'hay_anteriores' => $mensajes->isNotEmpty() && $this->visibles($p)->where('id', '<', $mensajes->first()->id)->exists(),
+            // Mensajes eliminados hace poco: quien ya tiene el chat abierto los quita sin recargar
+            'eliminados' => $this->visibles($p)->where('deleted_at', '>=', now()->subMinutes(15))->pluck('id'),
         ]);
     }
 
@@ -182,32 +197,53 @@ class ChatController extends Controller
             return response()->json(['error' => 'Ya no participas en este chat.'], 403);
         }
 
+        // media: foto o video (también se acepta "image" de la versión anterior); sticker_id: uno de mis stickers
         $validated = $this->validar($request, [
             'body' => 'nullable|string|max:4000',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg,webp,heic,heif|max:10240',
+            'media' => 'nullable|file|mimes:jpeg,png,jpg,webp,gif,heic,heif,mp4,mov,webm,3gp,m4v|max:' . self::MAX_MEDIA_KB,
+            'image' => 'nullable|file|mimes:jpeg,png,jpg,webp,gif,heic,heif|max:' . self::MAX_MEDIA_KB,
+            'sticker_id' => 'nullable|integer',
+        ], [
+            'media.max' => 'El archivo pesa demasiado (máximo 12 MB).',
+            'media.mimes' => 'Solo se pueden enviar fotos o videos.',
         ]);
         if ($validated instanceof \Illuminate\Http\JsonResponse) return $validated;
 
         $texto = trim((string) ($validated['body'] ?? ''));
-        if ($texto === '' && !$request->hasFile('image')) {
-            return response()->json(['error' => 'Escribe un mensaje o agrega una foto.'], 422);
+        $archivo = $request->file('media') ?? $request->file('image');
+        // Sticker: uno mío o uno del paquete del equipo
+        $sticker = !empty($validated['sticker_id'])
+            ? (ChatSticker::where('user_id', $user->id)->where('is_team', false)->find($validated['sticker_id'])
+                ?? $this->stickersEquipo($user)->find($validated['sticker_id']))
+            : null;
+        if (!empty($validated['sticker_id']) && !$sticker) {
+            return response()->json(['error' => 'Ese sticker ya no existe.'], 422);
+        }
+        if ($texto === '' && !$archivo && !$sticker) {
+            return response()->json(['error' => 'Escribe un mensaje o agrega una foto o video.'], 422);
         }
 
+        $tipo = 'text';
         $url = null;
-        if ($request->hasFile('image')) {
+        if ($sticker) {
+            $tipo = 'sticker';
+            $url = $sticker->url;
+            $texto = '';
+        } elseif ($archivo) {
+            $esVideo = str_starts_with((string) $archivo->getMimeType(), 'video/');
             try {
-                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
-                $url = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), ['folder' => 'agente_chats'])['secure_url'];
+                $url = $this->subir($archivo->getRealPath(), $esVideo ? 'video' : 'image', 'agente_chats');
             } catch (\Throwable $e) {
-                Log::error('Error subiendo foto del chat: ' . $e->getMessage());
-                return response()->json(['error' => 'No se pudo subir la foto. Intenta de nuevo.'], 500);
+                Log::error('Error subiendo archivo del chat: ' . $e->getMessage());
+                return response()->json(['error' => 'No se pudo subir el archivo. Intenta de nuevo.'], 500);
             }
+            $tipo = $esVideo ? 'video' : 'image';
         }
 
         $mensaje = ChatMessage::create([
             'chat_id' => $chat->id,
             'user_id' => $user->id,
-            'type' => $url ? 'image' : 'text',
+            'type' => $tipo,
             'body' => $texto !== '' ? $texto : null,
             'attachment_url' => $url,
         ]);
@@ -224,7 +260,7 @@ class ChatController extends Controller
             OneSignalPush::sendToUsers(
                 $destinatarios,
                 $titulo,
-                $texto !== '' ? mb_strimwidth($texto, 0, 140, '…') : '📷 Foto',
+                $texto !== '' ? mb_strimwidth($texto, 0, 140, '…') : (['video' => '🎥 Video', 'sticker' => '💟 Sticker'][$tipo] ?? '📷 Foto'),
                 "/chats/{$chat->id}",
                 ['alert_type' => 'chat', 'chat_id' => $chat->id]
             );
@@ -337,12 +373,211 @@ class ChatController extends Controller
         return response()->json(['success' => true, 'chat' => $this->formatoChat($chat->fresh(), $user)]);
     }
 
+    // Eliminar un mensaje propio para todos ("Se eliminó este mensaje")
+    public function eliminarMensaje(Request $request, $id, $mensajeId)
+    {
+        $user = $request->user();
+        [$chat, $p] = $this->participacion($id, $user);
+        if (!$p || !$p->isActive()) {
+            return response()->json(['error' => 'Ya no participas en este chat.'], 403);
+        }
+
+        $mensaje = $this->visibles($p)->whereKey((int) $mensajeId)->first();
+        if (!$mensaje || (int) $mensaje->user_id !== (int) $user->id || $mensaje->type === 'system') {
+            return response()->json(['error' => 'Solo puedes eliminar tus propios mensajes.'], 403);
+        }
+
+        $mensaje->update(['body' => null, 'attachment_url' => null, 'deleted_at' => now()]);
+
+        return response()->json(['mensaje' => $this->formatoMensaje($mensaje->fresh(), $chat)]);
+    }
+
+    // "Eliminar chat": lo quita de MI lista (los demás lo conservan). En un grupo, además sale de él.
+    // Si después llega un mensaje nuevo, el chat reaparece solo con lo nuevo.
+    public function eliminarChat(Request $request, $id)
+    {
+        $user = $request->user();
+        [$chat, $p] = $this->participacion($id, $user);
+        if (!$p) {
+            return response()->json(['error' => 'No perteneces a este chat.'], 403);
+        }
+
+        DB::transaction(function () use ($chat, $user, $p) {
+            if ($chat->is_group && $p->isActive()) {
+                $aviso = $this->sistema($chat, $this->nombre($user) . ' salió del grupo');
+                $p->update(['left_at' => now(), 'until_message_id' => $aviso->id]);
+            }
+            $p->update([
+                'cleared_until_message_id' => (int) ($chat->messages()->max('id') ?? 0),
+                'last_read_message_id' => (int) ($chat->messages()->max('id') ?? 0),
+            ]);
+        });
+
+        return response()->json(['success' => true]);
+    }
+
+    // Stickers: los del equipo (todos los usan) y los míos (subidos o guardados)
+    public function stickers(Request $request)
+    {
+        $user = $request->user();
+        return response()->json([
+            'equipo' => $this->stickersEquipo($user)->latest('id')->get(['id', 'url']),
+            'mios' => ChatSticker::where('user_id', $user->id)->where('is_team', false)->latest('id')->get(['id', 'url']),
+            'puede_administrar' => (bool) $user->can_manage_stickers,
+        ]);
+    }
+
+    // Subir un sticker: personal, o del equipo (equipo=1, solo con el permiso can_manage_stickers)
+    public function crearSticker(Request $request)
+    {
+        $user = $request->user();
+        $validated = $this->validar($request, [
+            'image' => 'required|file|mimes:jpeg,png,jpg,webp,gif|max:4096',
+            'equipo' => 'nullable|boolean',
+        ], [
+            'image.required' => 'Elige una imagen para el sticker.',
+            'image.max' => 'La imagen del sticker debe pesar menos de 4 MB.',
+        ]);
+        if ($validated instanceof \Illuminate\Http\JsonResponse) return $validated;
+
+        $delEquipo = (bool) ($validated['equipo'] ?? false);
+        if ($delEquipo && !$user->can_manage_stickers) {
+            return response()->json(['error' => 'Solo el encargado puede agregar stickers del equipo.'], 403);
+        }
+        if ($error = $this->limiteStickers($user, $delEquipo)) {
+            return response()->json(['error' => $error], 422);
+        }
+
+        try {
+            $url = $this->subir($request->file('image')->getRealPath(), 'image', 'agente_chat_stickers');
+        } catch (\Throwable $e) {
+            Log::error('Error subiendo sticker: ' . $e->getMessage());
+            return response()->json(['error' => 'No se pudo subir el sticker.'], 500);
+        }
+
+        $sticker = ChatSticker::create([
+            'user_id' => $user->id,
+            'is_team' => $delEquipo,
+            'tenant_id' => $delEquipo ? $user->tenant_id : null,
+            'url' => $url,
+        ]);
+        return response()->json(['id' => $sticker->id, 'url' => $sticker->url, 'equipo' => $delEquipo], 201);
+    }
+
+    // Guardar en mis stickers uno que me enviaron (mensaje_id) o uno del equipo (sticker_id)
+    public function guardarSticker(Request $request)
+    {
+        $user = $request->user();
+        $validated = $this->validar($request, [
+            'mensaje_id' => 'nullable|integer',
+            'sticker_id' => 'nullable|integer',
+        ]);
+        if ($validated instanceof \Illuminate\Http\JsonResponse) return $validated;
+
+        $url = null;
+        if (!empty($validated['mensaje_id'])) {
+            $mensaje = ChatMessage::where('type', 'sticker')->whereNull('deleted_at')->find($validated['mensaje_id']);
+            $p = $mensaje ? ChatParticipant::where('chat_id', $mensaje->chat_id)->where('user_id', $user->id)->first() : null;
+            // Solo si ese mensaje es visible para mí
+            if ($p && $this->visibles($p)->whereKey($mensaje->id)->exists()) {
+                $url = $mensaje->attachment_url;
+            }
+        } elseif (!empty($validated['sticker_id'])) {
+            $url = $this->stickersEquipo($user)->whereKey($validated['sticker_id'])->value('url');
+        }
+        if (!$url) {
+            return response()->json(['error' => 'Ese sticker ya no está disponible.'], 404);
+        }
+
+        $existente = ChatSticker::where('user_id', $user->id)->where('is_team', false)->where('url', $url)->first();
+        if ($existente) {
+            return response()->json(['id' => $existente->id, 'url' => $existente->url, 'ya_estaba' => true]);
+        }
+        if ($error = $this->limiteStickers($user, false)) {
+            return response()->json(['error' => $error], 422);
+        }
+
+        // Misma imagen (no se vuelve a subir): se usa igual que los propios
+        $sticker = ChatSticker::create(['user_id' => $user->id, 'is_team' => false, 'url' => $url]);
+        return response()->json(['id' => $sticker->id, 'url' => $sticker->url], 201);
+    }
+
+    // Borrar: los míos, o los del equipo si soy el encargado
+    public function borrarSticker(Request $request, $stickerId)
+    {
+        $user = $request->user();
+        $sticker = ChatSticker::find((int) $stickerId);
+        $puede = $sticker && (
+            (!$sticker->is_team && (int) $sticker->user_id === (int) $user->id)
+            || ($sticker->is_team && $user->can_manage_stickers && $this->stickersEquipo($user)->whereKey($sticker->id)->exists())
+        );
+        if (!$puede) {
+            return response()->json(['error' => 'Sticker no encontrado.'], 404);
+        }
+
+        $sticker->delete();
+        return response()->json(['success' => true]);
+    }
+
+    // Stickers del equipo del usuario (tenant nulo y tenant 1 son Agente Solutions)
+    private function stickersEquipo($user)
+    {
+        $q = ChatSticker::where('is_team', true);
+        if (!empty($user->tenant_id) && (int) $user->tenant_id !== 1) {
+            return $q->where('tenant_id', $user->tenant_id);
+        }
+        return $q->where(fn ($w) => $w->whereNull('tenant_id')->orWhere('tenant_id', 1));
+    }
+
+    private function limiteStickers($user, bool $delEquipo): ?string
+    {
+        if ($delEquipo) {
+            return $this->stickersEquipo($user)->count() >= 300 ? 'El paquete del equipo llegó a 300 stickers. Borra alguno para agregar otro.' : null;
+        }
+        return ChatSticker::where('user_id', $user->id)->where('is_team', false)->count() >= 100
+            ? 'Llegaste al máximo de 100 stickers. Borra alguno para agregar otro.'
+            : null;
+    }
+
+    // Preferencias del chat del usuario (por ahora: el fondo)
+    public function preferencias(Request $request)
+    {
+        return response()->json(['fondo' => $request->user()->chat_wallpaper ?: 'default']);
+    }
+
+    // Fondo del chat: uno predefinido (fondo=noche...) o una imagen subida (imagen=archivo)
+    public function cambiarFondo(Request $request)
+    {
+        $user = $request->user();
+        $validated = $this->validar($request, [
+            'fondo' => 'nullable|string|in:' . implode(',', self::FONDOS),
+            'imagen' => 'nullable|file|mimes:jpeg,png,jpg,webp|max:8192',
+        ], [
+            'imagen.max' => 'La imagen de fondo debe pesar menos de 8 MB.',
+        ]);
+        if ($validated instanceof \Illuminate\Http\JsonResponse) return $validated;
+
+        if ($request->hasFile('imagen')) {
+            try {
+                $fondo = $this->subir($request->file('imagen')->getRealPath(), 'image', 'agente_chat_fondos');
+            } catch (\Throwable $e) {
+                Log::error('Error subiendo fondo de chat: ' . $e->getMessage());
+                return response()->json(['error' => 'No se pudo subir la imagen.'], 500);
+            }
+        } else {
+            $fondo = $validated['fondo'] ?? 'default';
+        }
+
+        DB::table('users')->where('id', $user->id)->update(['chat_wallpaper' => $fondo === 'default' ? null : $fondo]);
+        return response()->json(['fondo' => $fondo]);
+    }
+
     // ── Ayudantes ──
 
-    private function validar(Request $request, array $reglas)
+    private function validar(Request $request, array $reglas, array $mensajes = [])
     {
         try {
-            return $request->validate($reglas);
+            return $request->validate($reglas, $mensajes);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
         }
@@ -370,10 +605,35 @@ class ChatController extends Controller
         return [$chat, $p];
     }
 
-    // Mensajes que este participante puede ver
+    // Sube a Cloudinary (imagen o video) y devuelve la URL segura
+    private function subir(string $ruta, string $tipo, string $carpeta): string
+    {
+        $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
+        return $cloudinary->uploadApi()->upload($ruta, ['folder' => $carpeta, 'resource_type' => $tipo])['secure_url'];
+    }
+
+    // "En línea": se actualiza como máximo cada 30 s (sin tocar updated_at)
+    private function tocarPresencia($user): void
+    {
+        if (!$user->chat_last_seen_at || $user->chat_last_seen_at->lt(now()->subSeconds(30))) {
+            DB::table('users')->where('id', $user->id)->update(['chat_last_seen_at' => now()]);
+        }
+    }
+
+    private function presencia($u): array
+    {
+        $visto = $u?->chat_last_seen_at;
+        return [
+            'en_linea' => (bool) ($visto && $visto->gte(now()->subSeconds(self::EN_LINEA_SEGUNDOS))),
+            'ultima_vez' => $visto?->toIso8601String(),
+        ];
+    }
+
+    // Mensajes que este participante puede ver (desde que entró o desde que "eliminó el chat")
     private function visibles(ChatParticipant $p)
     {
-        $q = ChatMessage::where('chat_id', $p->chat_id)->where('id', '>', $p->from_message_id);
+        $desde = max((int) $p->from_message_id, (int) $p->cleared_until_message_id);
+        $q = ChatMessage::where('chat_id', $p->chat_id)->where('id', '>', $desde);
         if (!is_null($p->until_message_id)) {
             $q->where('id', '<=', $p->until_message_id);
         }
@@ -420,7 +680,7 @@ class ChatController extends Controller
 
     private function formatoChat(Chat $chat, $user): array
     {
-        $chat->loadMissing('participants.user:id,first_name,last_name,profile_picture,role_id');
+        $chat->loadMissing('participants.user:id,first_name,last_name,profile_picture,role_id,chat_last_seen_at');
         $otro = $chat->is_group ? null : $chat->participants->first(fn ($x) => (int) $x->user_id !== (int) $user->id)?->user;
 
         return [
@@ -430,6 +690,8 @@ class ChatController extends Controller
             'nombre_grupo' => $chat->title,
             'foto' => $otro?->profile_picture,
             'otro_usuario_id' => $otro?->id,
+            // Chats de 2: "En línea" / "últ. vez" de la otra persona
+            'presencia' => $otro ? $this->presencia($otro) : null,
             'miembros' => $chat->participants->filter->isActive()->count(),
             'creado_por' => (int) $chat->created_by,
         ];
@@ -447,14 +709,17 @@ class ChatController extends Controller
 
     private function formatoMensaje(ChatMessage $m, Chat $chat): array
     {
-        $chat->loadMissing('participants.user:id,first_name,last_name,profile_picture,role_id');
+        $chat->loadMissing('participants.user:id,first_name,last_name,profile_picture,role_id,chat_last_seen_at');
         $autor = $m->user_id ? $chat->participants->firstWhere('user_id', $m->user_id)?->user : null;
 
+        $eliminado = !is_null($m->deleted_at);
         return [
             'id' => $m->id,
-            'tipo' => $m->type,
-            'texto' => $m->body,
-            'imagen' => $m->attachment_url,
+            'tipo' => $eliminado ? 'deleted' : $m->type,
+            'texto' => $eliminado ? null : $m->body,
+            // imagen / video / sticker comparten la URL del archivo
+            'imagen' => !$eliminado && in_array($m->type, ['image', 'sticker'], true) ? $m->attachment_url : null,
+            'video' => !$eliminado && $m->type === 'video' ? $m->attachment_url : null,
             'autor_id' => $m->user_id ? (int) $m->user_id : null,
             'autor' => $autor ? $this->nombre($autor) : null,
             'autor_foto' => $autor?->profile_picture,
