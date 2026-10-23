@@ -9,7 +9,9 @@ class FinalWorkReport extends Model
     protected $fillable = [
         'service_id',
         'work_order_id',
+        'version',
         'folio',
+        'logo_url',
         'report_date',
         'start_time',
         'end_time',
@@ -17,12 +19,20 @@ class FinalWorkReport extends Model
         'materials',
         'observations',
         'selected_images',
+        'data',
+        'created_by',
     ];
 
     protected $casts = [
         'materials' => 'array',
         'selected_images' => 'array',
+        'data' => 'array',
     ];
+
+    public function creador()
+    {
+        return $this->belongsTo(User::class, 'created_by')->withoutGlobalScopes();
+    }
 
     public function service()
     {

@@ -858,6 +858,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/reportes/{id}', [ServiceController::class, 'deleteReport']);
     Route::post('/servicios/{id}/final-report', [ServiceController::class, 'storeFinalReport']);
     Route::get('/servicios/{id}/final-report', [ServiceController::class, 'getFinalReport']);
+    Route::get('/servicios/{id}/final-report/versions', [ServiceController::class, 'getFinalReportVersions']);
+    Route::get('/report-logos', [\App\Http\Controllers\ReportLogoController::class, 'index']);
+    Route::post('/report-logos', [\App\Http\Controllers\ReportLogoController::class, 'store']);
+    Route::delete('/report-logos/{id}', [\App\Http\Controllers\ReportLogoController::class, 'destroy']);
     Route::post('/services/assign', [ServiceController::class, 'store']);
 
     // --- CHECKLIST TEMPLATES ---

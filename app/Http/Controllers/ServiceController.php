@@ -158,80 +158,103 @@ class ServiceController extends Controller
         }
     }
 
+    // "work_order-5" → ['work_order_id', '5'];  "servicio-17" o "17" → ['service_id', '17']
+    private function columnaReporteFinal($id)
+    {
+        if (str_contains($id, '-')) {
+            [$prefix, $realId] = explode('-', $id, 2);
+            return [$prefix === 'work_order' ? 'work_order_id' : 'service_id', $realId];
+        }
+        return ['service_id', $id];
+    }
+
+    // Cada guardado crea una versión nueva (#N+1); las anteriores no se tocan
     public function storeFinalReport(Request $request, $id)
     {
+        if ((int) optional($request->user())->role_id === 3) {
+            return response()->json(['success' => false, 'error' => 'No autorizado'], 403);
+        }
+
+        [$type, $realId] = $this->columnaReporteFinal($id);
+        if ($realId === 'null' || !$realId) {
+            return response()->json(['success' => false, 'error' => 'ID de trabajo inválido (null)'], 400);
+        }
+
         try {
-            \Log::info("Iniciando guardado de reporte final para ID: " . $id);
-            \Log::info("Datos recibidos: ", $request->all());
+            // Copia completa de lo que se ve en el reporte (cliente, propiedad, técnico, logo...)
+            $snapshot = $request->except(['service_id', 'work_order_id', 'version']);
 
-            $realId = $id;
-            $type = 'service_id';
+            $report = DB::transaction(function () use ($request, $type, $realId, $snapshot) {
+                $ultima = (int) FinalWorkReport::where($type, $realId)->lockForUpdate()->max('version');
 
-            if (str_contains($id, '-')) {
-                $parts = explode('-', $id);
-                $prefix = $parts[0];
-                $realId = $parts[1];
-                $type = ($prefix === 'work_order') ? 'work_order_id' : 'service_id';
-            }
+                return FinalWorkReport::create([
+                    $type => $realId,
+                    'version' => $ultima + 1,
+                    'folio' => $request->input('folio'),
+                    'logo_url' => $request->input('logoUrl'),
+                    'report_date' => $request->input('fechaTrabajo'),
+                    'start_time' => $request->input('horaInicio'),
+                    'end_time' => $request->input('horaFin'),
+                    'description' => $request->input('descripcion'),
+                    'materials' => $request->input('materiales'),
+                    'observations' => $request->input('observaciones'),
+                    'selected_images' => $request->input('imagenes'),
+                    'data' => $snapshot,
+                    'created_by' => optional($request->user())->id,
+                ]);
+            });
 
-            if ($realId === 'null' || !$realId) {
-                return response()->json(['success' => false, 'error' => 'ID de trabajo inválido (null)'], 400);
-            }
-
-            $data = $request->all();
-
-            // Mapear campos de español (frontend) a inglés (BD) si es necesario
-            if (isset($data['materiales']))
-                $data['materials'] = $data['materiales'];
-            if (isset($data['observaciones']))
-                $data['observations'] = $data['observaciones'];
-            if (isset($data['imagenes']))
-                $data['selected_images'] = $data['imagenes'];
-            if (isset($data['fechaTrabajo']))
-                $data['report_date'] = $data['fechaTrabajo'];
-            if (isset($data['horaInicio']))
-                $data['start_time'] = $data['horaInicio'];
-            if (isset($data['horaFin']))
-                $data['end_time'] = $data['horaFin'];
-
-            $data[$type] = $realId;
-
-            \Log::info("Datos normalizados para BD: ", $data);
-
-            $report = FinalWorkReport::updateOrCreate(
-                [$type => $realId],
-                $data
-            );
-
-            \Log::info("Reporte guardado con éxito ID: " . $report->id);
-
-            return response()->json(['success' => true, 'report' => $report], 200);
+            return response()->json(['success' => true, 'report' => $report->load('creador')], 200);
         } catch (\Exception $e) {
-            \Log::error("Error en storeFinalReport: " . $e->getMessage());
-            \Log::error($e->getTraceAsString());
+            Log::error("Error en storeFinalReport: " . $e->getMessage());
             return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     }
 
-    public function getFinalReport($id)
+    // Devuelve la versión más reciente, o la indicada con ?version=N
+    public function getFinalReport(Request $request, $id)
     {
         try {
-            $realId = $id;
-            $type = 'service_id';
-
-            if (str_contains($id, '-')) {
-                $parts = explode('-', $id);
-                $prefix = $parts[0];
-                $realId = $parts[1];
-                $type = ($prefix === 'work_order') ? 'work_order_id' : 'service_id';
-            }
-
+            [$type, $realId] = $this->columnaReporteFinal($id);
             if ($realId === 'null' || !$realId) {
                 return response()->json(null, 200);
             }
 
-            $report = FinalWorkReport::where($type, $realId)->first();
+            $query = FinalWorkReport::with('creador')->where($type, $realId);
+            if ($request->filled('version')) {
+                $query->where('version', (int) $request->query('version'));
+            }
+
+            $report = $query->orderByDesc('version')->orderByDesc('id')->first();
             return response()->json($report, 200);
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    // Historial de versiones del reporte oficial (la más reciente primero)
+    public function getFinalReportVersions($id)
+    {
+        try {
+            [$type, $realId] = $this->columnaReporteFinal($id);
+            if ($realId === 'null' || !$realId) {
+                return response()->json([], 200);
+            }
+
+            $versiones = FinalWorkReport::with('creador')
+                ->where($type, $realId)
+                ->orderByDesc('version')
+                ->orderByDesc('id')
+                ->get(['id', 'version', 'folio', 'created_by', 'created_at'])
+                ->map(fn ($r) => [
+                    'id' => $r->id,
+                    'version' => $r->version,
+                    'folio' => $r->folio,
+                    'autor' => $r->creador ? $r->creador->name : null,
+                    'created_at' => $r->created_at,
+                ]);
+
+            return response()->json($versiones, 200);
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }
