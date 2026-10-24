@@ -27,10 +27,12 @@ class CalendarEvent extends Model
         'completed_at',
         'completed_by',
         'completion_note',
+        'is_private',
     ];
 
     protected $casts = [
         'notify_team' => 'boolean',
+        'is_private' => 'boolean',
         'completed_at' => 'datetime',
     ];
 

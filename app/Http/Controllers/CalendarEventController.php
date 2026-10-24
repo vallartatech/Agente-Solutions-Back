@@ -35,6 +35,9 @@ class CalendarEventController extends Controller
                 });
             }
 
+            // Los privados solo los ve quien los publicó, sin excepción (ni Root ni "ver todo el calendario")
+            $this->ocultarPrivadosAjenos($query, $user);
+
             // Solo quien tiene "ver todo el calendario" ve todos los avisos; los demás (admins incluidos)
             // ven los de todo el equipo, en los que participan y los que publicaron
             if ($user && !$user->can_view_all_calendar) {
@@ -143,10 +146,15 @@ class CalendarEventController extends Controller
         return $query->where(fn ($q) => $q->whereNull('tenant_id')->orWhere('tenant_id', 1));
     }
 
-    // Avisos del mismo equipo que el usuario (misma regla que index)
+    private function ocultarPrivadosAjenos($query, $user)
+    {
+        return $query->where(fn ($q) => $q->where('is_private', false)->orWhere('created_by', $user?->id));
+    }
+
+    // Avisos del mismo equipo que el usuario (misma regla que index); los privados de otros no cuentan
     private function teamEvents($user)
     {
-        $query = CalendarEvent::query();
+        $query = $this->ocultarPrivadosAjenos(CalendarEvent::query(), $user);
         if ($user && (int) $user->role_id === 0) {
             return $query;
         }
@@ -177,6 +185,7 @@ class CalendarEventController extends Controller
                 'parent_id' => 'nullable|integer',
                 'participant_ids' => 'nullable|array|max:100',
                 'participant_ids.*' => 'integer',
+                'is_private' => 'nullable|boolean',
             ], [
                 'start_time.regex' => 'La hora de inicio no es válida.',
                 'end_time.regex' => 'La hora de fin no es válida.',
@@ -211,9 +220,12 @@ class CalendarEventController extends Controller
                 }
             }
 
+            // Privado: solo para quien lo publica, sin participantes ni notificaciones
+            $esPrivado = (bool) ($validated['is_private'] ?? false);
+
             // Participantes: solo se aceptan miembros del equipo; vacío = todo el equipo
             $participantIds = [];
-            if (!empty($validated['participant_ids'])) {
+            if (!$esPrivado && !empty($validated['participant_ids'])) {
                 $participantIds = $this->teamMembers($user)
                     ->whereIn('id', array_unique($validated['participant_ids']))
                     ->pluck('id')
@@ -235,8 +247,9 @@ class CalendarEventController extends Controller
             $event->label = $label !== '' ? $label : null;
             $event->type = $validated['type'] ?? 'aviso';
             $event->color = $validated['color'] ?? '#F26522';
-            // Todo aviso se notifica: a sus participantes o, si no tiene, a todo el equipo
-            $event->notify_team = true;
+            $event->is_private = $esPrivado;
+            // Todo aviso se notifica (a sus participantes o, si no tiene, a todo el equipo), salvo los privados
+            $event->notify_team = !$esPrivado;
             $event->save();
             if ($participantIds) {
                 $event->participants()->sync($participantIds);
@@ -289,7 +302,7 @@ class CalendarEventController extends Controller
             $event->save();
 
             $push = null;
-            if ($note !== '') {
+            if ($note !== '' && !$event->is_private) {
                 $autor = trim("{$user->first_name} {$user->last_name}");
                 $titulo = '✅ Completado · ' . (!empty($event->label) ? "{$event->label} · " : '') . $event->title;
                 $push = $this->notifyTeam($user, $event, new TeamCalendarNoticeNotification($event, $titulo, "{$autor}: {$note}"));
@@ -350,12 +363,13 @@ class CalendarEventController extends Controller
             }
 
             $event = CalendarEvent::find($id);
-            if (!$event) {
+            $isCreator = $event && (int)$event->created_by === (int)$user->id;
+            // Un privado ajeno ni siquiera existe para los demás
+            if (!$event || ($event->is_private && !$isCreator)) {
                 return response()->json(['error' => 'Evento no encontrado.'], 404);
             }
 
             $isRoot = (int)$user->role_id === 0;
-            $isCreator = (int)$event->created_by === (int)$user->id;
             $isSameTenant = !empty($user->tenant_id) && (int)$event->tenant_id === (int)$user->tenant_id;
 
             if (!$isRoot && !$isCreator && !$isSameTenant) {
