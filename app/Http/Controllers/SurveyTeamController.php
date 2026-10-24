@@ -80,7 +80,7 @@ class SurveyTeamController extends Controller
 
         $tech = $this->sameTeam(User::withoutGlobalScopes(), $request->user())
             ->where('id', $validated['technician_id'])
-            ->where('role_id', 2)
+            ->whereIn('role_id', [1, 2]) // técnicos y admins pueden formar parte de la cuadrilla
             ->where('is_active', 1)
             ->first();
         if (!$tech) {
@@ -222,12 +222,14 @@ class SurveyTeamController extends Controller
             ->values();
     }
 
-    // Técnicos internos (rol 2), activos, del mismo equipo y que aún no están en el levantamiento
+    // Técnicos (rol 2) y admins (rol 1) activos, del mismo equipo, que aún no están en el levantamiento
+    // (sin contar a quien está asignando)
     private function availableTechs(User $viewer, array $excludeIds)
     {
         return $this->sameTeam(User::withoutGlobalScopes(), $viewer)
-            ->where('role_id', 2)
+            ->whereIn('role_id', [1, 2])
             ->where('is_active', 1)
+            ->where('id', '!=', $viewer->id)
             ->whereNotIn('id', $excludeIds)
             ->orderBy('first_name')
             ->get(['id', 'first_name', 'last_name', 'profile_picture'])
