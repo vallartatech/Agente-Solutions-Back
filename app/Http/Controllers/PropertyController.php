@@ -760,6 +760,11 @@ class PropertyController extends Controller
             $workOrder = WorkOrder::withoutGlobalScopes()->with('property')->findOrFail($id);
             $oldStatus = $workOrder->status;
 
+            // Un trabajo ya aprobado no regresa a "Por Aprobar" si el técnico vuelve a finalizarlo
+            if ($nuevoEstado === 'Por Aprobar' && $oldStatus === 'Listo') {
+                $nuevoEstado = 'Listo';
+            }
+
             $workOrder->status = $nuevoEstado;
             $workOrder->updated_at = now();
             $workOrder->save();
