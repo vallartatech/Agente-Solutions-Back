@@ -612,10 +612,12 @@ class UserController extends Controller
         }
     }
 
-    public function getTecnicos()
+    public function getTecnicos(Request $request)
     {
         $currentUser = auth('sanctum')->user();
-        $query = User::withoutGlobalScopes()->with('specialties')->whereIn('role_id', [2, 8]);
+        // ?con_admins=1 → también los admins (rol 1), para asignar trabajos a cualquiera del equipo
+        $roles = $request->boolean('con_admins') ? [1, 2, 8] : [2, 8];
+        $query = User::withoutGlobalScopes()->with('specialties')->whereIn('role_id', $roles);
         
         if ($currentUser && $currentUser->role_id === 0) {
             // ROOT ve todos los técnicos
@@ -623,7 +625,7 @@ class UserController extends Controller
             $query->where('tenant_id', $currentUser->tenant_id);
         }
 
-        $tecnicos = $query->get(['id', 'first_name', 'last_name', 'profile_picture', 'tenant_id', 'is_active', 'approval_status']);
+        $tecnicos = $query->get(['id', 'first_name', 'last_name', 'profile_picture', 'role_id', 'tenant_id', 'is_active', 'approval_status']);
         
         $formatted = $tecnicos->map(function ($u) {
             $fotoUrl = $u->profile_picture ? (str_starts_with($u->profile_picture, 'http') ? $u->profile_picture : asset('storage/' . $u->profile_picture)) : null;
@@ -632,6 +634,7 @@ class UserController extends Controller
                 'first_name' => $u->first_name,
                 'last_name' => $u->last_name,
                 'profile_picture_url' => $fotoUrl,
+                'role_id' => $u->role_id,
                 'specialties' => $u->specialties ?? [],
                 'tenant_id' => $u->tenant_id,
                 'is_active' => $u->is_active,
