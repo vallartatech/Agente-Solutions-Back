@@ -67,27 +67,62 @@ class ServiceController extends Controller
         }
     }
 
+    // La evidencia 4 (EXTRA) puede ser foto o un video de máximo 5 segundos; las demás, solo foto
+    private const VIDEO_MAX_SEGUNDOS = 5;
+
+    private function reglaEvidencia(Request $request, bool $requerida): string
+    {
+        $base = $requerida ? 'required|file' : 'nullable|file';
+        if (str_contains(strtoupper((string) $request->description), '[EXTRA]')) {
+            return $base . '|mimes:jpeg,png,jpg,webp,mp4,mov,qt,webm|max:12288';
+        }
+        return $base . '|image|mimes:jpeg,png,jpg,webp|max:10240';
+    }
+
+    // Sube la foto o el video a Cloudinary; el video se rechaza si dura más de 5 s
+    private function subirEvidencia($archivo): array
+    {
+        $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
+        $esVideo = str_starts_with((string) $archivo->getMimeType(), 'video/');
+        $respuesta = $cloudinary->uploadApi()->upload($archivo->getRealPath(), [
+            'folder' => 'agente_reportes',
+            'resource_type' => $esVideo ? 'video' : 'image',
+        ]);
+
+        // +0.5 s de tolerancia por el redondeo del celular
+        if ($esVideo && (float) ($respuesta['duration'] ?? 0) > self::VIDEO_MAX_SEGUNDOS + 0.5) {
+            try {
+                $cloudinary->uploadApi()->destroy($respuesta['public_id'], ['resource_type' => 'video']);
+            } catch (\Exception $e) {
+                Log::warning('No se pudo borrar el video rechazado: ' . $e->getMessage());
+            }
+            return ['error' => 'El video dura ' . round($respuesta['duration'], 1) . ' s. El máximo es ' . self::VIDEO_MAX_SEGUNDOS . ' segundos.'];
+        }
+
+        return ['url' => $respuesta['secure_url']];
+    }
+
     public function storeReport(Request $request, $id)
     {
         try {
             $request->validate([
                 'description' => 'required|string',
-                'image' => 'required|image|mimes:jpeg,png,jpg,webp|max:10240',
+                'image' => $this->reglaEvidencia($request, true),
             ]);
 
             $parsed = $this->parseCompositeId($id);
             $realId = $parsed['realId'];
             $column = $parsed['column'];
 
-            $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
-            $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
-                'folder' => 'agente_reportes'
-            ]);
+            $subida = $this->subirEvidencia($request->file('image'));
+            if (isset($subida['error'])) {
+                return response()->json(['success' => false, 'error' => $subida['error']], 422);
+            }
 
             $report = WorkReport::create([
                 $column => $realId,
                 'technician_id' => $request->user()->id,
-                'image_url' => $respuestaNube['secure_url'],
+                'image_url' => $subida['url'],
                 'description' => $request->description,
             ]);
 
@@ -107,7 +142,7 @@ class ServiceController extends Controller
         try {
             $request->validate([
                 'description' => 'required|string',
-                'image' => 'nullable|image|mimes:jpeg,png,jpg,webp|max:10240',
+                'image' => $this->reglaEvidencia($request, false),
             ]);
 
             $report = WorkReport::find($id);
@@ -118,11 +153,11 @@ class ServiceController extends Controller
             $report->description = $request->description;
 
             if ($request->hasFile('image')) {
-                $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
-                $respuestaNube = $cloudinary->uploadApi()->upload($request->file('image')->getRealPath(), [
-                    'folder' => 'agente_reportes'
-                ]);
-                $report->image_url = $respuestaNube['secure_url'];
+                $subida = $this->subirEvidencia($request->file('image'));
+                if (isset($subida['error'])) {
+                    return response()->json(['success' => false, 'error' => $subida['error']], 422);
+                }
+                $report->image_url = $subida['url'];
             }
 
             $report->save();

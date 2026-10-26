@@ -30,12 +30,12 @@ class WorkOrderFinishedNotification extends Notification
     public function toMail($notifiable)
     {
         return (new MailMessage)
-            ->subject('¡Trabajo Finalizado!')
+            ->subject('Trabajo pendiente de aprobación')
             ->greeting('Hola Administrador,')
-            ->line("El técnico **{$this->technicianName}** ha marcado como **LISTO** el trabajo en **{$this->propertyName}**.")
+            ->line("El técnico **{$this->technicianName}** terminó el trabajo en **{$this->propertyName}** y está **pendiente de tu aprobación**.")
             ->line("Zona: **{$this->workOrder->zone}**")
             ->line("Descripción: {$this->workOrder->description}")
-            ->action('Ver Tablero de Servicios', url('/VistaServiciosAdmin'))
+            ->action('Ver Tablero de Servicios', url('/tablero-servicios'))
             ->line('Gracias por usar Agente Solutions.');
     }
 
@@ -44,9 +44,9 @@ class WorkOrderFinishedNotification extends Notification
         return [
             'work_order_id' => $this->workOrder->id,
             'alert_type' => 'work_order_finished',
-            'title' => 'Trabajo Finalizado',
-            'message' => "{$this->technicianName} terminó el trabajo en {$this->propertyName}",
-            'url' => "/reportes-globales"
+            'title' => 'Trabajo por aprobar',
+            'message' => "{$this->technicianName} terminó el trabajo en {$this->propertyName}. Revísalo y apruébalo.",
+            'url' => "/tablero-servicios"
         ];
     }
 }

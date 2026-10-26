@@ -732,6 +732,12 @@ class PropertyController extends Controller
     // ---------------------------------------------------
     public function updateWorkOrderStatus(Request $request, $id)
     {
+        $user = auth('sanctum')->user();
+        // El Técnico Agente (rol 2) no puede finalizar: su "Listo" queda Por Aprobar hasta que un admin lo apruebe
+        $nuevoEstado = ($request->status === 'Listo' && $user && (int) $user->role_id === 2)
+            ? 'Por Aprobar'
+            : $request->status;
+
         if (is_string($id) && str_starts_with($id, 'batch_')) {
             $batchId = str_replace('batch_', '', $id);
             $workOrders = WorkOrder::with('property')->where('batch_id', $batchId)->get();
@@ -739,22 +745,22 @@ class PropertyController extends Controller
                 return response()->json(['error' => 'No se encontraron órdenes para este lote'], 404);
             }
             foreach ($workOrders as $wo) {
-                $wo->status = $request->status;
+                $wo->status = $nuevoEstado;
                 $wo->updated_at = now();
                 $wo->save();
             }
-            return response()->json(['success' => true, 'message' => 'Estado del lote actualizado correctamente']);
+            return response()->json(['success' => true, 'status' => $nuevoEstado, 'message' => 'Estado del lote actualizado correctamente']);
         }
 
         try {
             $request->validate([
-                'status' => 'required|in:Por Hacer,En Proceso,Listo,Rechazado,Cancelado'
+                'status' => 'required|in:Por Hacer,En Proceso,Por Aprobar,Listo,Rechazado,Cancelado'
             ]);
 
             $workOrder = WorkOrder::withoutGlobalScopes()->with('property')->findOrFail($id);
             $oldStatus = $workOrder->status;
 
-            $workOrder->status = $request->status;
+            $workOrder->status = $nuevoEstado;
             $workOrder->updated_at = now();
             $workOrder->save();
 
@@ -792,10 +798,10 @@ class PropertyController extends Controller
                 }
             }
 
-            // Si el técnico marca como "Listo", notificamos al Admin
-            if ($request->status === 'Listo' && $oldStatus !== 'Listo') {
+            // Si el técnico lo manda a aprobación (o lo marca "Listo" otro rol), notificamos al Admin
+            $esAdmin = $user && in_array((int) $user->role_id, [0, 1]);
+            if (in_array($nuevoEstado, ['Por Aprobar', 'Listo']) && !in_array($oldStatus, ['Por Aprobar', 'Listo']) && !$esAdmin) {
                 try {
-                    $user = auth('sanctum')->user();
                     $technicianName = $user ? ($user->first_name . ' ' . $user->last_name) : 'Un técnico';
 
                     $propertyName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad desconocida';
@@ -810,7 +816,22 @@ class PropertyController extends Controller
                 }
             }
 
-            return response()->json(['success' => true, 'message' => 'Estado actualizado']);
+            // Un admin lo da por finalizado: avisamos a los técnicos asignados
+            if ($nuevoEstado === 'Listo' && $oldStatus !== 'Listo' && $esAdmin) {
+                try {
+                    $adminName = trim($user->first_name . ' ' . $user->last_name) ?: 'Un administrador';
+                    $idsTecnicos = $workOrder->technicians()->pluck('users.id')->push($workOrder->tecnico_id)
+                        ->filter()->unique()->reject(fn ($tid) => (int) $tid === (int) $user->id);
+                    $tecnicos = User::withoutGlobalScopes()->whereIn('id', $idsTecnicos)->get();
+                    if ($tecnicos->count() > 0) {
+                        Notification::send($tecnicos, new \App\Notifications\WorkOrderApprovedNotification($workOrder, $adminName));
+                    }
+                } catch (\Exception $e) {
+                    \Log::error("Error enviando notificación de trabajo aprobado: " . $e->getMessage());
+                }
+            }
+
+            return response()->json(['success' => true, 'status' => $nuevoEstado, 'message' => 'Estado actualizado']);
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }
