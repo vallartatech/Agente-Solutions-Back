@@ -68,7 +68,10 @@ class ServiceController extends Controller
     }
 
     // La evidencia 4 (EXTRA) puede ser foto o un video de máximo 5 segundos; las demás, solo foto
-    private const VIDEO_MAX_SEGUNDOS = 5;
+    private const VIDEO_MAX_SEGUNDOS = 4;
+
+    // Logo (resources/marca/marca_agua.png) que va en la esquina de cada evidencia
+    private const MARCA_AGUA_ID = 'agente_marca_agua';
 
     private function reglaEvidencia(Request $request, bool $requerida): string
     {
@@ -79,15 +82,64 @@ class ServiceController extends Controller
         return $base . '|image|mimes:jpeg,png,jpg,webp|max:10240';
     }
 
-    // Sube la foto o el video a Cloudinary; el video se rechaza si dura más de 5 s
+    // Sube el logo a Cloudinary una sola vez (después queda en caché)
+    private function asegurarMarcaAgua(Cloudinary $cloudinary): bool
+    {
+        return \Illuminate\Support\Facades\Cache::rememberForever('cloudinary_marca_agua_v1', function () use ($cloudinary) {
+            $cloudinary->uploadApi()->upload(resource_path('marca/marca_agua.png'), [
+                'public_id' => self::MARCA_AGUA_ID,
+                'overwrite' => true,
+                'invalidate' => true,
+            ]);
+            return true;
+        });
+    }
+
+    // Sube la foto o el video a Cloudinary ya reducidos y con la marca de agua.
+    // Fotos: máx. 1600 px, calidad automática, JPG. Videos: 720p, MP4 H.264 (el HEVC del iPhone no se ve en Android/Windows).
+    // El video se rechaza si dura más de VIDEO_MAX_SEGUNDOS.
     private function subirEvidencia($archivo): array
     {
         $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
         $esVideo = str_starts_with((string) $archivo->getMimeType(), 'video/');
-        $respuesta = $cloudinary->uploadApi()->upload($archivo->getRealPath(), [
-            'folder' => 'agente_reportes',
-            'resource_type' => $esVideo ? 'video' : 'image',
-        ]);
+
+        $conMarca = false;
+        try {
+            $conMarca = $this->asegurarMarcaAgua($cloudinary);
+        } catch (\Exception $e) {
+            // Si el logo no se pudo subir, la evidencia se guarda igual (sin marca)
+            Log::warning('No se pudo preparar la marca de agua: ' . $e->getMessage());
+        }
+        $marca = $conMarca ? [[
+            'overlay' => self::MARCA_AGUA_ID,
+            'gravity' => 'south_east',
+            'width' => 0.28,
+            'flags' => 'relative',
+            'opacity' => 75,
+            'x' => 16,
+            'y' => 16,
+        ]] : [];
+
+        $opciones = $esVideo
+            ? [
+                'folder' => 'agente_reportes',
+                'resource_type' => 'video',
+                'format' => 'mp4',
+                'transformation' => array_merge([[
+                    'width' => 1280, 'height' => 1280, 'crop' => 'limit',
+                    'quality' => 'auto', 'video_codec' => 'h264', 'audio_codec' => 'aac',
+                ]], $marca),
+            ]
+            : [
+                'folder' => 'agente_reportes',
+                'resource_type' => 'image',
+                'format' => 'jpg',
+                'transformation' => array_merge([[
+                    'width' => 1600, 'height' => 1600, 'crop' => 'limit', 'quality' => 'auto:good',
+                ]], $marca),
+            ];
+
+        $respuesta = $cloudinary->uploadApi()->upload($archivo->getRealPath(), $opciones);
 
         // +0.5 s de tolerancia por el redondeo del celular
         if ($esVideo && (float) ($respuesta['duration'] ?? 0) > self::VIDEO_MAX_SEGUNDOS + 0.5) {

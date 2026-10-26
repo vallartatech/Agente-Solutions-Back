@@ -1879,7 +1879,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'technicians' => fn($q) => $q->withoutGlobalScopes(),
             'networkQuotes' => fn($q) => $q->withoutGlobalScopes(),
             'networkQuotes.technician' => fn($q) => $q->withoutGlobalScopes()
-        ]);
+        ])->withCount('workReports'); // work_reports_count: el tablero sabe si ya hay reporte
 
         if ($user && $user->role_id == 4) {
             $query->where(function ($q) use ($user) {
