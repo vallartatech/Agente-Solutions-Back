@@ -106,6 +106,34 @@ class PlaceVisitService
         UserPlaceVisit::where('user_id', $user->id)->whereNull('left_at')->update(['left_at' => now()]);
     }
 
+    // Visitas de una persona en un rango (el día del recorrido), de la más vieja a la más nueva.
+    // Si dejó de enviar ubicación estando en el lugar, la salida se aproxima con su última señal.
+    public function visitasDelRango(int $userId, $inicio, $fin): array
+    {
+        return UserPlaceVisit::with('property:id,property_name,address')
+            ->where('user_id', $userId)
+            ->where('entered_at', '<=', $fin)
+            ->where(fn ($q) => $q->whereNull('left_at')->orWhere('left_at', '>=', $inicio))
+            ->orderBy('entered_at')
+            ->get()
+            ->map(function ($v) {
+                $sinSenal = is_null($v->left_at) && $v->last_seen_at->lt(now()->subHours(self::SIN_SENAL_HORAS));
+                $sigueAhi = is_null($v->left_at) && !$sinSenal;
+                $hasta = $v->left_at ?? ($sinSenal ? $v->last_seen_at : null);
+                return [
+                    'id' => $v->id,
+                    'property_id' => $v->property_id,
+                    'lugar' => $this->nombreLugar($v->property),
+                    'desde' => $v->entered_at->toIso8601String(),
+                    'hasta' => $hasta?->toIso8601String(),
+                    'sigue_ahi' => $sigueAhi,
+                    'salida_aproximada' => $sinSenal, // no se sabe la hora exacta: se dejó de recibir su ubicación
+                    'minutos' => (int) round(abs($v->entered_at->diffInSeconds($hasta ?? now())) / 60),
+                ];
+            })
+            ->all();
+    }
+
     // Visitas abiertas y recientes por usuario: [user_id => ['nombre', 'desde']] (para el mapa)
     public function lugaresActuales(array $userIds): array
     {

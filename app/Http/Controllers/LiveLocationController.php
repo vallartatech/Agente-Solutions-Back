@@ -23,6 +23,7 @@ class LiveLocationController extends Controller
     private const ONLINE_MINUTES = 5;
     private const MIN_LIVE_SECONDS = 20;
     private const RETENTION_DAYS = 30;
+    private const ZONA_LOCAL = 'America/Merida'; // el "día" del recorrido es el día local
 
     // Estado del usuario actual: consentimiento y permiso de mapa
     // (no se expone quién puede ver el mapa)
@@ -218,11 +219,17 @@ class LiveLocationController extends Controller
             return response()->json(['error' => 'Usuario no encontrado en tu equipo.'], 404);
         }
 
-        $date = $request->query('date') ? Carbon::parse($request->query('date')) : now();
+        // "Hoy" en hora de Mérida (el servidor puede estar en UTC: sin esto, después de las 6 p.m.
+        // locales el recorrido mostraba ya el día siguiente). Se convierte a la zona en que se guardan las fechas.
+        $dia = $request->query('date')
+            ? Carbon::parse($request->query('date'), self::ZONA_LOCAL)
+            : now(self::ZONA_LOCAL);
+        $inicio = $dia->copy()->startOfDay()->setTimezone(config('app.timezone'));
+        $fin = $dia->copy()->endOfDay()->setTimezone(config('app.timezone'));
         $this->logAccess($viewer->id, $member->id, 'view_route');
 
         $points = UserLocation::where('user_id', $member->id)
-            ->whereBetween('recorded_at', [$date->copy()->startOfDay(), $date->copy()->endOfDay()])
+            ->whereBetween('recorded_at', [$inicio, $fin])
             ->orderBy('recorded_at')
             ->get(['lat', 'lng', 'accuracy', 'source', 'work_order_id', 'recorded_at'])
             ->map(fn ($p) => [
@@ -234,7 +241,10 @@ class LiveLocationController extends Controller
                 'recorded_at' => $p->recorded_at->toIso8601String(),
             ]);
 
-        return response()->json(['user_id' => $member->id, 'points' => $points]);
+        // En qué propiedades estuvo ese día, de qué hora a qué hora (detectado por GPS)
+        $visitas = app(PlaceVisitService::class)->visitasDelRango($member->id, $inicio, $fin);
+
+        return response()->json(['user_id' => $member->id, 'points' => $points, 'visitas' => $visitas]);
     }
 
     // Solo root (rol 0) puede dar o quitar el permiso de ver el mapa
