@@ -8,10 +8,14 @@ use App\Models\User;
 use Illuminate\Support\Facades\Notification;
 use App\Notifications\TeamCalendarNoticeNotification;
 use App\Services\OneSignalPush;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 class CalendarEventController extends Controller
 {
+    // La hora de los avisos es hora local (el servidor puede estar en UTC)
+    private const ZONA_LOCAL = 'America/Merida';
+
     private const EVENT_RELATIONS = [
         'creator:id,first_name,last_name,profile_picture',
         'completer:id,first_name,last_name',
@@ -260,6 +264,9 @@ class CalendarEventController extends Controller
                 ? $this->notifyTeam($user, $event, new TeamCalendarNoticeNotification($event))
                 : null;
 
+            // Alarma 1 hora antes (solo avisos con hora fija; "Todo el día" no lleva)
+            $this->programarRecordatorio($user, $event);
+
             return response()->json([
                 'success' => true,
                 'message' => 'Aviso registrado exitosamente.',
@@ -296,6 +303,8 @@ class CalendarEventController extends Controller
             }
 
             $note = trim((string) ($validated['note'] ?? ''));
+            // Ya no es un pendiente: si su alarma no ha sonado, se cancela
+            $this->cancelarRecordatorio($event);
             $event->completed_at = now();
             $event->completed_by = $user->id;
             $event->completion_note = $note !== '' ? $note : null;
@@ -318,6 +327,70 @@ class CalendarEventController extends Controller
             return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
         } catch (\Exception $e) {
             return response()->json(['error' => 'Error al completar el aviso: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // Alarma 1 hora antes de un aviso con hora fija, solo a los involucrados:
+    // privado → quien lo creó; con participantes → ellos; sin participantes → todo el equipo.
+    // La programa OneSignal (send_after): no depende del scheduler ni agrega nada a la campanita.
+    private function programarRecordatorio($user, CalendarEvent $event): void
+    {
+        try {
+            if (empty($event->start_time) || $event->completed_at) {
+                return;
+            }
+
+            $fecha = $event->event_date instanceof \DateTimeInterface
+                ? $event->event_date->format('Y-m-d')
+                : substr((string) $event->event_date, 0, 10);
+            $inicio = Carbon::parse($fecha . ' ' . substr($event->start_time, 0, 5), self::ZONA_LOCAL);
+            $alarma = $inicio->copy()->subHour();
+            // Si falta menos de una hora, ya se avisó al publicarlo: no se programa nada
+            if ($alarma->lte(now()->addMinute())) {
+                return;
+            }
+
+            if ($event->is_private) {
+                $destinatarios = [(int) $event->created_by];
+            } else {
+                $participantes = $event->participants()->pluck('users.id');
+                $q = $this->teamMembers($user);
+                if ($participantes->isNotEmpty()) {
+                    $q->whereIn('id', $participantes);
+                }
+                $destinatarios = $q->pluck('id')->all();
+            }
+            if (!$destinatarios) {
+                return;
+            }
+
+            $hora = $inicio->format('g:i') . ($inicio->format('A') === 'AM' ? ' a.m.' : ' p.m.');
+            $cuando = $alarma->isSameDay($inicio) ? 'hoy' : 'mañana';
+            $detalle = (!empty($event->label) ? "{$event->label} · " : '') . $event->title;
+
+            $res = OneSignalPush::sendToUsers(
+                $destinatarios,
+                "⏰ Tienes un pendiente {$cuando} a las {$hora}",
+                $detalle,
+                '/calendario',
+                ['event_id' => $event->id, 'alert_type' => 'calendar_reminder'],
+                $alarma
+            );
+
+            if (!empty($res['id'])) {
+                $event->reminder_push_id = $res['id'];
+                $event->save();
+            }
+        } catch (\Throwable $e) {
+            \Log::error('No se pudo programar la alarma del aviso ' . $event->id . ': ' . $e->getMessage());
+        }
+    }
+
+    private function cancelarRecordatorio(CalendarEvent $event): void
+    {
+        if (!empty($event->reminder_push_id)) {
+            OneSignalPush::cancel($event->reminder_push_id);
+            $event->reminder_push_id = null;
         }
     }
 
@@ -376,6 +449,8 @@ class CalendarEventController extends Controller
                 return response()->json(['error' => 'No autorizado para eliminar este evento.'], 403);
             }
 
+            // Que no suene la alarma de un aviso que ya no existe
+            $this->cancelarRecordatorio($event);
             $event->delete();
             return response()->json(['success' => true, 'message' => 'Evento eliminado correctamente.'], 200);
         } catch (\Exception $e) {

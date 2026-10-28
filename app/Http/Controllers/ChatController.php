@@ -427,10 +427,14 @@ class ChatController extends Controller
         ]);
     }
 
-    // Subir un sticker: personal, o del equipo (equipo=1, solo con el permiso can_manage_stickers)
+    // Subir un sticker (personal o del equipo con equipo=1). Solo el encargado (can_manage_stickers)
+    // puede subir stickers; los demás solo usan los del equipo y guardan los que les envían.
     public function crearSticker(Request $request)
     {
         $user = $request->user();
+        if (!$user->can_manage_stickers) {
+            return response()->json(['error' => 'Solo el encargado puede subir stickers. Puedes guardar los que te envíen.'], 403);
+        }
         $validated = $this->validar($request, [
             'image' => 'required|file|mimes:jpeg,png,jpg,webp,gif|max:4096',
             'equipo' => 'nullable|boolean',
@@ -441,9 +445,6 @@ class ChatController extends Controller
         if ($validated instanceof \Illuminate\Http\JsonResponse) return $validated;
 
         $delEquipo = (bool) ($validated['equipo'] ?? false);
-        if ($delEquipo && !$user->can_manage_stickers) {
-            return response()->json(['error' => 'Solo el encargado puede agregar stickers del equipo.'], 403);
-        }
         if ($error = $this->limiteStickers($user, $delEquipo)) {
             return response()->json(['error' => $error], 422);
         }
