@@ -74,9 +74,9 @@ class OneSignalPush
 
             if (empty($json['id'])) {
                 $result['subscribed'] = 0;
-                $result['error'] = 'Ningún dispositivo del equipo está suscrito a notificaciones (deben tocar "Activar" en la campanita).';
-                // Normal: el usuario aún no activa notificaciones en su dispositivo
-                Log::info('[OneSignal] Sin suscriptores', ['users' => $userIds]);
+                $result['error'] = 'Ningún dispositivo del equipo está vinculado a notificaciones (cada persona debe tocar "Activar" en la campanita; si ya lo hizo, usar "Revisar mi dispositivo").';
+                // Lo que respondió OneSignal, para distinguir "nadie suscrito" de "suscrito pero sin vincular al usuario"
+                Log::info('[OneSignal] Sin suscriptores', ['users' => $userIds, 'respuesta' => $json]);
                 return $result;
             }
 
@@ -87,6 +87,57 @@ class OneSignalPush
         } catch (\Throwable $e) {
             $result['error'] = 'No se pudo contactar a OneSignal: ' . $e->getMessage();
             Log::error('[OneSignal] ' . $result['error']);
+            return $result;
+        }
+    }
+
+    /**
+     * Dispositivos con push vinculados a un usuario (external_id) en OneSignal.
+     * Sirve para saber si "Activar" realmente dejó el dispositivo ligado a su cuenta.
+     *
+     * @return array{ok: bool, vinculado: bool, activos: int, dispositivos: array, error: string|null}
+     */
+    public static function estadoUsuario(string $externalId): array
+    {
+        $result = ['ok' => false, 'vinculado' => false, 'activos' => 0, 'dispositivos' => [], 'error' => null];
+
+        $appId = config('services.onesignal.app_id');
+        $apiKey = config('services.onesignal.rest_api_key');
+        if (!$appId || !$apiKey) {
+            $result['error'] = 'OneSignal no está configurado en el servidor.';
+            return $result;
+        }
+
+        try {
+            $response = Http::withHeaders(['Authorization' => 'Key ' . $apiKey])
+                ->acceptJson()
+                ->timeout(10)
+                ->get('https://api.onesignal.com/apps/' . urlencode($appId) . '/users/by/external_id/' . urlencode($externalId));
+
+            // 404: OneSignal no tiene ningún dispositivo ligado a este usuario
+            if ($response->status() === 404) {
+                $result['ok'] = true;
+                return $result;
+            }
+            if (!$response->successful()) {
+                $result['error'] = 'OneSignal respondió HTTP ' . $response->status();
+                return $result;
+            }
+
+            $push = collect($response->json('subscriptions') ?? [])
+                ->filter(fn ($s) => str_ends_with((string) ($s['type'] ?? ''), 'Push'));
+
+            $result['ok'] = true;
+            $result['vinculado'] = true;
+            $result['activos'] = $push->filter(fn ($s) => !empty($s['enabled']))->count();
+            $result['dispositivos'] = $push->map(fn ($s) => [
+                'tipo' => $s['type'] ?? null,
+                'activo' => !empty($s['enabled']),
+                'equipo' => trim(($s['device_model'] ?? '') . ' ' . ($s['device_os'] ?? '')) ?: null,
+            ])->values()->all();
+            return $result;
+        } catch (\Throwable $e) {
+            $result['error'] = 'No se pudo contactar a OneSignal: ' . $e->getMessage();
             return $result;
         }
     }

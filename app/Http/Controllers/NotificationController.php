@@ -29,6 +29,12 @@ class NotificationController extends Controller
         return response()->json(['success' => false, 'message' => 'Notification not found'], 404);
     }
 
+    // ¿Tiene el usuario algún dispositivo con push ligado a su cuenta en OneSignal?
+    public function pushStatus(Request $request)
+    {
+        return response()->json(\App\Services\OneSignalPush::estadoUsuario((string) $request->user()->id), 200);
+    }
+
     ///Listar todas las Notificaciones
     public function getAll(Request $request)
     {
