@@ -221,9 +221,19 @@ class LiveLocationController extends Controller
 
         // "Hoy" en hora de Mérida (el servidor puede estar en UTC: sin esto, después de las 6 p.m.
         // locales el recorrido mostraba ya el día siguiente). Se convierte a la zona en que se guardan las fechas.
-        $dia = $request->query('date')
-            ? Carbon::parse($request->query('date'), self::ZONA_LOCAL)
-            : now(self::ZONA_LOCAL);
+        $hoy = now(self::ZONA_LOCAL)->startOfDay();
+        $dia = $hoy->copy();
+        if ($request->query('date')) {
+            try {
+                $dia = Carbon::createFromFormat('Y-m-d', (string) $request->query('date'), self::ZONA_LOCAL)->startOfDay();
+            } catch (\Throwable $e) {
+                return response()->json(['error' => 'Fecha inválida.'], 422);
+            }
+            // Historial de 30 días (hoy y los 29 anteriores); lo más viejo ya se borró
+            if ($dia->gt($hoy) || $dia->lt($this->primerDiaConservado())) {
+                return response()->json(['error' => 'Solo se guarda el historial de los últimos ' . self::RETENTION_DAYS . ' días.'], 422);
+            }
+        }
         $inicio = $dia->copy()->startOfDay()->setTimezone(config('app.timezone'));
         $fin = $dia->copy()->endOfDay()->setTimezone(config('app.timezone'));
         $this->logAccess($viewer->id, $member->id, 'view_route');
@@ -244,7 +254,13 @@ class LiveLocationController extends Controller
         // En qué propiedades estuvo ese día, de qué hora a qué hora (detectado por GPS)
         $visitas = app(PlaceVisitService::class)->visitasDelRango($member->id, $inicio, $fin);
 
-        return response()->json(['user_id' => $member->id, 'points' => $points, 'visitas' => $visitas]);
+        return response()->json([
+            'user_id' => $member->id,
+            'date' => $dia->toDateString(),
+            'min_date' => $this->primerDiaConservado()->toDateString(),
+            'points' => $points,
+            'visitas' => $visitas,
+        ]);
     }
 
     // Solo root (rol 0) puede dar o quitar el permiso de ver el mapa
@@ -292,9 +308,19 @@ class LiveLocationController extends Controller
         ]);
     }
 
-    // Borrado automático del historial antiguo (sin depender de un cron)
+    // Primer día (hora de Mérida) que todavía se conserva: hoy y los 29 días anteriores
+    private function primerDiaConservado(): Carbon
+    {
+        return now(self::ZONA_LOCAL)->startOfDay()->subDays(self::RETENTION_DAYS - 1);
+    }
+
+    // Borrado automático del historial antiguo por día completo (sin depender de un cron):
+    // al entrar un día nuevo se elimina el más viejo, de cada persona.
     private function pruneOldLocations(): void
     {
-        UserLocation::where('recorded_at', '<', now()->subDays(self::RETENTION_DAYS))->limit(1000)->delete();
+        $limite = $this->primerDiaConservado()->setTimezone(config('app.timezone'));
+        UserLocation::where('recorded_at', '<', $limite)->limit(1000)->delete();
+        // Visitas a propiedades que terminaron antes del límite (las abiertas se conservan)
+        UserPlaceVisit::whereNotNull('left_at')->where('left_at', '<', $limite)->limit(1000)->delete();
     }
 }
