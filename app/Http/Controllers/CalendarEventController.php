@@ -176,44 +176,19 @@ class CalendarEventController extends Controller
                 return response()->json(['error' => 'No autorizado. Solo administradores pueden publicar avisos.'], 403);
             }
 
-            $validated = $request->validate([
-                'title' => 'required|string|max:255',
-                'event_date' => 'required|date',
-                'description' => 'nullable|string|max:1000',
-                'start_time' => ['nullable', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
-                'end_time' => ['nullable', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
-                'type' => 'nullable|string|max:50',
-                'color' => 'nullable|string|max:30',
+            $validated = $request->validate(self::reglasAviso() + [
                 'notify_team' => 'nullable|boolean',
-                'label' => 'nullable|string|max:60',
                 'parent_id' => 'nullable|integer',
-                'participant_ids' => 'nullable|array|max:100',
-                'participant_ids.*' => 'integer',
-                'is_private' => 'nullable|boolean',
-            ], [
-                'start_time.regex' => 'La hora de inicio no es válida.',
-                'end_time.regex' => 'La hora de fin no es válida.',
-            ]);
+            ], self::MENSAJES_HORARIO);
 
             // Horario: la hora de fin requiere inicio y debe ser posterior
             $inicio = $validated['start_time'] ?? null;
             $fin = $validated['end_time'] ?? null;
-            if ($fin && !$inicio) {
-                return response()->json(['error' => 'Indica también la hora de inicio.'], 422);
-            }
-            if ($inicio && $fin && substr($fin, 0, 5) <= substr($inicio, 0, 5)) {
-                return response()->json(['error' => 'La hora de fin debe ser posterior a la de inicio.'], 422);
+            if ($error = $this->errorHorario($inicio, $fin)) {
+                return response()->json(['error' => $error], 422);
             }
 
-            // Etiqueta libre: se reutiliza la ya escrita por el equipo (mismas mayúsculas) si coincide
-            $label = trim(preg_replace('/\s+/', ' ', (string) ($validated['label'] ?? '')));
-            if ($label !== '') {
-                $existente = $this->teamEvents($user)
-                    ->whereNotNull('label')
-                    ->whereRaw('LOWER(label) = ?', [mb_strtolower($label)])
-                    ->value('label');
-                $label = $existente ?: $label;
-            }
+            $label = $this->normalizarEtiqueta($user, $validated['label'] ?? null);
 
             // Seguimiento: el aviso anterior debe ser del mismo equipo
             $parent = null;
@@ -227,16 +202,9 @@ class CalendarEventController extends Controller
             // Privado: solo para quien lo publica, sin participantes ni notificaciones
             $esPrivado = (bool) ($validated['is_private'] ?? false);
 
-            // Participantes: solo se aceptan miembros del equipo; vacío = todo el equipo
-            $participantIds = [];
-            if (!$esPrivado && !empty($validated['participant_ids'])) {
-                $participantIds = $this->teamMembers($user)
-                    ->whereIn('id', array_unique($validated['participant_ids']))
-                    ->pluck('id')
-                    ->all();
-                if (!$participantIds) {
-                    return response()->json(['error' => 'Las personas elegidas ya no están activas en el equipo.'], 422);
-                }
+            $participantIds = $esPrivado ? [] : $this->participantesValidos($user, $validated['participant_ids'] ?? []);
+            if ($participantIds === null) {
+                return response()->json(['error' => 'Las personas elegidas ya no están activas en el equipo.'], 422);
             }
 
             $event = new CalendarEvent();
@@ -278,6 +246,143 @@ class CalendarEventController extends Controller
             return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
         } catch (\Exception $e) {
             return response()->json(['error' => 'Error al crear evento: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // Campos que se pueden escribir al publicar o editar un aviso
+    private static function reglasAviso(): array
+    {
+        return [
+            'title' => 'required|string|max:255',
+            'event_date' => 'required|date',
+            'description' => 'nullable|string|max:1000',
+            'start_time' => ['nullable', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
+            'end_time' => ['nullable', 'regex:/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/'],
+            'type' => 'nullable|string|max:50',
+            'color' => 'nullable|string|max:30',
+            'label' => 'nullable|string|max:60',
+            'participant_ids' => 'nullable|array|max:100',
+            'participant_ids.*' => 'integer',
+            'is_private' => 'nullable|boolean',
+        ];
+    }
+
+    private const MENSAJES_HORARIO = [
+        'start_time.regex' => 'La hora de inicio no es válida.',
+        'end_time.regex' => 'La hora de fin no es válida.',
+    ];
+
+    // La hora de fin requiere inicio y debe ser posterior
+    private function errorHorario(?string $inicio, ?string $fin): ?string
+    {
+        if ($fin && !$inicio) {
+            return 'Indica también la hora de inicio.';
+        }
+        if ($inicio && $fin && substr($fin, 0, 5) <= substr($inicio, 0, 5)) {
+            return 'La hora de fin debe ser posterior a la de inicio.';
+        }
+        return null;
+    }
+
+    // Etiqueta libre: se reutiliza la ya escrita por el equipo (mismas mayúsculas) si coincide
+    private function normalizarEtiqueta($user, ?string $label): string
+    {
+        $label = trim(preg_replace('/\s+/', ' ', (string) $label));
+        if ($label === '') {
+            return '';
+        }
+        $existente = $this->teamEvents($user)
+            ->whereNotNull('label')
+            ->whereRaw('LOWER(label) = ?', [mb_strtolower($label)])
+            ->value('label');
+        return $existente ?: $label;
+    }
+
+    // Participantes: solo miembros activos del equipo; [] = todo el equipo; null = ninguno elegido sigue activo
+    private function participantesValidos($user, array $ids): ?array
+    {
+        if (!$ids) {
+            return [];
+        }
+        $validos = $this->teamMembers($user)->whereIn('id', array_unique($ids))->pluck('id')->all();
+        return $validos ?: null;
+    }
+
+    // Editar un aviso: solo quien lo publicó. Si cambia la fecha u hora se avisa a los involucrados
+    // y la alarma de 1 hora antes se vuelve a programar.
+    public function update(Request $request, $id)
+    {
+        try {
+            $user = $request->user();
+            if (!$user || !in_array((int)$user->role_id, [0, 1])) {
+                return response()->json(['error' => 'No autorizado.'], 403);
+            }
+
+            $event = $this->teamEvents($user)->find($id);
+            if (!$event) {
+                return response()->json(['error' => 'Aviso no encontrado.'], 404);
+            }
+            if ((int) $event->created_by !== (int) $user->id) {
+                return response()->json(['error' => 'Solo quien publicó el aviso puede editarlo.'], 403);
+            }
+
+            $validated = $request->validate(self::reglasAviso(), self::MENSAJES_HORARIO);
+
+            $inicio = $validated['start_time'] ?? null;
+            $fin = $validated['end_time'] ?? null;
+            if ($error = $this->errorHorario($inicio, $fin)) {
+                return response()->json(['error' => $error], 422);
+            }
+
+            $esPrivado = (bool) ($validated['is_private'] ?? false);
+            $participantIds = $esPrivado ? [] : $this->participantesValidos($user, $validated['participant_ids'] ?? []);
+            if ($participantIds === null) {
+                return response()->json(['error' => 'Las personas elegidas ya no están activas en el equipo.'], 422);
+            }
+
+            $fechaAntes = substr((string) $event->getRawOriginal('event_date'), 0, 10);
+            $horaAntes = $event->start_time ? substr($event->start_time, 0, 5) : null;
+            $label = $this->normalizarEtiqueta($user, $validated['label'] ?? null);
+
+            $event->title = $validated['title'];
+            $event->description = $validated['description'] ?? null;
+            $event->event_date = $validated['event_date'];
+            $event->start_time = $inicio ? substr($inicio, 0, 5) : null;
+            $event->end_time = $fin ? substr($fin, 0, 5) : null;
+            $event->label = $label !== '' ? $label : null;
+            $event->type = $validated['type'] ?? $event->type;
+            $event->color = $validated['color'] ?? $event->color;
+            $event->is_private = $esPrivado;
+            $event->notify_team = !$esPrivado;
+            $event->save();
+            $event->participants()->sync($participantIds);
+
+            $cambioFecha = $fechaAntes !== substr((string) $validated['event_date'], 0, 10)
+                || $horaAntes !== $event->start_time;
+
+            // La alarma anterior ya no corresponde
+            $this->cancelarRecordatorio($event);
+            $event->save();
+            $this->programarRecordatorio($user, $event);
+
+            $push = null;
+            if ($cambioFecha && !$esPrivado && !$event->completed_at) {
+                $cuando = Carbon::parse($validated['event_date'], self::ZONA_LOCAL)->locale('es')->isoFormat('dddd D [de] MMMM')
+                    . ($event->start_time ? " a las {$event->start_time}" : '');
+                $titulo = '📅 Cambio de fecha · ' . (!empty($event->label) ? "{$event->label} · " : '') . $event->title;
+                $push = $this->notifyTeam($user, $event, new TeamCalendarNoticeNotification($event, $titulo, "Ahora es el {$cuando}"));
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Aviso actualizado.',
+                'push' => $push,
+                'event' => $event->load(self::EVENT_RELATIONS)
+            ], 200);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['error' => collect($e->errors())->flatten()->first()], 422);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al editar el aviso: ' . $e->getMessage()], 500);
         }
     }
 
