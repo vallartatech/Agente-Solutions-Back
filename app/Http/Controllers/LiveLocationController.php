@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\UserLocation;
+use App\Models\UserPlaceVisit;
 use App\Services\PlaceVisitService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
