@@ -548,44 +548,6 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 });
 
 
-// ðŸ§¹ RUTA DE EMERGENCIA (Temporalmente PÃºblica para facilitar el Reset)
-Route::get('/db-reset-pedro', function () {
-    try {
-        \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=0;');
-
-        // Tablas de Reportes y Cotizaciones
-        \Illuminate\Support\Facades\DB::table('final_work_reports')->truncate();
-        \Illuminate\Support\Facades\DB::table('work_reports')->truncate();
-        \Illuminate\Support\Facades\DB::table('quotes')->truncate();
-
-        // Tablas de Trabajo
-        \Illuminate\Support\Facades\DB::table('work_order_technician')->truncate();
-        \Illuminate\Support\Facades\DB::table('service_technician')->truncate();
-        \Illuminate\Support\Facades\DB::table('work_orders')->truncate();
-        \Illuminate\Support\Facades\DB::table('services')->truncate();
-
-        // Tablas de Inventario y Propiedades
-        \Illuminate\Support\Facades\DB::table('property_components')->truncate();
-        \Illuminate\Support\Facades\DB::table('property_categories')->truncate();
-        \Illuminate\Support\Facades\DB::table('property_areas')->truncate();
-        \Illuminate\Support\Facades\DB::table('properties')->truncate();
-
-        // Notificaciones
-        \Illuminate\Support\Facades\DB::table('notifications')->truncate();
-
-        \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=1;');
-
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Â¡Base de datos limpiada con Ã©xito! (Modo PÃºblico)',
-            'timestamp' => now()
-        ]);
-    } catch (\Exception $e) {
-        return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
-    }
-});
-
-
 // Registro Privado (Exclusivo para el Admin)
 Route::post('/registro-usuario', [AuthController::class, 'registro']);
 
@@ -1841,34 +1803,6 @@ Route::middleware('auth:sanctum')->group(function () {
                 'error' => $e->getMessage()
             ], 500);
         }
-    });
-
-    Route::delete('/work-orders/reset-all-services', function () {
-        $user = auth('sanctum')->user();
-
-        try {
-            if ($user && $user->tenant_id) {
-                \App\Models\WorkReport::withoutGlobalScopes()->where('tenant_id', $user->tenant_id)->delete();
-                \App\Models\NetworkQuote::withoutGlobalScopes()->whereHas('workOrder', function ($q) use ($user) {
-                    $q->where('tenant_id', $user->tenant_id);
-                })->delete();
-                \App\Models\WorkOrder::withoutGlobalScopes()->where('tenant_id', $user->tenant_id)->delete();
-                \App\Models\Service::withoutGlobalScopes()->where('tenant_id', $user->tenant_id)->delete();
-            } else {
-                \App\Models\WorkReport::withoutGlobalScopes()->delete();
-                \App\Models\NetworkQuote::withoutGlobalScopes()->delete();
-                \App\Models\WorkOrder::withoutGlobalScopes()->delete();
-                \App\Models\Service::withoutGlobalScopes()->delete();
-            }
-            \Illuminate\Support\Facades\DB::table('work_order_technician')->delete();
-        } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Todos los servicios han sido borrados de la base de datos con Ã©xito.'
-        ]);
     });
 
     Route::get('/work-orders/all', function () {
