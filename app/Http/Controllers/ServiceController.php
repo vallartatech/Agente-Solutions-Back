@@ -98,17 +98,20 @@ class ServiceController extends Controller
     // Sube la foto o el video a Cloudinary ya reducidos y con la marca de agua.
     // Fotos: máx. 1600 px, calidad automática, JPG. Videos: 720p, MP4 H.264 (el HEVC del iPhone no se ve en Android/Windows).
     // El video se rechaza si dura más de VIDEO_MAX_SEGUNDOS.
-    private function subirEvidencia($archivo): array
+    // El ticket va sin marca de agua: es un documento de la empresa cliente.
+    private function subirEvidencia($archivo, bool $marcaAgua = true): array
     {
         $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
         $esVideo = str_starts_with((string) $archivo->getMimeType(), 'video/');
 
         $conMarca = false;
-        try {
-            $conMarca = $this->asegurarMarcaAgua($cloudinary);
-        } catch (\Exception $e) {
-            // Si el logo no se pudo subir, la evidencia se guarda igual (sin marca)
-            Log::warning('No se pudo preparar la marca de agua: ' . $e->getMessage());
+        if ($marcaAgua) {
+            try {
+                $conMarca = $this->asegurarMarcaAgua($cloudinary);
+            } catch (\Exception $e) {
+                // Si el logo no se pudo subir, la evidencia se guarda igual (sin marca)
+                Log::warning('No se pudo preparar la marca de agua: ' . $e->getMessage());
+            }
         }
         $marca = $conMarca ? [[
             'overlay' => self::MARCA_AGUA_ID,
@@ -154,6 +157,38 @@ class ServiceController extends Controller
         return ['url' => $respuesta['secure_url']];
     }
 
+    private const ETAPAS = ['antes', 'durante', 'despues', 'extra', 'ticket'];
+
+    // Etapa de la evidencia: la que manda el front o, si no, la etiqueta "[ANTES]"… de la descripción
+    private function etapaEvidencia(Request $request): ?string
+    {
+        $stage = strtolower((string) $request->input('stage'));
+        if (in_array($stage, self::ETAPAS, true)) {
+            return $stage;
+        }
+        $desc = mb_strtoupper((string) $request->description);
+        foreach (['antes' => ['[ANTES]'], 'durante' => ['[DURANTE]'], 'despues' => ['[DESPUÉS]', '[DESPUES]'], 'extra' => ['[EXTRA]'], 'ticket' => ['[TICKET]']] as $etapa => $tags) {
+            foreach ($tags as $tag) {
+                if (str_contains($desc, $tag)) {
+                    return $etapa;
+                }
+            }
+        }
+        return null;
+    }
+
+    // Si el trabajo ya se había cerrado "sin ticket" y después llega el ticket, se corrige el registro
+    private function marcarTicketRecibido(?int $workOrderId): void
+    {
+        if (!$workOrderId) {
+            return;
+        }
+        WorkOrder::withoutGlobalScopes()
+            ->where('id', $workOrderId)
+            ->where('ticket_status', 'sin_ticket')
+            ->update(['ticket_status' => 'con_ticket']);
+    }
+
     public function storeReport(Request $request, $id)
     {
         try {
@@ -165,18 +200,29 @@ class ServiceController extends Controller
             $parsed = $this->parseCompositeId($id);
             $realId = $parsed['realId'];
             $column = $parsed['column'];
+            $stage = $this->etapaEvidencia($request);
 
-            $subida = $this->subirEvidencia($request->file('image'));
+            $subida = $this->subirEvidencia($request->file('image'), $stage !== 'ticket');
             if (isset($subida['error'])) {
                 return response()->json(['success' => false, 'error' => $subida['error']], 422);
+            }
+
+            // Un solo ticket por trabajo: el nuevo reemplaza al anterior
+            if ($stage === 'ticket') {
+                WorkReport::where($column, $realId)->where('stage', 'ticket')->delete();
             }
 
             $report = WorkReport::create([
                 $column => $realId,
                 'technician_id' => $request->user()->id,
+                'stage' => $stage,
                 'image_url' => $subida['url'],
                 'description' => $request->description,
             ]);
+
+            if ($stage === 'ticket' && $column === 'work_order_id') {
+                $this->marcarTicketRecibido($realId);
+            }
 
             return response()->json([
                 'success' => true,
@@ -203,9 +249,10 @@ class ServiceController extends Controller
             }
 
             $report->description = $request->description;
+            $report->stage = $this->etapaEvidencia($request) ?? $report->stage;
 
             if ($request->hasFile('image')) {
-                $subida = $this->subirEvidencia($request->file('image'));
+                $subida = $this->subirEvidencia($request->file('image'), $report->stage !== 'ticket');
                 if (isset($subida['error'])) {
                     return response()->json(['success' => false, 'error' => $subida['error']], 422);
                 }

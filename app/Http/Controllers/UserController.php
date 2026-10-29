@@ -346,7 +346,7 @@ class UserController extends Controller
                 ->select(
                     'id', 'first_name', 'last_name', 'email', 'role_id', 'is_active', 
                     'approval_status', 'profile_picture', 'phone_number', 'tenant_id',
-                    'rating_stars_avg', 'rating_time_avg', 'total_reviews_count'
+                    'rating_stars_avg', 'rating_time_avg', 'total_reviews_count', 'valida_trabajos'
                 );
             
             if ($currentUser && $currentUser->role_id === 0) {
@@ -442,6 +442,7 @@ class UserController extends Controller
                     'total_reviews_count' => (int)($u->total_reviews_count ?? 0),
                     'my_review' => $myReview,
                     'jobs_count' => $jobsCount,
+                    'valida_trabajos' => (bool) ($u->valida_trabajos ?? false),
                 ];
             });
 

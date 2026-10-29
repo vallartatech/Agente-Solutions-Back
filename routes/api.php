@@ -895,6 +895,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/propiedades/servicios', [PropertyController::class, 'storeWorkOrder']);
     Route::get('/propiedades/{id}/work-orders', [PropertyController::class, 'getWorkOrders']);
     Route::put('/work-orders/{id}/status', [PropertyController::class, 'updateWorkOrderStatus']);
+    // Validación de trabajos terminados (validador fijo + alerta del menú)
+    Route::get('/validacion/pendientes', [\App\Http\Controllers\WorkValidationController::class, 'pendientes']);
+    Route::put('/usuarios/{userId}/validador', [\App\Http\Controllers\WorkValidationController::class, 'setValidador']);
+    Route::put('/mi-mascota-alerta', [\App\Http\Controllers\WorkValidationController::class, 'setMascota']);
     Route::put('/work-orders/{id}/assign', [PropertyController::class, 'assignWorkOrder']);
     Route::put('/work-orders/batch/{batchId}/assign', [PropertyController::class, 'assignBatchWorkOrders']);
     Route::get('/work-orders/global-stats', [PropertyController::class, 'getGlobalServiceStats']);
@@ -1846,7 +1850,8 @@ Route::middleware('auth:sanctum')->group(function () {
         $query = \App\Models\WorkReport::with([
             'technician:id,first_name,last_name,profile_picture,tenant_id',
             'service.property.client',
-            'workOrder.property.client'
+            'workOrder.property.client',
+            'workOrder.closer:id,first_name,last_name'
         ]);
 
         if ($user && in_array((int)$user->role_id, [2, 6, 8])) {

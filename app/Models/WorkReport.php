@@ -10,6 +10,7 @@ class WorkReport extends Model
         'service_id',
         'work_order_id',
         'technician_id',
+        'stage', // antes | durante | despues | extra | ticket
         'image_url',
         'description',
     ];

@@ -730,6 +730,24 @@ class PropertyController extends Controller
     // ---------------------------------------------------
     // 7. ACTUALIZAR ESTADO DE ÓRDENES
     // ---------------------------------------------------
+    // Al quedar "Listo" por un admin se registra quién lo validó, cuándo y si había ticket de conformidad.
+    // No bloquea: cerrar sin ticket se permite y queda a nombre de quien lo confirmó.
+    // Si vuelve a abrirse, se borra el registro.
+    private function registrarCierre(WorkOrder $workOrder, string $nuevoEstado, $user): void
+    {
+        $esAdmin = $user && in_array((int) $user->role_id, [0, 1]);
+        if ($nuevoEstado === 'Listo' && $esAdmin && $workOrder->status !== $workOrder->getOriginal('status')) {
+            $tieneTicket = \App\Models\WorkReport::where('work_order_id', $workOrder->id)->where('stage', 'ticket')->exists();
+            $workOrder->ticket_status = $tieneTicket ? 'con_ticket' : 'sin_ticket';
+            $workOrder->closed_by = $user->id;
+            $workOrder->closed_at = now();
+        } elseif (!in_array($nuevoEstado, ['Listo', 'Finalizado'], true)) {
+            $workOrder->ticket_status = null;
+            $workOrder->closed_by = null;
+            $workOrder->closed_at = null;
+        }
+    }
+
     public function updateWorkOrderStatus(Request $request, $id)
     {
         $user = auth('sanctum')->user();
@@ -747,6 +765,7 @@ class PropertyController extends Controller
             foreach ($workOrders as $wo) {
                 $wo->status = $nuevoEstado;
                 $wo->updated_at = now();
+                $this->registrarCierre($wo, $nuevoEstado, $user);
                 $wo->save();
             }
             return response()->json(['success' => true, 'status' => $nuevoEstado, 'message' => 'Estado del lote actualizado correctamente']);
@@ -767,6 +786,7 @@ class PropertyController extends Controller
 
             $workOrder->status = $nuevoEstado;
             $workOrder->updated_at = now();
+            $this->registrarCierre($workOrder, $nuevoEstado, $user);
             $workOrder->save();
 
             // Si se cancela el servicio (Rechazado o Cancelado), notificamos al Cliente y al Técnico
@@ -811,11 +831,13 @@ class PropertyController extends Controller
 
                     $propertyName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad desconocida';
 
-                    // Obtenemos administradores (rol 1 y 0) independientemente de tenant_id
-                    $admins = User::withoutGlobalScopes()->whereIn('role_id', [0, 1])->get();
+                    // Solo al validador del equipo (si no hay, a los admins de ese equipo; ya no a los de otras empresas)
+                    $destinatarios = \App\Http\Controllers\WorkValidationController::destinatarios(
+                        $workOrder->tenant_id ? (int) $workOrder->tenant_id : null
+                    );
 
-                    Notification::send($admins, new \App\Notifications\WorkOrderFinishedNotification($workOrder, $technicianName, $propertyName));
-                    \Log::info("Notificación de trabajo finalizado enviada a admins.");
+                    Notification::send($destinatarios, new \App\Notifications\WorkOrderFinishedNotification($workOrder, $technicianName, $propertyName));
+                    \Log::info("Notificación de trabajo finalizado enviada a " . $destinatarios->count() . " validador(es).");
                 } catch (\Exception $e) {
                     \Log::error("Error enviando notificación de trabajo finalizado: " . $e->getMessage());
                 }

@@ -40,6 +40,12 @@ class WorkOrder extends Model
         return $this->belongsTo(Property::class, 'property_id');
     }
 
+    // Admin que validó y dio por finalizado el trabajo (con o sin ticket de conformidad)
+    public function closer()
+    {
+        return $this->belongsTo(User::class, 'closed_by')->withoutGlobalScopes();
+    }
+
     public function tecnico()
     {
         return $this->belongsTo(User::class, 'tecnico_id')->withoutGlobalScopes();
