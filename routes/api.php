@@ -850,6 +850,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'update']);
     Route::delete('/calendar/events/{id}', [\App\Http\Controllers\CalendarEventController::class, 'destroy']);
     Route::post('/calendar/events/{id}/complete', [\App\Http\Controllers\CalendarEventController::class, 'complete']);
+    Route::post('/calendar/events/{id}/remind', [\App\Http\Controllers\CalendarEventController::class, 'remind']);
 
     // Comprobantes de gastos (Agente Solutions / Mantenere)
     // Chat interno del equipo

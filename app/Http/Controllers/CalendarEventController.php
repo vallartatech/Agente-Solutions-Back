@@ -386,6 +386,49 @@ class CalendarEventController extends Controller
         }
     }
 
+    // Vuelve a enviar el aviso como recordatorio a sus involucrados (participantes o todo el equipo).
+    // Un mismo aviso se puede recordar como máximo una vez cada 5 minutos, para no saturar a nadie.
+    public function remind(Request $request, $id)
+    {
+        try {
+            $user = $request->user();
+            if (!$user || !in_array((int)$user->role_id, [0, 1])) {
+                return response()->json(['error' => 'No autorizado. Solo administradores pueden enviar recordatorios.'], 403);
+            }
+
+            $event = $this->teamEvents($user)->find($id);
+            if (!$event) {
+                return response()->json(['error' => 'Aviso no encontrado.'], 404);
+            }
+            if ($event->completed_at) {
+                return response()->json(['error' => 'Este aviso ya está completado.'], 422);
+            }
+            if ($event->is_private) {
+                return response()->json(['error' => 'Un aviso privado no se le recuerda a nadie más.'], 422);
+            }
+            if (!\Illuminate\Support\Facades\Cache::add("calendar_remind_{$event->id}", $user->id, now()->addMinutes(5))) {
+                return response()->json(['error' => 'Ya se envió un recordatorio de este aviso hace unos minutos. Espera un poco antes de volver a enviarlo.'], 429);
+            }
+
+            $fecha = $event->event_date instanceof \DateTimeInterface
+                ? $event->event_date->format('Y-m-d')
+                : substr((string) $event->event_date, 0, 10);
+            $dia = Carbon::parse($fecha, self::ZONA_LOCAL)->locale('es');
+            $hoy = Carbon::now(self::ZONA_LOCAL)->startOfDay();
+            $cuando = $dia->lt($hoy)
+                ? 'Pendiente desde el ' . $dia->isoFormat('dddd D [de] MMMM')
+                : 'Para el ' . $dia->isoFormat('dddd D [de] MMMM') . ($event->start_time ? ' a las ' . substr($event->start_time, 0, 5) : '');
+            $autor = trim("{$user->first_name} {$user->last_name}");
+
+            $titulo = '🔔 Recordatorio · ' . (!empty($event->label) ? "{$event->label} · " : '') . $event->title;
+            $push = $this->notifyTeam($user, $event, new TeamCalendarNoticeNotification($event, $titulo, "{$cuando} · Te lo recuerda {$autor}"));
+
+            return response()->json(['success' => true, 'push' => $push], 200);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al enviar el recordatorio: ' . $e->getMessage()], 500);
+        }
+    }
+
     // Marca el aviso como completado. El comentario (opcional) le llega a sus participantes o a todo el equipo.
     public function complete(Request $request, $id)
     {
