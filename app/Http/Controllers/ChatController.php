@@ -179,6 +179,8 @@ class ChatController extends Controller
                 [
                     'es_creador' => (int) $x->user_id === (int) $chat->created_by,
                     'last_read_message_id' => (int) $x->last_read_message_id,
+                    // Desde qué mensaje está en el chat: quien entró después no cuenta como "pendiente de leer"
+                    'from_message_id' => (int) ($x->from_message_id ?? 0),
                 ]
             ))->values(),
             'mensajes' => $mensajes->map(fn ($m) => $this->formatoMensaje($m, $chat)),
