@@ -897,11 +897,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/work-orders/{id}/status', [PropertyController::class, 'updateWorkOrderStatus']);
     // Trabajos con varios elementos y ciclos de mantenimiento (Agente Solutions)
     Route::get('/work-orders/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDeOrden']);
-    Route::get('/properties/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDePropiedad']);
-    Route::get('/properties/{id}/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'dePropiedad']);
     Route::get('/mantenimiento/propiedades', [\App\Http\Controllers\MaintenanceController::class, 'propiedades']);
-    Route::get('/mantenimiento/formulario', [\App\Http\Controllers\MaintenanceController::class, 'formulario']);
-    Route::post('/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'guardar']);
+    Route::get('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'equipos']);
+    Route::post('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'agregar']);
+    Route::put('/mantenimiento/equipos/{id}/fecha', [\App\Http\Controllers\MaintenanceController::class, 'cambiarFecha']);
     Route::delete('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'baja']);
     Route::get('/mantenimiento/visitas', [\App\Http\Controllers\MaintenanceController::class, 'visitas']);
     Route::post('/mantenimiento/visitas/{id}/omitir', [\App\Http\Controllers\MaintenanceController::class, 'omitir']);

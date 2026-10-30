@@ -7,13 +7,13 @@ use App\Models\MaintenanceVisit;
 use App\Models\Property;
 use App\Models\WorkOrder;
 use App\Models\WorkOrderComponent;
-use App\Services\ElementosTrabajo;
 use App\Services\FotosMantenimiento;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-// Ciclos de mantenimiento de Agente Solutions (solo Root y Admin del equipo interno).
+// Mantenimiento de Agente Solutions (solo Root y Admin del equipo interno): cada equipo se agrega a mano
+// con su próxima fecha, sin depender del levantamiento, y esa fecha aparece en el calendario.
 class MaintenanceController extends Controller
 {
     private const ZONA_LOCAL = 'America/Merida';
@@ -39,25 +39,9 @@ class MaintenanceController extends Controller
         return WorkValidationController::mismoEquipo(MaintenanceEquipment::query(), $this->tenantId($request));
     }
 
-    // Propiedades del equipo interno, con cuántos elementos tiene su levantamiento
-    public function propiedades(Request $request)
+    private function hoy(): string
     {
-        if (!$this->esAdmin($request)) {
-            return response()->json(['error' => 'No autorizado.'], 403);
-        }
-
-        $query = Property::withoutGlobalScopes()
-            ->select('id', 'property_name', 'address')
-            ->selectSub(
-                DB::table('property_components as pc')
-                    ->join('property_areas as pa', 'pc.property_area_id', '=', 'pa.id')
-                    ->whereColumn('pa.property_id', 'properties.id')
-                    ->selectRaw('COUNT(*)'),
-                'elementos_count'
-            )
-            ->orderBy('property_name');
-
-        return response()->json(WorkValidationController::mismoEquipo($query, $this->tenantId($request))->get());
+        return Carbon::now(self::ZONA_LOCAL)->toDateString();
     }
 
     // Elementos de una orden, para la galería de evidencias y el reporte oficial
@@ -66,66 +50,39 @@ class MaintenanceController extends Controller
         return response()->json(WorkOrderComponent::where('work_order_id', (int) $id)->orderBy('id')->get(['id', 'label']));
     }
 
-    // Elementos del levantamiento para armar un trabajo
-    public function elementosDePropiedad(Request $request, $id)
-    {
-        if (!$this->esAdmin($request)) {
-            return response()->json(['error' => 'No autorizado.'], 403);
-        }
-        if (!$this->propiedad($request, $id)) {
-            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
-        }
-        return response()->json(ElementosTrabajo::delLevantamiento((int) $id));
-    }
-
-    // Datos de la ventana de ciclos: con work_order_id al finalizar un trabajo, con property_id desde la propiedad
-    public function formulario(Request $request)
+    // Propiedades del equipo interno, para el formulario
+    public function propiedades(Request $request)
     {
         if (!$this->esAdmin($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
         }
 
-        $orden = $request->filled('work_order_id')
-            ? WorkOrder::withoutGlobalScopes()->find($request->integer('work_order_id'))
-            : null;
-        $propiedad = $this->propiedad($request, $orden?->property_id ?? $request->integer('property_id'));
-        if (!$propiedad) {
-            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
-        }
+        $query = Property::withoutGlobalScopes()->select('id', 'property_name', 'address')->orderBy('property_name');
 
-        $enOrden = $orden
-            ? WorkOrderComponent::where('work_order_id', $orden->id)->pluck('property_component_id')->filter()->all()
-            : [];
-        $equipos = MaintenanceEquipment::where('property_id', $propiedad->id)->where('activo', true)->get();
-        $porElemento = $equipos->whereNotNull('property_component_id')->keyBy('property_component_id');
-
-        $elementos = ElementosTrabajo::delLevantamiento($propiedad->id)->map(fn ($c) => [
-            'id' => $c->id,
-            'label' => $c->label,
-            'area' => $c->area,
-            'en_orden' => in_array($c->id, $enOrden),
-            'equipo_id' => $porElemento[$c->id]->id ?? null,
-            'veces_al_ano' => $porElemento[$c->id]->veces_al_ano ?? null,
-        ]);
-
-        $fecha = $orden?->closed_at
-            ? Carbon::parse($orden->closed_at)->setTimezone(self::ZONA_LOCAL)
-            : Carbon::now(self::ZONA_LOCAL);
-
-        return response()->json([
-            'property_id' => $propiedad->id,
-            'property_name' => $propiedad->property_name,
-            'fecha_base' => $fecha->toDateString(),
-            'elementos' => $elementos->values(),
-            // Grupos sin levantamiento ya capturados: los de este trabajo y los que siguen sin ciclo
-            'grupos' => $equipos->whereNull('property_component_id')
-                ->filter(fn ($e) => !$e->veces_al_ano || ($orden && (int) $e->work_order_id === (int) $orden->id))
-                ->values(),
-        ]);
+        return response()->json(WorkValidationController::mismoEquipo($query, $this->tenantId($request))->get());
     }
 
-    // Guarda los ciclos. Cada elemento: { id?, property_component_id? | tipo + cantidad + fotos, veces_al_ano }
-    public function guardar(Request $request)
+    // Todos los equipos agregados, con su próxima fecha
+    public function equipos(Request $request)
+    {
+        if (!$this->esAdmin($request)) {
+            return response()->json(['error' => 'No autorizado.'], 403);
+        }
+
+        return response()->json(
+            $this->equiposDelEquipo($request)
+                ->with([
+                    'property:id,property_name,address',
+                    'visits' => fn ($q) => $q->where('status', 'pendiente'),
+                ])
+                ->where('activo', true)
+                ->orderByDesc('id')
+                ->get()
+        );
+    }
+
+    // Agrega un equipo con la fecha de su próximo mantenimiento
+    public function agregar(Request $request)
     {
         if (!$this->esAdmin($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
@@ -133,17 +90,12 @@ class MaintenanceController extends Controller
 
         $validated = $request->validate([
             'property_id' => 'required|integer',
-            'work_order_id' => 'nullable|integer',
-            'fecha_base' => 'required|date',
-            'items' => 'required|array|min:1|max:150',
-            'items.*.id' => 'nullable|integer',
-            'items.*.property_component_id' => 'nullable|integer',
-            'items.*.tipo' => 'nullable|string|max:150',
-            'items.*.cantidad' => 'nullable|integer|min:1|max:1000',
-            'items.*.detalle' => 'nullable|string|max:1000',
-            'items.*.veces_al_ano' => 'required|integer|in:1,2,3,4',
-            'items.*.foto_equipo' => 'nullable|file|image|max:10240',
-            'items.*.foto_datos' => 'nullable|file|image|max:10240',
+            'tipo' => 'required|string|max:150',
+            'cantidad' => 'nullable|integer|min:1|max:1000',
+            'detalle' => 'nullable|string|max:1000',
+            'fecha' => 'required|date|after_or_equal:' . $this->hoy(),
+            'foto_equipo' => 'nullable|file|image|max:10240',
+            'foto_datos' => 'nullable|file|image|max:10240',
         ]);
 
         $propiedad = $this->propiedad($request, $validated['property_id']);
@@ -151,98 +103,56 @@ class MaintenanceController extends Controller
             return response()->json(['error' => 'Propiedad no encontrada.'], 404);
         }
 
-        // El trabajo de origen debe ser de esta misma propiedad
-        $ordenId = !empty($validated['work_order_id'])
-            ? WorkOrder::withoutGlobalScopes()->where('property_id', $propiedad->id)->whereKey($validated['work_order_id'])->value('id')
-            : null;
-
-        $idsElementos = collect($validated['items'])->pluck('property_component_id')->filter()->map(fn ($i) => (int) $i)->unique()->values();
-        $elementos = ElementosTrabajo::delLevantamiento($propiedad->id, $idsElementos->all())->keyBy('id');
-        if ($elementos->count() !== $idsElementos->count()) {
-            return response()->json(['error' => 'Alguno de los elementos ya no pertenece a esta propiedad.'], 422);
-        }
-
-        // Fotos fuera de la transacción; un grupo nuevo debe traer las dos
         $fotos = app(FotosMantenimiento::class);
         $urls = [];
-        foreach ($validated['items'] as $i => $item) {
-            if (!empty($item['property_component_id'])) {
-                continue;
-            }
-            if (empty($item['id']) && (empty($item['tipo']) || !$request->hasFile("items.{$i}.foto_equipo") || !$request->hasFile("items.{$i}.foto_datos"))) {
-                return response()->json(['error' => 'Cada grupo necesita tipo, foto del equipo y foto de sus datos.'], 422);
-            }
-            foreach (['foto_equipo', 'foto_datos'] as $campo) {
-                if ($request->hasFile("items.{$i}.{$campo}")) {
-                    $urls[$i]["{$campo}_url"] = $fotos->subir($request->file("items.{$i}.{$campo}"));
-                }
+        foreach (['foto_equipo', 'foto_datos'] as $campo) {
+            if ($request->hasFile($campo)) {
+                $urls["{$campo}_url"] = $fotos->subir($request->file($campo));
             }
         }
 
-        $base = $validated['fecha_base'];
-        $guardados = DB::transaction(function () use ($validated, $propiedad, $elementos, $urls, $base, $ordenId, $request) {
-            $resultado = [];
-            foreach ($validated['items'] as $i => $item) {
-                $equipo = null;
-                if (!empty($item['id'])) {
-                    $equipo = MaintenanceEquipment::where('property_id', $propiedad->id)->find($item['id']);
-                } elseif (!empty($item['property_component_id'])) {
-                    $equipo = MaintenanceEquipment::where('property_id', $propiedad->id)
-                        ->where('property_component_id', $item['property_component_id'])
-                        ->where('activo', true)
-                        ->first();
-                }
-
-                $elemento = !empty($item['property_component_id']) ? $elementos[(int) $item['property_component_id']] : null;
-                $equipo ??= new MaintenanceEquipment([
-                    'tenant_id' => $propiedad->tenant_id,
-                    'property_id' => $propiedad->id,
-                    'property_component_id' => $elemento?->id,
-                    'work_order_id' => $ordenId,
-                    'created_by' => $request->user()->id,
-                ]);
-
-                $equipo->fill(array_filter([
-                    'tipo' => $elemento?->label ?? ($item['tipo'] ?? null),
-                    'cantidad' => $item['cantidad'] ?? null,
-                    'detalle' => $item['detalle'] ?? null,
-                ], fn ($v) => $v !== null) + ($urls[$i] ?? []));
-                $equipo->veces_al_ano = (int) $item['veces_al_ano'];
-                $equipo->fecha_base = $base;
-                $equipo->activo = true;
-                $equipo->save();
-
-                // Un ciclo nuevo reemplaza las fechas que aún no se atienden
-                $equipo->visits()->where('status', 'pendiente')->delete();
-                $equipo->crearVisitasDesde($base);
-                $resultado[] = $equipo->load('visits');
-            }
-            return $resultado;
+        $equipo = DB::transaction(function () use ($validated, $propiedad, $urls, $request) {
+            $equipo = MaintenanceEquipment::create($urls + [
+                'tenant_id' => $propiedad->tenant_id,
+                'property_id' => $propiedad->id,
+                'tipo' => trim($validated['tipo']),
+                'cantidad' => $validated['cantidad'] ?? 1,
+                'detalle' => $validated['detalle'] ?? null,
+                'fecha_base' => $this->hoy(),
+                'created_by' => $request->user()->id,
+            ]);
+            $equipo->visits()->create(['fecha_programada' => $validated['fecha'], 'status' => 'pendiente']);
+            return $equipo;
         });
 
-        return response()->json(['success' => true, 'equipos' => $guardados], 201);
+        return response()->json(['success' => true, 'equipo' => $equipo->load('visits')], 201);
     }
 
-    // Equipos en mantenimiento de una propiedad, con sus próximas fechas
-    public function dePropiedad(Request $request, $id)
+    // Cambia la próxima fecha, o pone una nueva cuando la anterior ya se atendió
+    public function cambiarFecha(Request $request, $id)
     {
         if (!$this->esAdmin($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
         }
-        if (!$this->propiedad($request, $id)) {
-            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
+        $equipo = $this->equiposDelEquipo($request)->where('activo', true)->find($id);
+        if (!$equipo) {
+            return response()->json(['error' => 'Equipo no encontrado.'], 404);
         }
 
-        return response()->json(
-            MaintenanceEquipment::with(['visits' => fn ($q) => $q->where('status', 'pendiente')])
-                ->where('property_id', (int) $id)
-                ->where('activo', true)
-                ->orderBy('tipo')
-                ->get()
-        );
+        $validated = $request->validate(['fecha' => 'required|date|after_or_equal:' . $this->hoy()]);
+        if ($equipo->visits()->where('status', '!=', 'pendiente')->whereDate('fecha_programada', $validated['fecha'])->exists()) {
+            return response()->json(['error' => 'Esa fecha ya se atendió para este equipo. Elige otra.'], 422);
+        }
+
+        DB::transaction(function () use ($equipo, $validated) {
+            $equipo->visits()->where('status', 'pendiente')->delete();
+            $equipo->visits()->create(['fecha_programada' => $validated['fecha'], 'status' => 'pendiente']);
+        });
+
+        return response()->json(['success' => true, 'equipo' => $equipo->load(['visits' => fn ($q) => $q->where('status', 'pendiente')])]);
     }
 
-    // Quita un equipo del programa: sus fechas pendientes desaparecen de la agenda
+    // Quita un equipo de la lista: sus fechas pendientes desaparecen de la agenda
     public function baja(Request $request, $id)
     {
         if (!$this->esAdmin($request)) {
@@ -285,14 +195,6 @@ class MaintenanceController extends Controller
             ->find($id);
     }
 
-    // Al atender la última fecha del ciclo se programa el año siguiente
-    private function renovarCiclo(MaintenanceEquipment $equipo, string $ultimaFecha): void
-    {
-        if ($equipo->activo && $equipo->veces_al_ano && !$equipo->visits()->where('status', 'pendiente')->exists()) {
-            $equipo->crearVisitasDesde($ultimaFecha);
-        }
-    }
-
     public function omitir(Request $request, $id)
     {
         if (!$this->esAdmin($request)) {
@@ -303,10 +205,7 @@ class MaintenanceController extends Controller
             return response()->json(['error' => 'Esta fecha ya fue atendida.'], 422);
         }
 
-        DB::transaction(function () use ($visita) {
-            $visita->update(['status' => 'omitida']);
-            $this->renovarCiclo($visita->equipment, $visita->fecha_programada->toDateString());
-        });
+        $visita->update(['status' => 'omitida']);
 
         return response()->json(['success' => true]);
     }
@@ -322,7 +221,7 @@ class MaintenanceController extends Controller
             return response()->json(['error' => 'Esta fecha ya fue atendida.'], 422);
         }
 
-        $orden = DB::transaction(function () use ($visita, $request) {
+        $orden = DB::transaction(function () use ($visita) {
             $fecha = $visita->fecha_programada->toDateString();
             $visitas = MaintenanceVisit::where('status', 'pendiente')
                 ->whereDate('fecha_programada', $fecha)
@@ -346,12 +245,10 @@ class MaintenanceController extends Controller
 
             foreach ($visitas as $v) {
                 $orden->elementos()->create([
-                    'property_component_id' => $v->equipment->property_component_id,
                     'maintenance_equipment_id' => $v->equipment->id,
                     'label' => $v->equipment->etiqueta(),
                 ]);
                 $v->update(['status' => 'convertida', 'work_order_id' => $orden->id]);
-                $this->renovarCiclo($v->equipment, $fecha);
             }
 
             return $orden;

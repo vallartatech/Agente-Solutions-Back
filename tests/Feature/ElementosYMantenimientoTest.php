@@ -6,10 +6,8 @@ use App\Models\MaintenanceEquipment;
 use App\Models\MaintenanceVisit;
 use App\Models\User;
 use App\Models\WorkOrder;
-use App\Models\WorkOrderComponent;
 use App\Models\WorkReport;
 use App\Services\FotosMantenimiento;
-use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -24,8 +22,6 @@ class ElementosYMantenimientoTest extends TestCase
 {
     private User $admin;
     private int $propiedad;
-    private int $sala;
-    private int $cuarto;
 
     protected function setUp(): void
     {
@@ -41,9 +37,6 @@ class ElementosYMantenimientoTest extends TestCase
 
         $this->admin = $this->usuario(1);
         $this->propiedad = DB::table('properties')->insertGetId(['property_name' => 'Casa', 'address' => 'Centro', 'tenant_id' => null]);
-        $area = DB::table('property_areas')->insertGetId(['property_id' => $this->propiedad, 'name' => 'Sala']);
-        $this->sala = DB::table('property_components')->insertGetId(['property_area_id' => $area, 'category' => 'CLIMA', 'sub_category' => 'AA', 'brand' => 'LG']);
-        $this->cuarto = DB::table('property_components')->insertGetId(['property_area_id' => $area, 'category' => 'CLIMA', 'sub_category' => 'AA 2', 'brand' => '']);
 
         $this->instance(FotosMantenimiento::class, new class extends FotosMantenimiento {
             public function subir(UploadedFile $archivo): string
@@ -75,19 +68,8 @@ class ElementosYMantenimientoTest extends TestCase
             $t->string('address')->nullable();
             $t->timestamps();
         });
-        Schema::create('property_areas', function (Blueprint $t) {
-            $t->id();
-            $t->unsignedBigInteger('property_id');
-            $t->string('name');
-            $t->timestamps();
-        });
         Schema::create('property_components', function (Blueprint $t) {
             $t->id();
-            $t->unsignedBigInteger('property_area_id');
-            $t->string('category');
-            $t->string('sub_category');
-            $t->string('brand')->nullable();
-            $t->string('model_or_color')->nullable();
             $t->timestamps();
         });
         Schema::create('work_orders', function (Blueprint $t) {
@@ -99,12 +81,9 @@ class ElementosYMantenimientoTest extends TestCase
             $t->string('zone')->nullable();
             $t->string('equipment')->nullable();
             $t->text('description')->nullable();
-            $t->string('evidence_path')->nullable();
-            $t->string('evidence_path_2')->nullable();
             $t->string('status')->default('Por Hacer');
             $t->string('priority')->nullable();
             $t->unsignedBigInteger('tecnico_id')->nullable();
-            $t->text('custom_checklist')->nullable();
             $t->timestamp('scheduled_at')->nullable();
             $t->boolean('publish_network')->default(0);
             $t->string('ticket_status')->nullable();
@@ -135,6 +114,15 @@ class ElementosYMantenimientoTest extends TestCase
         return $usuario;
     }
 
+    private function agregar(array $datos = [])
+    {
+        return $this->postJson('/api/mantenimiento/equipos', $datos + [
+            'property_id' => $this->propiedad,
+            'tipo' => 'Aire acondicionado',
+            'fecha' => now()->addMonths(6)->toDateString(),
+        ]);
+    }
+
     private function orden(array $elementos = []): WorkOrder
     {
         $orden = WorkOrder::create(['property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Sala', 'description' => 'x', 'status' => 'En Proceso']);
@@ -144,137 +132,131 @@ class ElementosYMantenimientoTest extends TestCase
         return $orden;
     }
 
-    private function evidencia(WorkOrder $orden, string $etapa, ?int $elemento = null): void
+    private function evidencia(WorkOrder $orden, string $etapa, int $elemento): void
     {
         WorkReport::create(['work_order_id' => $orden->id, 'work_order_component_id' => $elemento, 'technician_id' => $this->admin->id, 'stage' => $etapa, 'image_url' => 'u', 'description' => 'd']);
     }
 
-    private function fotosGrupo(): array
+    public function test_agrega_un_equipo_y_su_fecha_sale_en_la_agenda_sin_levantamiento(): void
     {
-        return [
-            'foto_equipo' => UploadedFile::fake()->image('equipo.jpg'),
+        Sanctum::actingAs($this->admin);
+        $fecha = now()->addMonths(6)->toDateString();
+
+        $this->agregar(['fecha' => $fecha])->assertCreated();
+
+        $this->getJson('/api/mantenimiento/visitas')->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.fecha_programada', $fecha)
+            ->assertJsonPath('0.equipment.tipo', 'Aire acondicionado')
+            ->assertJsonPath('0.equipment.property.property_name', 'Casa');
+
+        $this->getJson('/api/mantenimiento/equipos')->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.visits.0.fecha_programada', $fecha);
+    }
+
+    public function test_las_fotos_son_opcionales_y_se_guardan_si_vienen(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $this->post('/api/mantenimiento/equipos', [
+            'property_id' => $this->propiedad,
+            'tipo' => 'Minis',
+            'cantidad' => 3,
+            'fecha' => now()->addMonth()->toDateString(),
             'foto_datos' => UploadedFile::fake()->image('datos.jpg'),
-        ];
-    }
-
-    public function test_las_fechas_del_ciclo_coinciden_con_la_nota(): void
-    {
-        $base = '2026-10-26';
-        $this->assertSame(['2027-10-26'], MaintenanceEquipment::fechasDelCiclo($base, 1));
-        $this->assertSame(['2027-04-26', '2027-10-26'], MaintenanceEquipment::fechasDelCiclo($base, 2));
-        $this->assertSame(['2027-02-26', '2027-06-26', '2027-10-26'], MaintenanceEquipment::fechasDelCiclo($base, 3));
-        $this->assertSame(['2027-01-26', '2027-04-26', '2027-07-26', '2027-10-26'], MaintenanceEquipment::fechasDelCiclo($base, 4));
-    }
-
-    public function test_un_fin_de_mes_no_se_pasa_al_mes_siguiente(): void
-    {
-        $this->assertSame('2027-02-28', MaintenanceEquipment::fechasDelCiclo('2026-08-31', 2)[0]);
-    }
-
-    public function test_crea_una_orden_con_elementos_y_grupos_en_una_sola_peticion(): void
-    {
-        Sanctum::actingAs($this->admin);
-
-        $res = $this->post('/api/work-orders/cliente', [
-            'property_id' => $this->propiedad,
-            'type' => 'Mantenimiento',
-            'zone' => 'Varias zonas',
-            'description' => 'Servicio',
-            'component_ids' => [$this->sala],
-            'grupos' => [['tipo' => 'Minis', 'cantidad' => 3] + $this->fotosGrupo()],
-        ], ['Accept' => 'application/json']);
-
-        $res->assertCreated();
-        $elementos = WorkOrderComponent::where('work_order_id', $res->json('id'))->orderBy('id')->pluck('label')->all();
-        $this->assertSame(['AA (LG) - Sala', '3 × Minis'], $elementos);
-
-        $grupo = MaintenanceEquipment::first();
-        $this->assertNull($grupo->veces_al_ano);
-        $this->assertSame('https://fotos.test/datos.jpg', $grupo->foto_datos_url);
-    }
-
-    public function test_una_orden_usa_los_equipos_ya_programados_sin_duplicarlos(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $ciclo = $this->post('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'fecha_base' => '2026-10-26',
-            'items' => [
-                ['property_component_id' => $this->sala, 'veces_al_ano' => 2],
-                ['tipo' => 'Minis', 'cantidad' => 3, 'veces_al_ano' => 3] + $this->fotosGrupo(),
-            ],
         ], ['Accept' => 'application/json'])->assertCreated();
 
-        $res = $this->postJson('/api/work-orders/cliente', [
-            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Varias zonas', 'description' => 'd',
-            'equipo_ids' => collect($ciclo->json('equipos'))->pluck('id')->all(),
-        ])->assertCreated();
-
-        $this->assertSame(2, MaintenanceEquipment::count());
-        $this->assertSame(['AA (LG) - Sala', '3 × Minis'], WorkOrderComponent::where('work_order_id', $res->json('id'))->orderBy('id')->pluck('label')->all());
-        $this->assertSame(5, MaintenanceVisit::where('status', 'pendiente')->count());
+        $equipo = MaintenanceEquipment::firstOrFail();
+        $this->assertSame('https://fotos.test/datos.jpg', $equipo->foto_datos_url);
+        $this->assertNull($equipo->foto_equipo_url);
+        $this->assertSame('3 × Minis', $equipo->etiqueta());
     }
 
-    public function test_un_equipo_de_otra_propiedad_no_entra_a_la_orden(): void
+    public function test_pide_equipo_y_fecha_y_rechaza_fechas_pasadas(): void
     {
         Sanctum::actingAs($this->admin);
-        $otra = DB::table('properties')->insertGetId(['property_name' => 'Otra']);
-        $ajeno = MaintenanceEquipment::create(['property_id' => $otra, 'tipo' => 'Ajeno']);
 
-        $this->postJson('/api/work-orders/cliente', [
-            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Z', 'description' => 'd',
-            'equipo_ids' => [$ajeno->id],
-        ])->assertStatus(422);
-        $this->assertSame(0, WorkOrder::count());
+        $this->postJson('/api/mantenimiento/equipos', ['property_id' => $this->propiedad])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['tipo', 'fecha']);
+        $this->agregar(['fecha' => now()->subDays(3)->toDateString()])->assertStatus(422);
+
+        $this->assertSame(0, MaintenanceEquipment::count());
     }
 
-    public function test_la_lista_de_propiedades_cuenta_elementos_y_no_muestra_otros_tenants(): void
+    public function test_cambiar_la_fecha_reemplaza_la_pendiente(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $id = $this->agregar()->json('equipo.id');
+        $nueva = now()->addMonths(3)->toDateString();
+
+        $this->putJson("/api/mantenimiento/equipos/{$id}/fecha", ['fecha' => $nueva])->assertOk();
+
+        $pendientes = MaintenanceVisit::where('status', 'pendiente')->get();
+        $this->assertCount(1, $pendientes);
+        $this->assertSame($nueva, $pendientes[0]->fecha_programada->toDateString());
+    }
+
+    public function test_convertir_une_lo_del_mismo_dia_y_despues_acepta_una_fecha_nueva(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $fecha = now()->addMonth()->toDateString();
+        $id = $this->agregar(['fecha' => $fecha])->json('equipo.id');
+        $this->agregar(['fecha' => $fecha, 'tipo' => 'Bomba de agua']);
+
+        $res = $this->postJson('/api/mantenimiento/visitas/' . MaintenanceVisit::first()->id . '/convertir')->assertCreated();
+
+        $orden = WorkOrder::findOrFail($res->json('work_order_id'));
+        $this->assertSame(2, $orden->elementos()->count());
+        $this->assertSame(0, MaintenanceVisit::where('status', 'pendiente')->count());
+
+        // Atendida la fecha no se repite sola: se detalla la siguiente
+        $this->putJson("/api/mantenimiento/equipos/{$id}/fecha", ['fecha' => $fecha])->assertStatus(422);
+        $this->putJson("/api/mantenimiento/equipos/{$id}/fecha", ['fecha' => now()->addMonths(7)->toDateString()])->assertOk();
+        $this->assertSame(1, MaintenanceVisit::where('status', 'pendiente')->count());
+    }
+
+    public function test_una_visita_no_se_convierte_dos_veces(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $this->agregar();
+        $visita = MaintenanceVisit::first();
+
+        $this->postJson("/api/mantenimiento/visitas/{$visita->id}/convertir")->assertCreated();
+        $this->postJson("/api/mantenimiento/visitas/{$visita->id}/convertir")->assertStatus(422);
+        $this->assertSame(1, WorkOrder::count());
+    }
+
+    public function test_quitar_un_equipo_lo_saca_de_la_lista_y_de_la_agenda(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $id = $this->agregar()->json('equipo.id');
+
+        $this->deleteJson("/api/mantenimiento/equipos/{$id}")->assertOk();
+
+        $this->getJson('/api/mantenimiento/visitas')->assertExactJson([]);
+        $this->getJson('/api/mantenimiento/equipos')->assertExactJson([]);
+    }
+
+    public function test_solo_admins_del_equipo_interno(): void
     {
         DB::table('properties')->insert(['property_name' => 'De la red', 'tenant_id' => 15]);
         Sanctum::actingAs($this->admin);
+        $id = $this->agregar()->json('equipo.id');
+        $this->getJson('/api/mantenimiento/propiedades')->assertOk()->assertJsonCount(1)->assertJsonPath('0.property_name', 'Casa');
 
-        $lista = $this->getJson('/api/mantenimiento/propiedades')->assertOk()->json();
+        foreach ([2, 3] as $rol) {
+            Sanctum::actingAs($this->usuario($rol));
+            $this->getJson('/api/mantenimiento/equipos')->assertForbidden();
+            $this->agregar()->assertForbidden();
+        }
 
-        $this->assertCount(1, $lista);
-        $this->assertSame('Casa', $lista[0]['property_name']);
-        $this->assertEquals(2, $lista[0]['elementos_count']);
-
-        Sanctum::actingAs($this->usuario(3));
-        $this->getJson('/api/mantenimiento/propiedades')->assertForbidden();
-    }
-
-    public function test_un_grupo_sin_fotos_no_crea_la_orden(): void
-    {
-        Sanctum::actingAs($this->admin);
-
-        $this->post('/api/work-orders/cliente', [
-            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Z', 'description' => 'd',
-            'grupos' => [['tipo' => 'Minis', 'cantidad' => 3]],
-        ], ['Accept' => 'application/json'])->assertStatus(422);
-
-        $this->assertSame(0, WorkOrder::count());
-    }
-
-    public function test_un_tecnico_no_puede_crear_una_orden_con_elementos(): void
-    {
-        Sanctum::actingAs($this->usuario(2));
-
-        $this->post('/api/work-orders/cliente', [
-            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Z', 'description' => 'd',
-            'component_ids' => [$this->sala],
-        ], ['Accept' => 'application/json'])->assertForbidden();
-    }
-
-    public function test_un_elemento_de_otra_propiedad_se_rechaza(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $otraArea = DB::table('property_areas')->insertGetId(['property_id' => 999, 'name' => 'X']);
-        $ajeno = DB::table('property_components')->insertGetId(['property_area_id' => $otraArea, 'category' => 'C', 'sub_category' => 'S']);
-
-        $this->post('/api/work-orders/cliente', [
-            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Z', 'description' => 'd',
-            'component_ids' => [$ajeno],
-        ], ['Accept' => 'application/json'])->assertStatus(422);
+        // Un admin de otro tenant no ve ni toca lo interno
+        Sanctum::actingAs($this->usuario(1, 15));
+        $this->agregar()->assertNotFound();
+        $this->getJson('/api/mantenimiento/equipos')->assertExactJson([]);
+        $this->deleteJson("/api/mantenimiento/equipos/{$id}")->assertNotFound();
     }
 
     public function test_con_varios_elementos_no_se_termina_sin_antes_y_despues_de_cada_uno(): void
@@ -306,120 +288,5 @@ class ElementosYMantenimientoTest extends TestCase
                 ->assertOk()
                 ->assertJsonFragment(['status' => 'Por Aprobar']);
         }
-    }
-
-    public function test_guardar_el_ciclo_programa_elementos_y_grupos(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $orden = $this->orden();
-
-        $this->post('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'work_order_id' => $orden->id,
-            'fecha_base' => '2026-10-26',
-            'items' => [
-                ['property_component_id' => $this->sala, 'veces_al_ano' => 2],
-                ['tipo' => 'Minis', 'cantidad' => 3, 'veces_al_ano' => 3] + $this->fotosGrupo(),
-            ],
-        ], ['Accept' => 'application/json'])->assertCreated();
-
-        $elemento = MaintenanceEquipment::where('property_component_id', $this->sala)->firstOrFail();
-        $this->assertSame(['2027-04-26', '2027-10-26'], $elemento->visits->map(fn ($v) => $v->fecha_programada->toDateString())->all());
-        $this->assertSame(3, MaintenanceEquipment::whereNull('property_component_id')->firstOrFail()->visits()->count());
-    }
-
-    public function test_cambiar_la_frecuencia_reemplaza_las_fechas_pendientes_sin_duplicar_el_equipo(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $guardar = fn ($veces) => $this->postJson('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'fecha_base' => '2026-10-26',
-            'items' => [['property_component_id' => $this->sala, 'veces_al_ano' => $veces]],
-        ])->assertCreated();
-
-        $guardar(4);
-        $guardar(1);
-
-        $this->assertSame(1, MaintenanceEquipment::count());
-        $this->assertSame(['2027-10-26'], MaintenanceVisit::pluck('fecha_programada')->map(fn ($f) => $f->toDateString())->all());
-    }
-
-    public function test_un_grupo_nuevo_sin_fotos_se_rechaza_en_el_ciclo(): void
-    {
-        Sanctum::actingAs($this->admin);
-
-        $this->postJson('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'fecha_base' => '2026-10-26',
-            'items' => [['tipo' => 'Minis', 'cantidad' => 3, 'veces_al_ano' => 1]],
-        ])->assertStatus(422);
-
-        $this->assertSame(0, MaintenanceEquipment::count());
-    }
-
-    public function test_convertir_une_en_una_orden_lo_del_mismo_dia_y_renueva_el_ciclo(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $this->postJson('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'fecha_base' => '2026-10-26',
-            'items' => [
-                ['property_component_id' => $this->sala, 'veces_al_ano' => 1],
-                ['property_component_id' => $this->cuarto, 'veces_al_ano' => 1],
-            ],
-        ])->assertCreated();
-
-        $res = $this->postJson('/api/mantenimiento/visitas/' . MaintenanceVisit::first()->id . '/convertir')->assertCreated();
-
-        $orden = WorkOrder::findOrFail($res->json('work_order_id'));
-        $this->assertSame('Mantenimiento', $orden->type);
-        $this->assertSame(2, $orden->elementos()->count());
-        $this->assertSame(2, MaintenanceVisit::where('status', 'convertida')->where('work_order_id', $orden->id)->count());
-        // El año siguiente queda programado para cada equipo
-        $this->assertSame(2, MaintenanceVisit::where('status', 'pendiente')->whereDate('fecha_programada', '2028-10-26')->count());
-    }
-
-    public function test_una_visita_no_se_convierte_dos_veces(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $this->postJson('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'fecha_base' => '2026-10-26',
-            'items' => [['property_component_id' => $this->sala, 'veces_al_ano' => 2]],
-        ])->assertCreated();
-        $visita = MaintenanceVisit::first();
-
-        $this->postJson("/api/mantenimiento/visitas/{$visita->id}/convertir")->assertCreated();
-        $this->postJson("/api/mantenimiento/visitas/{$visita->id}/convertir")->assertStatus(422);
-        $this->assertSame(1, WorkOrder::count());
-    }
-
-    public function test_la_baja_quita_las_fechas_pendientes_de_la_agenda(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $this->postJson('/api/mantenimiento', [
-            'property_id' => $this->propiedad,
-            'fecha_base' => '2026-10-26',
-            'items' => [['property_component_id' => $this->sala, 'veces_al_ano' => 4]],
-        ])->assertCreated();
-
-        $this->deleteJson('/api/mantenimiento/equipos/' . MaintenanceEquipment::first()->id)->assertOk();
-
-        $this->getJson('/api/mantenimiento/visitas')->assertOk()->assertExactJson([]);
-    }
-
-    public function test_el_mantenimiento_es_solo_de_admins_del_equipo_interno(): void
-    {
-        Sanctum::actingAs($this->usuario(2));
-        $this->getJson('/api/mantenimiento/visitas')->assertForbidden();
-        $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertForbidden();
-
-        // Un admin de otro tenant no ve propiedades internas
-        Sanctum::actingAs($this->usuario(1, 15));
-        $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertNotFound();
-
-        // Un cliente tampoco
-        Sanctum::actingAs($this->usuario(3));
-        $this->getJson('/api/mantenimiento/formulario?property_id=' . $this->propiedad)->assertForbidden();
     }
 }
