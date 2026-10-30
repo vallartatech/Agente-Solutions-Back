@@ -156,33 +156,6 @@ class ElementosYMantenimientoTest extends TestCase
             ->assertJsonPath('0.visits.0.fecha_programada', $fecha);
     }
 
-    public function test_un_equipo_puede_ir_sin_propiedad_o_con_un_nombre_a_mano(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $fecha = now()->addMonths(6)->toDateString();
-
-        $this->postJson('/api/mantenimiento/equipos', ['tipo' => 'Aire', 'fecha' => $fecha])->assertCreated();
-        $this->postJson('/api/mantenimiento/equipos', ['tipo' => 'Bomba', 'fecha' => $fecha, 'propiedad_nombre' => ' Bodega Norte '])->assertCreated();
-
-        $this->assertNull(MaintenanceEquipment::where('tipo', 'Aire')->firstOrFail()->propiedad_nombre);
-        $this->assertSame('Bodega Norte', MaintenanceEquipment::where('tipo', 'Bomba')->firstOrFail()->propiedad_nombre);
-        $this->getJson('/api/mantenimiento/visitas')->assertOk()->assertJsonCount(2);
-        $this->getJson('/api/mantenimiento/equipos')->assertOk()->assertJsonCount(2);
-    }
-
-    public function test_sin_propiedad_registrada_no_se_convierte_en_orden_pero_si_se_omite(): void
-    {
-        Sanctum::actingAs($this->admin);
-        $this->postJson('/api/mantenimiento/equipos', ['tipo' => 'Aire', 'fecha' => now()->addMonth()->toDateString(), 'propiedad_nombre' => 'Bodega'])->assertCreated();
-        $visita = MaintenanceVisit::firstOrFail();
-
-        $this->postJson("/api/mantenimiento/visitas/{$visita->id}/convertir")->assertStatus(422);
-        $this->assertSame(0, WorkOrder::count());
-
-        $this->postJson("/api/mantenimiento/visitas/{$visita->id}/omitir")->assertOk();
-        $this->assertSame('omitida', $visita->fresh()->status);
-    }
-
     public function test_las_fotos_son_opcionales_y_se_guardan_si_vienen(): void
     {
         Sanctum::actingAs($this->admin);
@@ -201,13 +174,13 @@ class ElementosYMantenimientoTest extends TestCase
         $this->assertSame('3 × Minis', $equipo->etiqueta());
     }
 
-    public function test_pide_equipo_y_fecha_y_rechaza_fechas_pasadas(): void
+    public function test_pide_propiedad_equipo_y_fecha_y_rechaza_fechas_pasadas(): void
     {
         Sanctum::actingAs($this->admin);
 
-        $this->postJson('/api/mantenimiento/equipos', ['property_id' => $this->propiedad])
+        $this->postJson('/api/mantenimiento/equipos', [])
             ->assertStatus(422)
-            ->assertJsonValidationErrors(['tipo', 'fecha']);
+            ->assertJsonValidationErrors(['property_id', 'tipo', 'fecha']);
         $this->agregar(['fecha' => now()->subDays(3)->toDateString()])->assertStatus(422);
 
         $this->assertSame(0, MaintenanceEquipment::count());

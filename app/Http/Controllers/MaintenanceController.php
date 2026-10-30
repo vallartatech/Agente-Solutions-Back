@@ -89,8 +89,7 @@ class MaintenanceController extends Controller
         }
 
         $validated = $request->validate([
-            'property_id' => 'nullable|integer',
-            'propiedad_nombre' => 'nullable|string|max:191',
+            'property_id' => 'required|integer',
             'tipo' => 'required|string|max:150',
             'cantidad' => 'nullable|integer|min:1|max:1000',
             'detalle' => 'nullable|string|max:1000',
@@ -99,15 +98,10 @@ class MaintenanceController extends Controller
             'foto_datos' => 'nullable|file|image|max:10240',
         ]);
 
-        // La propiedad es opcional: puede venir solo un nombre escrito a mano, o nada
-        $propiedad = null;
-        if (!empty($validated['property_id'])) {
-            $propiedad = $this->propiedad($request, $validated['property_id']);
-            if (!$propiedad) {
-                return response()->json(['error' => 'Propiedad no encontrada.'], 404);
-            }
+        $propiedad = $this->propiedad($request, $validated['property_id']);
+        if (!$propiedad) {
+            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
         }
-        $nombreLibre = trim((string) ($validated['propiedad_nombre'] ?? ''));
 
         $fotos = app(FotosMantenimiento::class);
         $urls = [];
@@ -117,11 +111,10 @@ class MaintenanceController extends Controller
             }
         }
 
-        $equipo = DB::transaction(function () use ($validated, $propiedad, $nombreLibre, $urls, $request) {
+        $equipo = DB::transaction(function () use ($validated, $propiedad, $urls, $request) {
             $equipo = MaintenanceEquipment::create($urls + [
-                'tenant_id' => $propiedad ? $propiedad->tenant_id : $this->tenantId($request),
-                'property_id' => $propiedad?->id,
-                'propiedad_nombre' => !$propiedad && $nombreLibre !== '' ? $nombreLibre : null,
+                'tenant_id' => $propiedad->tenant_id,
+                'property_id' => $propiedad->id,
                 'tipo' => trim($validated['tipo']),
                 'cantidad' => $validated['cantidad'] ?? 1,
                 'detalle' => $validated['detalle'] ?? null,
