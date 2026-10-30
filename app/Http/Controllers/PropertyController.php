@@ -493,6 +493,7 @@ class PropertyController extends Controller
                 'uid' => "wo-{$wo->id}",
                 'id' => $wo->id,
                 'kind' => 'trabajo',
+                'batch_id' => $wo->batch_id,
                 'titulo' => $wo->type ? trim($wo->type . ($wo->equipment ? " - {$wo->equipment}" : '')) : ($wo->zone ?: 'Trabajo'),
                 'tipo' => $wo->type,
                 'zona' => $wo->zone,
