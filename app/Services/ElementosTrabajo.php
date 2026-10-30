@@ -104,6 +104,8 @@ class ElementosTrabajo
             if (!$equipo->work_order_id) {
                 $equipo->update(['work_order_id' => $orden->id]);
             }
+            // Su fecha pendiente queda atendida por esta orden: ya no aparece en la agenda
+            $equipo->visits()->where('status', 'pendiente')->update(['status' => 'convertida', 'work_order_id' => $orden->id]);
         }
         foreach ($preparados['grupos'] as $grupo) {
             $equipo = MaintenanceEquipment::create($grupo + [

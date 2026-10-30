@@ -7,6 +7,7 @@ use App\Models\MaintenanceVisit;
 use App\Models\Property;
 use App\Models\WorkOrder;
 use App\Models\WorkOrderComponent;
+use App\Services\ElementosTrabajo;
 use App\Services\FotosMantenimiento;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -23,20 +24,25 @@ class MaintenanceController extends Controller
         return in_array((int) $request->user()->role_id, [0, 1], true);
     }
 
-    private function tenantId(Request $request): ?int
+    // Root ve todo; los demás, solo lo de su equipo
+    private function delEquipo($query, Request $request)
     {
-        return $request->user()->tenant_id ? (int) $request->user()->tenant_id : null;
+        if ((int) $request->user()->role_id === 0) {
+            return $query;
+        }
+        $tenantId = $request->user()->tenant_id ? (int) $request->user()->tenant_id : null;
+        return WorkValidationController::mismoEquipo($query, $tenantId);
     }
 
     private function propiedad(Request $request, $id): ?Property
     {
         $query = Property::withoutGlobalScopes()->whereKey($id);
-        return WorkValidationController::mismoEquipo($query, $this->tenantId($request))->first();
+        return $this->delEquipo($query, $request)->first();
     }
 
     private function equiposDelEquipo(Request $request)
     {
-        return WorkValidationController::mismoEquipo(MaintenanceEquipment::query(), $this->tenantId($request));
+        return $this->delEquipo(MaintenanceEquipment::query(), $request);
     }
 
     private function hoy(): string
@@ -59,7 +65,7 @@ class MaintenanceController extends Controller
 
         $query = Property::withoutGlobalScopes()->select('id', 'property_name', 'address')->orderBy('property_name');
 
-        return response()->json(WorkValidationController::mismoEquipo($query, $this->tenantId($request))->get());
+        return response()->json($this->delEquipo($query, $request)->get());
     }
 
     // Todos los equipos agregados, con su próxima fecha
@@ -126,6 +132,19 @@ class MaintenanceController extends Controller
         });
 
         return response()->json(['success' => true, 'equipo' => $equipo->load('visits')], 201);
+    }
+
+    // Elementos del levantamiento de una propiedad, para elegirlos en una solicitud
+    public function elementosDePropiedad(Request $request, $id)
+    {
+        if (!$this->esAdmin($request)) {
+            return response()->json(['error' => 'No autorizado.'], 403);
+        }
+        if (!$this->propiedad($request, $id)) {
+            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
+        }
+
+        return response()->json(ElementosTrabajo::delLevantamiento((int) $id)->values());
     }
 
     // Mantenimientos programados de una propiedad, para su expediente
@@ -228,7 +247,7 @@ class MaintenanceController extends Controller
         }
 
         $visitas = MaintenanceVisit::where('status', 'pendiente')
-            ->whereHas('equipment', fn ($q) => WorkValidationController::mismoEquipo($q->where('activo', true), $this->tenantId($request)))
+            ->whereHas('equipment', fn ($q) => $this->delEquipo($q->where('activo', true), $request))
             ->with('equipment.property:id,property_name,address')
             ->orderBy('fecha_programada')
             ->get();
@@ -239,7 +258,7 @@ class MaintenanceController extends Controller
     private function visitaPendiente(Request $request, $id): ?MaintenanceVisit
     {
         return MaintenanceVisit::where('status', 'pendiente')
-            ->whereHas('equipment', fn ($q) => WorkValidationController::mismoEquipo($q, $this->tenantId($request)))
+            ->whereHas('equipment', fn ($q) => $this->delEquipo($q, $request))
             ->with('equipment')
             ->find($id);
     }

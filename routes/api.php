@@ -902,6 +902,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'agregar']);
     Route::put('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'actualizar']);
     Route::get('/properties/{id}/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'dePropiedad']);
+    Route::get('/properties/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDePropiedad']);
     Route::delete('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'baja']);
     Route::get('/mantenimiento/visitas', [\App\Http\Controllers\MaintenanceController::class, 'visitas']);
     Route::post('/mantenimiento/visitas/{id}/omitir', [\App\Http\Controllers\MaintenanceController::class, 'omitir']);

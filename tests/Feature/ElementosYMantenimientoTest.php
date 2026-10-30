@@ -69,8 +69,19 @@ class ElementosYMantenimientoTest extends TestCase
             $t->string('address')->nullable();
             $t->timestamps();
         });
+        Schema::create('property_areas', function (Blueprint $t) {
+            $t->id();
+            $t->unsignedBigInteger('property_id');
+            $t->string('name');
+            $t->timestamps();
+        });
         Schema::create('property_components', function (Blueprint $t) {
             $t->id();
+            $t->unsignedBigInteger('property_area_id');
+            $t->string('category');
+            $t->string('sub_category');
+            $t->string('brand')->nullable();
+            $t->string('model_or_color')->nullable();
             $t->timestamps();
         });
         Schema::create('work_orders', function (Blueprint $t) {
@@ -82,6 +93,8 @@ class ElementosYMantenimientoTest extends TestCase
             $t->string('zone')->nullable();
             $t->string('equipment')->nullable();
             $t->text('description')->nullable();
+            $t->string('evidence_path')->nullable();
+            $t->string('evidence_path_2')->nullable();
             $t->string('status')->default('Por Hacer');
             $t->string('priority')->nullable();
             $t->unsignedBigInteger('tecnico_id')->nullable();
@@ -253,6 +266,39 @@ class ElementosYMantenimientoTest extends TestCase
         $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertNotFound();
     }
 
+    public function test_una_solicitud_con_equipos_elegidos_atiende_sus_fechas_y_une_el_levantamiento(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $area = DB::table('property_areas')->insertGetId(['property_id' => $this->propiedad, 'name' => 'Sala']);
+        $elemento = DB::table('property_components')->insertGetId(['property_area_id' => $area, 'category' => 'CLIMA', 'sub_category' => 'AA', 'brand' => 'LG']);
+        $equipo = $this->agregar()->json('equipo.id');
+
+        $this->getJson("/api/properties/{$this->propiedad}/elementos")->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.label', 'AA (LG) - Sala')
+            ->assertJsonPath('0.area', 'Sala');
+
+        $res = $this->postJson('/api/work-orders/cliente', [
+            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Varias zonas', 'description' => 'Servicio',
+            'component_ids' => [$elemento],
+            'equipo_ids' => [$equipo],
+        ])->assertCreated();
+
+        $orden = WorkOrder::findOrFail($res->json('id'));
+        $this->assertSame(['AA (LG) - Sala', 'Aire acondicionado'], $orden->elementos()->pluck('label')->all());
+        $this->assertSame(0, MaintenanceVisit::where('status', 'pendiente')->count());
+        $this->assertSame($orden->id, MaintenanceVisit::firstOrFail()->work_order_id);
+        $this->getJson('/api/mantenimiento/visitas')->assertExactJson([]);
+    }
+
+    public function test_los_elementos_de_la_propiedad_son_solo_para_admins_internos(): void
+    {
+        Sanctum::actingAs($this->usuario(2));
+        $this->getJson("/api/properties/{$this->propiedad}/elementos")->assertForbidden();
+        Sanctum::actingAs($this->usuario(1, 15));
+        $this->getJson("/api/properties/{$this->propiedad}/elementos")->assertNotFound();
+    }
+
     public function test_convertir_une_lo_del_mismo_dia_y_despues_acepta_una_fecha_nueva(): void
     {
         Sanctum::actingAs($this->admin);
@@ -292,6 +338,27 @@ class ElementosYMantenimientoTest extends TestCase
 
         $this->getJson('/api/mantenimiento/visitas')->assertExactJson([]);
         $this->getJson('/api/mantenimiento/equipos')->assertExactJson([]);
+    }
+
+    public function test_root_ve_equipos_de_cualquier_tenant_y_el_admin_solo_los_de_su_tenant(): void
+    {
+        $ajena = DB::table('properties')->insertGetId(['property_name' => 'Smart Fit', 'tenant_id' => 15]);
+        $area = DB::table('property_areas')->insertGetId(['property_id' => $ajena, 'name' => 'Azotea']);
+        DB::table('property_components')->insert(['property_area_id' => $area, 'category' => 'CLIMA', 'sub_category' => 'Condensador']);
+
+        Sanctum::actingAs($this->usuario(0));
+        $this->getJson("/api/properties/{$ajena}/elementos")->assertOk()->assertJsonPath('0.label', 'Condensador - Azotea');
+        $this->getJson("/api/properties/{$ajena}/mantenimiento")->assertOk();
+        $this->getJson('/api/mantenimiento/propiedades')->assertOk()->assertJsonCount(2);
+        $id = $this->agregar(['property_id' => $ajena])->assertCreated()->json('equipo.id');
+
+        // El admin de ese tenant trabaja con lo suyo; el interno no lo ve
+        Sanctum::actingAs($this->usuario(1, 15));
+        $this->getJson("/api/properties/{$ajena}/elementos")->assertOk();
+        $this->getJson('/api/mantenimiento/equipos')->assertOk()->assertJsonCount(1)->assertJsonPath('0.id', $id);
+
+        Sanctum::actingAs($this->admin);
+        $this->getJson("/api/properties/{$ajena}/elementos")->assertNotFound();
     }
 
     public function test_solo_admins_del_equipo_interno(): void
