@@ -12,6 +12,7 @@ class MaintenanceEquipment extends Model
     protected $fillable = [
         'tenant_id',
         'property_id',
+        'propiedad_nombre',
         'property_component_id',
         'work_order_id',
         'tipo',
