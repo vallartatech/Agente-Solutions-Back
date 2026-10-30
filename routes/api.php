@@ -900,7 +900,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/mantenimiento/propiedades', [\App\Http\Controllers\MaintenanceController::class, 'propiedades']);
     Route::get('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'equipos']);
     Route::post('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'agregar']);
-    Route::put('/mantenimiento/equipos/{id}/fecha', [\App\Http\Controllers\MaintenanceController::class, 'cambiarFecha']);
+    Route::put('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'actualizar']);
+    Route::get('/properties/{id}/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'dePropiedad']);
     Route::delete('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'baja']);
     Route::get('/mantenimiento/visitas', [\App\Http\Controllers\MaintenanceController::class, 'visitas']);
     Route::post('/mantenimiento/visitas/{id}/omitir', [\App\Http\Controllers\MaintenanceController::class, 'omitir']);

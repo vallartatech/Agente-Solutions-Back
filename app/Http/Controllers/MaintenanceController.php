@@ -128,8 +128,26 @@ class MaintenanceController extends Controller
         return response()->json(['success' => true, 'equipo' => $equipo->load('visits')], 201);
     }
 
-    // Cambia la próxima fecha, o pone una nueva cuando la anterior ya se atendió
-    public function cambiarFecha(Request $request, $id)
+    // Mantenimientos programados de una propiedad, para su expediente
+    public function dePropiedad(Request $request, $id)
+    {
+        if (!$this->esAdmin($request)) {
+            return response()->json(['error' => 'No autorizado.'], 403);
+        }
+        if (!$this->propiedad($request, $id)) {
+            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
+        }
+
+        return response()->json(
+            MaintenanceEquipment::with(['visits' => fn ($q) => $q->where('status', 'pendiente')])
+                ->where('property_id', (int) $id)
+                ->where('activo', true)
+                ->get()
+        );
+    }
+
+    // Ajusta los datos de un equipo y su próxima fecha (o pone una nueva si la anterior ya se atendió)
+    public function actualizar(Request $request, $id)
     {
         if (!$this->esAdmin($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
@@ -139,14 +157,45 @@ class MaintenanceController extends Controller
             return response()->json(['error' => 'Equipo no encontrado.'], 404);
         }
 
-        $validated = $request->validate(['fecha' => 'required|date|after_or_equal:' . $this->hoy()]);
-        if ($equipo->visits()->where('status', '!=', 'pendiente')->whereDate('fecha_programada', $validated['fecha'])->exists()) {
+        $validated = $request->validate([
+            'tipo' => 'required|string|max:150',
+            'cantidad' => 'nullable|integer|min:1|max:1000',
+            'detalle' => 'nullable|string|max:1000',
+            'fecha' => 'required|date',
+            'foto_equipo' => 'nullable|file|image|max:10240',
+            'foto_datos' => 'nullable|file|image|max:10240',
+        ]);
+
+        $fecha = Carbon::parse($validated['fecha'])->toDateString();
+        $pendiente = $equipo->visits()->where('status', 'pendiente')->first();
+        $cambiaFecha = $pendiente?->fecha_programada->toDateString() !== $fecha;
+
+        // Una fecha vencida puede quedarse al corregir otros datos, pero no se puede agendar una nueva en el pasado
+        if ($cambiaFecha && $fecha < $this->hoy()) {
+            return response()->json(['error' => 'La fecha debe ser de hoy en adelante.'], 422);
+        }
+        if ($cambiaFecha && $equipo->visits()->where('status', '!=', 'pendiente')->whereDate('fecha_programada', $fecha)->exists()) {
             return response()->json(['error' => 'Esa fecha ya se atendió para este equipo. Elige otra.'], 422);
         }
 
-        DB::transaction(function () use ($equipo, $validated) {
-            $equipo->visits()->where('status', 'pendiente')->delete();
-            $equipo->visits()->create(['fecha_programada' => $validated['fecha'], 'status' => 'pendiente']);
+        $fotos = app(FotosMantenimiento::class);
+        $urls = [];
+        foreach (['foto_equipo', 'foto_datos'] as $campo) {
+            if ($request->hasFile($campo)) {
+                $urls["{$campo}_url"] = $fotos->subir($request->file($campo));
+            }
+        }
+
+        DB::transaction(function () use ($equipo, $validated, $urls, $cambiaFecha, $fecha) {
+            $equipo->update($urls + [
+                'tipo' => trim($validated['tipo']),
+                'cantidad' => $validated['cantidad'] ?? 1,
+                'detalle' => $validated['detalle'] ?? null,
+            ]);
+            if ($cambiaFecha) {
+                $equipo->visits()->where('status', 'pendiente')->delete();
+                $equipo->visits()->create(['fecha_programada' => $fecha, 'status' => 'pendiente']);
+            }
         });
 
         return response()->json(['success' => true, 'equipo' => $equipo->load(['visits' => fn ($q) => $q->where('status', 'pendiente')])]);

@@ -192,11 +192,65 @@ class ElementosYMantenimientoTest extends TestCase
         $id = $this->agregar()->json('equipo.id');
         $nueva = now()->addMonths(3)->toDateString();
 
-        $this->putJson("/api/mantenimiento/equipos/{$id}/fecha", ['fecha' => $nueva])->assertOk();
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Aire acondicionado', 'fecha' => $nueva])->assertOk();
 
         $pendientes = MaintenanceVisit::where('status', 'pendiente')->get();
         $this->assertCount(1, $pendientes);
         $this->assertSame($nueva, $pendientes[0]->fecha_programada->toDateString());
+    }
+
+    public function test_editar_cambia_los_datos_y_conserva_la_fecha_si_no_se_toca(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $fecha = now()->addMonths(6)->toDateString();
+        $id = $this->agregar(['fecha' => $fecha, 'detalle' => 'Viejo'])->json('equipo.id');
+        $visita = MaintenanceVisit::firstOrFail();
+
+        $this->post("/api/mantenimiento/equipos/{$id}", [
+            '_method' => 'PUT',
+            'tipo' => 'Minisplit',
+            'cantidad' => 2,
+            'detalle' => '',
+            'fecha' => $fecha,
+            'foto_equipo' => UploadedFile::fake()->image('nueva.jpg'),
+        ], ['Accept' => 'application/json'])
+            ->assertOk()
+            ->assertJsonPath('equipo.visits.0.fecha_programada', $fecha);
+
+        $equipo = MaintenanceEquipment::findOrFail($id);
+        $this->assertSame('2 × Minisplit', $equipo->etiqueta());
+        $this->assertNull($equipo->detalle);
+        $this->assertSame('https://fotos.test/nueva.jpg', $equipo->foto_equipo_url);
+        $this->assertSame($visita->id, MaintenanceVisit::firstOrFail()->id);
+    }
+
+    public function test_una_fecha_vencida_se_conserva_al_editar_pero_no_se_agenda_otra_en_el_pasado(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $id = $this->agregar()->json('equipo.id');
+        $vencida = now()->subDays(5)->toDateString();
+        MaintenanceVisit::firstOrFail()->update(['fecha_programada' => $vencida]);
+
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Otro nombre', 'fecha' => $vencida])->assertOk();
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Otro nombre', 'fecha' => now()->subDay()->toDateString()])->assertStatus(422);
+        $this->assertSame($vencida, MaintenanceVisit::firstOrFail()->fecha_programada->toDateString());
+    }
+
+    public function test_la_propiedad_muestra_solo_sus_mantenimientos(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $otra = DB::table('properties')->insertGetId(['property_name' => 'Otra']);
+        $this->agregar();
+        $this->agregar(['property_id' => $otra, 'tipo' => 'De la otra']);
+
+        $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertOk()
+            ->assertJsonCount(1)
+            ->assertJsonPath('0.tipo', 'Aire acondicionado');
+
+        Sanctum::actingAs($this->usuario(2));
+        $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertForbidden();
+        Sanctum::actingAs($this->usuario(1, 15));
+        $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertNotFound();
     }
 
     public function test_convertir_une_lo_del_mismo_dia_y_despues_acepta_una_fecha_nueva(): void
@@ -213,8 +267,8 @@ class ElementosYMantenimientoTest extends TestCase
         $this->assertSame(0, MaintenanceVisit::where('status', 'pendiente')->count());
 
         // Atendida la fecha no se repite sola: se detalla la siguiente
-        $this->putJson("/api/mantenimiento/equipos/{$id}/fecha", ['fecha' => $fecha])->assertStatus(422);
-        $this->putJson("/api/mantenimiento/equipos/{$id}/fecha", ['fecha' => now()->addMonths(7)->toDateString()])->assertOk();
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Aire', 'fecha' => $fecha])->assertStatus(422);
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Aire', 'fecha' => now()->addMonths(7)->toDateString()])->assertOk();
         $this->assertSame(1, MaintenanceVisit::where('status', 'pendiente')->count());
     }
 
