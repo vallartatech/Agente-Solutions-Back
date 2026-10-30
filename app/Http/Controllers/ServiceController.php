@@ -202,6 +202,12 @@ class ServiceController extends Controller
             $column = $parsed['column'];
             $stage = $this->etapaEvidencia($request);
 
+            // Evidencia de un elemento: debe ser de este mismo trabajo
+            $elementoId = $request->filled('work_order_component_id') ? (int) $request->work_order_component_id : null;
+            if ($elementoId && ($column !== 'work_order_id' || !\App\Models\WorkOrderComponent::where('work_order_id', $realId)->whereKey($elementoId)->exists())) {
+                return response()->json(['success' => false, 'error' => 'Ese elemento no pertenece a este trabajo.'], 422);
+            }
+
             $subida = $this->subirEvidencia($request->file('image'), $stage !== 'ticket');
             if (isset($subida['error'])) {
                 return response()->json(['success' => false, 'error' => $subida['error']], 422);
@@ -215,6 +221,7 @@ class ServiceController extends Controller
             $report = WorkReport::create([
                 $column => $realId,
                 'technician_id' => $request->user()->id,
+                'work_order_component_id' => $elementoId,
                 'stage' => $stage,
                 'image_url' => $subida['url'],
                 'description' => $request->description,

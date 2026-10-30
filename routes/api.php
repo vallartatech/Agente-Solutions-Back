@@ -895,6 +895,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/propiedades/servicios', [PropertyController::class, 'storeWorkOrder']);
     Route::get('/propiedades/{id}/work-orders', [PropertyController::class, 'getWorkOrders']);
     Route::put('/work-orders/{id}/status', [PropertyController::class, 'updateWorkOrderStatus']);
+    // Trabajos con varios elementos y ciclos de mantenimiento (Agente Solutions)
+    Route::get('/work-orders/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDeOrden']);
+    Route::get('/properties/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDePropiedad']);
+    Route::get('/properties/{id}/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'dePropiedad']);
+    Route::get('/mantenimiento/formulario', [\App\Http\Controllers\MaintenanceController::class, 'formulario']);
+    Route::post('/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'guardar']);
+    Route::delete('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'baja']);
+    Route::get('/mantenimiento/visitas', [\App\Http\Controllers\MaintenanceController::class, 'visitas']);
+    Route::post('/mantenimiento/visitas/{id}/omitir', [\App\Http\Controllers\MaintenanceController::class, 'omitir']);
+    Route::post('/mantenimiento/visitas/{id}/convertir', [\App\Http\Controllers\MaintenanceController::class, 'convertir']);
     // Validación de trabajos terminados (validador fijo + alerta del menú)
     Route::get('/validacion/pendientes', [\App\Http\Controllers\WorkValidationController::class, 'pendientes']);
     Route::put('/usuarios/{userId}/validador', [\App\Http\Controllers\WorkValidationController::class, 'setValidador']);
@@ -979,6 +989,15 @@ Route::middleware('auth:sanctum')->group(function () {
             'evidence_2' => 'nullable|file|image|max:5120'
         ]);
 
+        // Elementos del trabajo (opcional): se validan y se suben sus fotos antes de crear la orden
+        $elementos = null;
+        if (\App\Services\ElementosTrabajo::vienenEnPeticion($request)) {
+            $elementos = \App\Services\ElementosTrabajo::preparar($request);
+            if (isset($elementos['error'])) {
+                return response()->json(['success' => false, 'message' => $elementos['error']], $elementos['codigo']);
+            }
+        }
+
         // 2. Procesar las imÃ¡genes con Cloudinary
         $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
 
@@ -1002,21 +1021,27 @@ Route::middleware('auth:sanctum')->group(function () {
         $status = $tecnicoId ? 'Asignado' : 'Por Hacer';
 
         // 3. Insertar en la BD usando el Modelo Eloquent
-        $workOrder = WorkOrder::create([
-            'property_id' => $request->property_id,
-            'type' => $request->type,
-            'zone' => $request->zone,
-            'equipment' => $request->equipment,
-            'description' => $request->description,
-            'batch_id' => $request->batch_id,
-            'evidence_path' => $path1,
-            'evidence_path_2' => $path2,
-            'tecnico_id' => $tecnicoId,
-            'status' => $status,
-            'priority' => $request->priority ?: ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
-            'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
-            'publish_network' => $publishNetwork,
-        ]);
+        $workOrder = DB::transaction(function () use ($request, $path1, $path2, $tecnicoId, $status, $publishNetwork, $elementos) {
+            $orden = WorkOrder::create([
+                'property_id' => $request->property_id,
+                'type' => $request->type,
+                'zone' => $request->zone,
+                'equipment' => $request->equipment,
+                'description' => $request->description,
+                'batch_id' => $request->batch_id,
+                'evidence_path' => $path1,
+                'evidence_path_2' => $path2,
+                'tecnico_id' => $tecnicoId,
+                'status' => $status,
+                'priority' => $request->priority ?: ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
+                'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
+                'publish_network' => $publishNetwork,
+            ]);
+            if ($elementos) {
+                \App\Services\ElementosTrabajo::adjuntar($orden, $elementos, $request->user());
+            }
+            return $orden;
+        });
 
         // 4. Notificaciones (App y Correo)
         try {
@@ -1048,6 +1073,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return response()->json([
             'success' => true,
+            'id' => $workOrder->id,
             'message' => 'Servicio solicitado con Ã©xito'
         ], 201);
     });
@@ -1851,7 +1877,8 @@ Route::middleware('auth:sanctum')->group(function () {
             'technician:id,first_name,last_name,profile_picture,tenant_id',
             'service.property.client',
             'workOrder.property.client',
-            'workOrder.closer:id,first_name,last_name'
+            'workOrder.closer:id,first_name,last_name',
+            'workOrder.elementos:id,work_order_id,label'
         ]);
 
         if ($user && in_array((int)$user->role_id, [2, 6, 8])) {

@@ -784,6 +784,14 @@ class PropertyController extends Controller
                 $nuevoEstado = 'Listo';
             }
 
+            // Con varios elementos, cada uno necesita su ANTES y su DESPUÉS para terminarse
+            if (in_array($nuevoEstado, ['Por Aprobar', 'Listo'], true) && !in_array($oldStatus, ['Por Aprobar', 'Listo'], true)) {
+                $faltantes = \App\Services\ElementosTrabajo::sinEvidencia($workOrder);
+                if ($faltantes) {
+                    return response()->json(['error' => 'Falta la evidencia de antes o después de: ' . implode(', ', $faltantes) . '.'], 422);
+                }
+            }
+
             $workOrder->status = $nuevoEstado;
             $workOrder->updated_at = now();
             $this->registrarCierre($workOrder, $nuevoEstado, $user);

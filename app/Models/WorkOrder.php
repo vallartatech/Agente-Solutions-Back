@@ -61,6 +61,12 @@ class WorkOrder extends Model
         return $this->hasMany(WorkReport::class, 'work_order_id');
     }
 
+    // Elementos del trabajo; vacío en las órdenes de antes
+    public function elementos()
+    {
+        return $this->hasMany(WorkOrderComponent::class, 'work_order_id')->orderBy('id');
+    }
+
     public function networkQuotes()
     {
         return $this->hasMany(NetworkQuote::class, 'work_order_id');
