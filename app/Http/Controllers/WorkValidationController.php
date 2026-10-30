@@ -12,6 +12,9 @@ class WorkValidationController extends Controller
 {
     public const MASCOTAS = ['gato', 'perro', 'fantasma', 'numero'];
 
+    // Cuentas que ven el fantasma flotante "Verifica tus reportes"
+    private const CUENTAS_ALERTA_REPORTES = ['ppechmena@gmail.com'];
+
     // Mismo equipo: mismo tenant; tenant nulo y tenant 1 son el equipo de Agente Solutions
     public static function mismoEquipo($query, ?int $tenantId, string $columna = 'tenant_id')
     {
@@ -37,7 +40,7 @@ class WorkValidationController extends Controller
     {
         $user = $request->user();
         if (!in_array((int) $user->role_id, [0, 1])) {
-            return response()->json(['mostrar' => false, 'pendientes' => 0], 200);
+            return response()->json(['mostrar' => false, 'pendientes' => 0, 'reportes_por_revisar' => null], 200);
         }
 
         $tenantId = $user->tenant_id ? (int) $user->tenant_id : null;
@@ -56,7 +59,24 @@ class WorkValidationController extends Controller
             // Lo ve el validador; si el equipo aún no tiene uno, todos sus admins
             'mostrar' => (bool) $user->valida_trabajos || !$hayValidador,
             'mascota' => in_array($user->alert_mascot, self::MASCOTAS, true) ? $user->alert_mascot : 'gato',
+            'reportes_por_revisar' => $this->reportesPorRevisar($user, $tenantId),
         ], 200);
+    }
+
+    // Trabajos sin cerrar de su equipo donde un técnico ya subió evidencia. Null si la cuenta no ve esta alerta.
+    private function reportesPorRevisar(User $user, ?int $tenantId): ?int
+    {
+        if (!in_array(mb_strtolower((string) $user->email), self::CUENTAS_ALERTA_REPORTES, true)) {
+            return null;
+        }
+
+        return self::mismoEquipo(WorkOrder::withoutGlobalScopes(), $tenantId)
+            ->whereNotIn('status', ['Listo', 'Finalizado', 'Rechazado', 'Cancelado', 'cancelado_tecnico'])
+            ->whereHas('workReports', fn ($q) => $q->whereIn(
+                'technician_id',
+                User::withoutGlobalScopes()->where('role_id', 2)->select('id')
+            ))
+            ->count();
     }
 
     // Marcar o quitar al validador. Solo hay uno por equipo: marcar a alguien se lo quita al anterior.

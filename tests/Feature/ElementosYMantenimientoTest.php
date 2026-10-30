@@ -381,6 +381,28 @@ class ElementosYMantenimientoTest extends TestCase
         $this->deleteJson("/api/mantenimiento/equipos/{$id}")->assertNotFound();
     }
 
+    public function test_el_fantasma_solo_cuenta_reportes_de_tecnicos_en_trabajos_sin_cerrar_para_las_cuentas_elegidas(): void
+    {
+        $cuenta = $this->usuario(1);
+        $cuenta->forceFill(['email' => 'ppechmena@gmail.com'])->save();
+        $tecnico = $this->usuario(2);
+        $reporte = fn ($orden, $autor) => WorkReport::create(['work_order_id' => $orden->id, 'technician_id' => $autor->id, 'stage' => 'antes', 'image_url' => 'u', 'description' => 'd']);
+
+        $conReporte = $this->orden();
+        $reporte($conReporte, $tecnico);
+        $this->orden(); // sin evidencia
+        $reporte($this->orden(), $this->admin); // la subió un admin
+        $cerrada = $this->orden();
+        $reporte($cerrada, $tecnico);
+        $cerrada->forceFill(['status' => 'Listo'])->save();
+
+        Sanctum::actingAs($cuenta);
+        $this->getJson('/api/validacion/pendientes')->assertOk()->assertJsonPath('reportes_por_revisar', 1);
+
+        Sanctum::actingAs($this->admin);
+        $this->getJson('/api/validacion/pendientes')->assertOk()->assertJsonPath('reportes_por_revisar', null);
+    }
+
     public function test_con_varios_elementos_no_se_termina_sin_antes_y_despues_de_cada_uno(): void
     {
         Sanctum::actingAs($this->usuario(2));
