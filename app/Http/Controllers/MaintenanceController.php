@@ -39,6 +39,27 @@ class MaintenanceController extends Controller
         return WorkValidationController::mismoEquipo(MaintenanceEquipment::query(), $this->tenantId($request));
     }
 
+    // Propiedades del equipo interno, con cuántos elementos tiene su levantamiento
+    public function propiedades(Request $request)
+    {
+        if (!$this->esAdmin($request)) {
+            return response()->json(['error' => 'No autorizado.'], 403);
+        }
+
+        $query = Property::withoutGlobalScopes()
+            ->select('id', 'property_name', 'address')
+            ->selectSub(
+                DB::table('property_components as pc')
+                    ->join('property_areas as pa', 'pc.property_area_id', '=', 'pa.id')
+                    ->whereColumn('pa.property_id', 'properties.id')
+                    ->selectRaw('COUNT(*)'),
+                'elementos_count'
+            )
+            ->orderBy('property_name');
+
+        return response()->json(WorkValidationController::mismoEquipo($query, $this->tenantId($request))->get());
+    }
+
     // Elementos de una orden, para la galería de evidencias y el reporte oficial
     public function elementosDeOrden($id)
     {

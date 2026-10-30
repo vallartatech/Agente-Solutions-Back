@@ -193,6 +193,56 @@ class ElementosYMantenimientoTest extends TestCase
         $this->assertSame('https://fotos.test/datos.jpg', $grupo->foto_datos_url);
     }
 
+    public function test_una_orden_usa_los_equipos_ya_programados_sin_duplicarlos(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $ciclo = $this->post('/api/mantenimiento', [
+            'property_id' => $this->propiedad,
+            'fecha_base' => '2026-10-26',
+            'items' => [
+                ['property_component_id' => $this->sala, 'veces_al_ano' => 2],
+                ['tipo' => 'Minis', 'cantidad' => 3, 'veces_al_ano' => 3] + $this->fotosGrupo(),
+            ],
+        ], ['Accept' => 'application/json'])->assertCreated();
+
+        $res = $this->postJson('/api/work-orders/cliente', [
+            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Varias zonas', 'description' => 'd',
+            'equipo_ids' => collect($ciclo->json('equipos'))->pluck('id')->all(),
+        ])->assertCreated();
+
+        $this->assertSame(2, MaintenanceEquipment::count());
+        $this->assertSame(['AA (LG) - Sala', '3 × Minis'], WorkOrderComponent::where('work_order_id', $res->json('id'))->orderBy('id')->pluck('label')->all());
+        $this->assertSame(5, MaintenanceVisit::where('status', 'pendiente')->count());
+    }
+
+    public function test_un_equipo_de_otra_propiedad_no_entra_a_la_orden(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $otra = DB::table('properties')->insertGetId(['property_name' => 'Otra']);
+        $ajeno = MaintenanceEquipment::create(['property_id' => $otra, 'tipo' => 'Ajeno']);
+
+        $this->postJson('/api/work-orders/cliente', [
+            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Z', 'description' => 'd',
+            'equipo_ids' => [$ajeno->id],
+        ])->assertStatus(422);
+        $this->assertSame(0, WorkOrder::count());
+    }
+
+    public function test_la_lista_de_propiedades_cuenta_elementos_y_no_muestra_otros_tenants(): void
+    {
+        DB::table('properties')->insert(['property_name' => 'De la red', 'tenant_id' => 15]);
+        Sanctum::actingAs($this->admin);
+
+        $lista = $this->getJson('/api/mantenimiento/propiedades')->assertOk()->json();
+
+        $this->assertCount(1, $lista);
+        $this->assertSame('Casa', $lista[0]['property_name']);
+        $this->assertEquals(2, $lista[0]['elementos_count']);
+
+        Sanctum::actingAs($this->usuario(3));
+        $this->getJson('/api/mantenimiento/propiedades')->assertForbidden();
+    }
+
     public function test_un_grupo_sin_fotos_no_crea_la_orden(): void
     {
         Sanctum::actingAs($this->admin);

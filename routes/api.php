@@ -899,6 +899,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/work-orders/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDeOrden']);
     Route::get('/properties/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDePropiedad']);
     Route::get('/properties/{id}/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'dePropiedad']);
+    Route::get('/mantenimiento/propiedades', [\App\Http\Controllers\MaintenanceController::class, 'propiedades']);
     Route::get('/mantenimiento/formulario', [\App\Http\Controllers\MaintenanceController::class, 'formulario']);
     Route::post('/mantenimiento', [\App\Http\Controllers\MaintenanceController::class, 'guardar']);
     Route::delete('/mantenimiento/equipos/{id}', [\App\Http\Controllers\MaintenanceController::class, 'baja']);

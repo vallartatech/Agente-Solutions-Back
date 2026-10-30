@@ -18,7 +18,7 @@ class ElementosTrabajo
 
     public static function vienenEnPeticion(Request $request): bool
     {
-        return $request->filled('component_ids') || $request->filled('grupos');
+        return $request->filled('component_ids') || $request->filled('grupos') || $request->filled('equipo_ids');
     }
 
     // "Mini Split (LG) - Sala": elementos del levantamiento de una propiedad
@@ -52,6 +52,8 @@ class ElementosTrabajo
         $request->validate([
             'component_ids' => 'nullable|array|max:100',
             'component_ids.*' => 'integer',
+            'equipo_ids' => 'nullable|array|max:150',
+            'equipo_ids.*' => 'integer',
             'grupos' => 'nullable|array|max:50',
             'grupos.*.tipo' => 'required|string|max:150',
             'grupos.*.cantidad' => 'required|integer|min:1|max:1000',
@@ -66,6 +68,13 @@ class ElementosTrabajo
             return ['error' => 'Alguno de los elementos ya no pertenece a esta propiedad.', 'codigo' => 422];
         }
 
+        // Equipos ya registrados en mantenimiento: se usan tal cual, sin duplicarlos
+        $idsEquipos = array_values(array_unique(array_map('intval', $request->input('equipo_ids', []))));
+        $equipos = MaintenanceEquipment::where('property_id', (int) $request->property_id)->whereIn('id', $idsEquipos)->get();
+        if ($equipos->count() !== count($idsEquipos)) {
+            return ['error' => 'Alguno de los equipos ya no pertenece a esta propiedad.', 'codigo' => 422];
+        }
+
         $fotos = app(FotosMantenimiento::class);
         $grupos = [];
         foreach ((array) $request->input('grupos', []) as $i => $grupo) {
@@ -78,13 +87,23 @@ class ElementosTrabajo
             ];
         }
 
-        return ['componentes' => $componentes, 'grupos' => $grupos];
+        return ['componentes' => $componentes, 'equipos' => $equipos, 'grupos' => $grupos];
     }
 
     public static function adjuntar(WorkOrder $orden, array $preparados, $usuario): void
     {
         foreach ($preparados['componentes'] as $c) {
             $orden->elementos()->create(['property_component_id' => $c->id, 'label' => $c->label]);
+        }
+        foreach ($preparados['equipos'] as $equipo) {
+            $orden->elementos()->create([
+                'property_component_id' => $equipo->property_component_id,
+                'maintenance_equipment_id' => $equipo->id,
+                'label' => $equipo->etiqueta(),
+            ]);
+            if (!$equipo->work_order_id) {
+                $equipo->update(['work_order_id' => $orden->id]);
+            }
         }
         foreach ($preparados['grupos'] as $grupo) {
             $equipo = MaintenanceEquipment::create($grupo + [
