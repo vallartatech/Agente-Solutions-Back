@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\WorkOrder;
+use App\Models\WorkReport;
 use Illuminate\Http\Request;
 
 // Validación de trabajos terminados: un validador fijo por equipo recibe los trabajos "Por Aprobar"
@@ -13,7 +14,7 @@ class WorkValidationController extends Controller
     public const MASCOTAS = ['gato', 'perro', 'fantasma', 'numero'];
 
     // Cuentas que ven el fantasma flotante "Verifica tus reportes"
-    private const CUENTAS_ALERTA_REPORTES = ['ppechmena@gmail.com'];
+    private const CUENTAS_ALERTA_REPORTES = ['mj.rivero@mantenere.com.mx'];
 
     // Mismo equipo: mismo tenant; tenant nulo y tenant 1 son el equipo de Agente Solutions
     public static function mismoEquipo($query, ?int $tenantId, string $columna = 'tenant_id')
@@ -40,7 +41,7 @@ class WorkValidationController extends Controller
     {
         $user = $request->user();
         if (!in_array((int) $user->role_id, [0, 1])) {
-            return response()->json(['mostrar' => false, 'pendientes' => 0, 'reportes_por_revisar' => null], 200);
+            return response()->json(['mostrar' => false, 'pendientes' => 0, 'reportes_por_revisar' => null, 'ultimo_reporte' => null], 200);
         }
 
         $tenantId = $user->tenant_id ? (int) $user->tenant_id : null;
@@ -53,30 +54,38 @@ class WorkValidationController extends Controller
             ->where('status', 'Por Aprobar')
             ->count();
 
+        $porRevisar = $this->reportesPorRevisar($user, $tenantId);
+
         return response()->json([
             'pendientes' => $pendientes,
             'es_validador' => (bool) $user->valida_trabajos,
             // Lo ve el validador; si el equipo aún no tiene uno, todos sus admins
             'mostrar' => (bool) $user->valida_trabajos || !$hayValidador,
             'mascota' => in_array($user->alert_mascot, self::MASCOTAS, true) ? $user->alert_mascot : 'gato',
-            'reportes_por_revisar' => $this->reportesPorRevisar($user, $tenantId),
+            'reportes_por_revisar' => $porRevisar['total'] ?? null,
+            // Id del reporte de técnico más reciente: si la alerta se cerró, vuelve cuando llega uno más nuevo
+            'ultimo_reporte' => $porRevisar['ultimo'] ?? null,
         ], 200);
     }
 
-    // Trabajos sin cerrar de su equipo donde un técnico ya subió evidencia. Null si la cuenta no ve esta alerta.
-    private function reportesPorRevisar(User $user, ?int $tenantId): ?int
+    // Trabajos sin cerrar de su equipo donde un técnico ya subió evidencia, y el id del reporte más reciente.
+    // Null si la cuenta no ve esta alerta.
+    private function reportesPorRevisar(User $user, ?int $tenantId): ?array
     {
         if (!in_array(mb_strtolower((string) $user->email), self::CUENTAS_ALERTA_REPORTES, true)) {
             return null;
         }
 
-        return self::mismoEquipo(WorkOrder::withoutGlobalScopes(), $tenantId)
+        $tecnicos = fn () => User::withoutGlobalScopes()->where('role_id', 2)->select('id');
+        $ordenes = fn () => self::mismoEquipo(WorkOrder::withoutGlobalScopes(), $tenantId)
             ->whereNotIn('status', ['Listo', 'Finalizado', 'Rechazado', 'Cancelado', 'cancelado_tecnico'])
-            ->whereHas('workReports', fn ($q) => $q->whereIn(
-                'technician_id',
-                User::withoutGlobalScopes()->where('role_id', 2)->select('id')
-            ))
-            ->count();
+            ->whereHas('workReports', fn ($q) => $q->whereIn('technician_id', $tecnicos()));
+
+        $ultimo = WorkReport::whereIn('work_order_id', $ordenes()->select('id'))
+            ->whereIn('technician_id', $tecnicos())
+            ->max('id');
+
+        return ['total' => $ordenes()->count(), 'ultimo' => $ultimo ? (int) $ultimo : null];
     }
 
     // Marcar o quitar al validador. Solo hay uno por equipo: marcar a alguien se lo quita al anterior.

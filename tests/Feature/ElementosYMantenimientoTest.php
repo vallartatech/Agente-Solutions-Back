@@ -555,7 +555,7 @@ class ElementosYMantenimientoTest extends TestCase
     public function test_el_fantasma_solo_cuenta_reportes_de_tecnicos_en_trabajos_sin_cerrar_para_las_cuentas_elegidas(): void
     {
         $cuenta = $this->usuario(1);
-        $cuenta->forceFill(['email' => 'ppechmena@gmail.com'])->save();
+        $cuenta->forceFill(['email' => 'mj.rivero@mantenere.com.mx'])->save();
         $tecnico = $this->usuario(2);
         $reporte = fn ($orden, $autor) => WorkReport::create(['work_order_id' => $orden->id, 'technician_id' => $autor->id, 'stage' => 'antes', 'image_url' => 'u', 'description' => 'd']);
 
@@ -568,10 +568,21 @@ class ElementosYMantenimientoTest extends TestCase
         $cerrada->forceFill(['status' => 'Listo'])->save();
 
         Sanctum::actingAs($cuenta);
-        $this->getJson('/api/validacion/pendientes')->assertOk()->assertJsonPath('reportes_por_revisar', 1);
+        $primero = WorkReport::where('work_order_id', $conReporte->id)->value('id');
+        $this->getJson('/api/validacion/pendientes')->assertOk()
+            ->assertJsonPath('reportes_por_revisar', 1)
+            ->assertJsonPath('ultimo_reporte', $primero);
+
+        // Un reporte nuevo en el mismo trabajo no sube el total, pero sí el último reporte (la alerta vuelve)
+        $reporte($conReporte, $tecnico);
+        $this->getJson('/api/validacion/pendientes')->assertOk()
+            ->assertJsonPath('reportes_por_revisar', 1)
+            ->assertJsonPath('ultimo_reporte', WorkReport::where('work_order_id', $conReporte->id)->max('id'));
 
         Sanctum::actingAs($this->admin);
-        $this->getJson('/api/validacion/pendientes')->assertOk()->assertJsonPath('reportes_por_revisar', null);
+        $this->getJson('/api/validacion/pendientes')->assertOk()
+            ->assertJsonPath('reportes_por_revisar', null)
+            ->assertJsonPath('ultimo_reporte', null);
     }
 
     public function test_con_varios_elementos_no_se_termina_sin_antes_y_despues_de_cada_uno(): void
