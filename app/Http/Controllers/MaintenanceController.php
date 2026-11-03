@@ -13,8 +13,8 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-// Mantenimiento de Agente Solutions (solo Root y Admin del equipo interno): cada equipo se agrega a mano
-// con su próxima fecha, sin depender del levantamiento, y esa fecha aparece en el calendario.
+// Mantenimiento de Agente Solutions (solo Root y Admin del equipo interno): cada equipo se elige del
+// levantamiento de la propiedad o se agrega a mano, con su próxima fecha, y esa fecha aparece en el calendario.
 class MaintenanceController extends Controller
 {
     private const ZONA_LOCAL = 'America/Merida';
@@ -100,6 +100,7 @@ class MaintenanceController extends Controller
             'cantidad' => 'nullable|integer|min:1|max:1000',
             'detalle' => 'nullable|string|max:1000',
             'fecha' => 'required|date|after_or_equal:' . $this->hoy(),
+            'property_component_id' => 'nullable|integer',
             'foto_equipo' => 'nullable|file|image|max:10240',
             'foto_datos' => 'nullable|file|image|max:10240',
         ]);
@@ -107,6 +108,17 @@ class MaintenanceController extends Controller
         $propiedad = $this->propiedad($request, $validated['property_id']);
         if (!$propiedad) {
             return response()->json(['error' => 'Propiedad no encontrada.'], 404);
+        }
+
+        // Elegido del levantamiento: debe ser de esta propiedad y no tener ya un mantenimiento en la lista
+        $componenteId = isset($validated['property_component_id']) ? (int) $validated['property_component_id'] : null;
+        if ($componenteId) {
+            if (ElementosTrabajo::delLevantamiento($propiedad->id, [$componenteId])->isEmpty()) {
+                return response()->json(['error' => 'Ese elemento no pertenece a esta propiedad.'], 422);
+            }
+            if (MaintenanceEquipment::where('property_component_id', $componenteId)->where('activo', true)->exists()) {
+                return response()->json(['error' => 'Ese elemento ya tiene un mantenimiento agendado. Edítalo desde la lista.'], 422);
+            }
         }
 
         $fotos = app(FotosMantenimiento::class);
@@ -117,10 +129,11 @@ class MaintenanceController extends Controller
             }
         }
 
-        $equipo = DB::transaction(function () use ($validated, $propiedad, $urls, $request) {
+        $equipo = DB::transaction(function () use ($validated, $propiedad, $urls, $request, $componenteId) {
             $equipo = MaintenanceEquipment::create($urls + [
                 'tenant_id' => $propiedad->tenant_id,
                 'property_id' => $propiedad->id,
+                'property_component_id' => $componenteId,
                 'tipo' => trim($validated['tipo']),
                 'cantidad' => $validated['cantidad'] ?? 1,
                 'detalle' => $validated['detalle'] ?? null,

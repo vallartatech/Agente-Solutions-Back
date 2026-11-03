@@ -291,6 +291,27 @@ class ElementosYMantenimientoTest extends TestCase
         $this->getJson('/api/mantenimiento/visitas')->assertExactJson([]);
     }
 
+    public function test_agenda_un_elemento_del_levantamiento_una_sola_vez(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $area = DB::table('property_areas')->insertGetId(['property_id' => $this->propiedad, 'name' => 'Sala']);
+        $elemento = DB::table('property_components')->insertGetId(['property_area_id' => $area, 'category' => 'CLIMA', 'sub_category' => 'AA', 'brand' => 'LG']);
+        $otra = DB::table('properties')->insertGetId(['property_name' => 'Otra']);
+        $areaAjena = DB::table('property_areas')->insertGetId(['property_id' => $otra, 'name' => 'Cocina']);
+        $ajeno = DB::table('property_components')->insertGetId(['property_area_id' => $areaAjena, 'category' => 'CLIMA', 'sub_category' => 'AA']);
+
+        $id = $this->agregar(['tipo' => 'AA (LG) - Sala', 'property_component_id' => $elemento])->assertCreated()->json('equipo.id');
+        $this->assertSame($elemento, MaintenanceEquipment::findOrFail($id)->property_component_id);
+
+        $this->agregar(['property_component_id' => $elemento])->assertStatus(422);
+        $this->agregar(['property_component_id' => $ajeno])->assertStatus(422);
+
+        // Dado de baja, el elemento se puede volver a agendar
+        $this->deleteJson("/api/mantenimiento/equipos/{$id}")->assertOk();
+        $this->agregar(['property_component_id' => $elemento])->assertCreated();
+        $this->assertSame(2, MaintenanceEquipment::count());
+    }
+
     public function test_los_elementos_de_la_propiedad_son_solo_para_admins_internos(): void
     {
         Sanctum::actingAs($this->usuario(2));
