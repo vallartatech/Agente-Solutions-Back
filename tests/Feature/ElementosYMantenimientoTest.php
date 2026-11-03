@@ -35,6 +35,7 @@ class ElementosYMantenimientoTest extends TestCase
         $this->crearEsquema();
         (require database_path('migrations/2026_10_30_100000_create_work_order_elements_and_maintenance.php'))->up();
         (require database_path('migrations/2026_10_30_180000_make_property_optional_on_maintenance_equipment.php'))->up();
+        (require database_path('migrations/2026_11_03_100000_add_period_to_maintenance_equipment.php'))->up();
 
         $this->admin = $this->usuario(1);
         $this->propiedad = DB::table('properties')->insertGetId(['property_name' => 'Casa', 'address' => 'Centro', 'tenant_id' => null]);
@@ -260,7 +261,10 @@ class ElementosYMantenimientoTest extends TestCase
             ->assertJsonCount(1)
             ->assertJsonPath('0.tipo', 'Aire acondicionado');
 
+        // El técnico lo ve en el levantamiento; el cliente no
         Sanctum::actingAs($this->usuario(2));
+        $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertOk()->assertJsonCount(1);
+        Sanctum::actingAs($this->usuario(3));
         $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertForbidden();
         Sanctum::actingAs($this->usuario(1, 15));
         $this->getJson("/api/properties/{$this->propiedad}/mantenimiento")->assertNotFound();
@@ -382,6 +386,146 @@ class ElementosYMantenimientoTest extends TestCase
         $this->getJson("/api/properties/{$ajena}/elementos")->assertNotFound();
     }
 
+    private function componente(string $area, string $tipo = 'Minisplit'): int
+    {
+        $areaId = DB::table('property_areas')->insertGetId(['property_id' => $this->propiedad, 'name' => $area]);
+        return DB::table('property_components')->insertGetId(['property_area_id' => $areaId, 'category' => 'Aire acondicionado', 'sub_category' => $tipo]);
+    }
+
+    private function pendiente(int $equipoId): ?string
+    {
+        return MaintenanceVisit::where('maintenance_equipment_id', $equipoId)->where('status', 'pendiente')->value('fecha_programada')
+            ? MaintenanceVisit::where('maintenance_equipment_id', $equipoId)->where('status', 'pendiente')->first()->fecha_programada->toDateString()
+            : null;
+    }
+
+    public function test_con_periodo_la_fecha_se_calcula_desde_el_ultimo_mantenimiento_aunque_quede_vencida(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $hace6 = now('America/Merida')->subMonths(6)->toDateString();
+        $hace8 = now('America/Merida')->subMonths(8)->toDateString();
+
+        $id = $this->postJson('/api/mantenimiento/equipos', [
+            'property_id' => $this->propiedad, 'tipo' => 'Minisplit', 'frecuencia_meses' => 12, 'ultimo_mantenimiento' => $hace6,
+        ])->assertCreated()->json('equipo.id');
+        $this->assertSame(MaintenanceEquipment::siguienteFecha($hace6, 12), $this->pendiente($id));
+
+        // Cada 6 meses con el último hace 8: queda vencida, no se recorre sola
+        $vencido = $this->postJson('/api/mantenimiento/equipos', [
+            'property_id' => $this->propiedad, 'tipo' => 'Mini 2', 'frecuencia_meses' => 6, 'ultimo_mantenimiento' => $hace8,
+        ])->assertCreated()->json('equipo.id');
+        $this->assertLessThan(now('America/Merida')->toDateString(), $this->pendiente($vencido));
+
+        // Sin último mantenimiento cuenta desde hoy; el último no puede ser futuro; frecuencias fuera de la lista no
+        $hoy = $this->postJson('/api/mantenimiento/equipos', ['property_id' => $this->propiedad, 'tipo' => 'X', 'frecuencia_meses' => 3])->json('equipo.id');
+        $this->assertSame(MaintenanceEquipment::siguienteFecha(now('America/Merida'), 3), $this->pendiente($hoy));
+        $this->postJson('/api/mantenimiento/equipos', ['property_id' => $this->propiedad, 'tipo' => 'X', 'frecuencia_meses' => 5])->assertStatus(422);
+        $this->postJson('/api/mantenimiento/equipos', ['property_id' => $this->propiedad, 'tipo' => 'X', 'frecuencia_meses' => 6, 'ultimo_mantenimiento' => now()->addDays(3)->toDateString()])->assertStatus(422);
+    }
+
+    public function test_registrar_realizado_reajusta_el_ciclo_desde_ese_dia(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $id = $this->postJson('/api/mantenimiento/equipos', [
+            'property_id' => $this->propiedad, 'tipo' => 'Minisplit', 'frecuencia_meses' => 6,
+            'ultimo_mantenimiento' => now('America/Merida')->subMonths(9)->toDateString(),
+        ])->json('equipo.id');
+
+        // Venció hace 3 meses y se hizo hoy: la próxima es hoy + 6 meses
+        $this->postJson('/api/mantenimiento/realizado', ['equipos' => [$id]])->assertOk()
+            ->assertJsonPath('equipos.0.visits.0.fecha_programada', MaintenanceEquipment::siguienteFecha(now('America/Merida'), 6));
+        $this->assertSame(1, MaintenanceVisit::where('maintenance_equipment_id', $id)->where('status', 'realizada')->count());
+        $this->assertSame(now('America/Merida')->toDateString(), MaintenanceEquipment::find($id)->ultimo_mantenimiento->toDateString());
+
+        // Con otra fecha (no futura)
+        $ayer = now('America/Merida')->subDay()->toDateString();
+        $this->postJson('/api/mantenimiento/realizado', ['equipos' => [$id], 'fecha' => $ayer])->assertOk();
+        $this->assertSame(MaintenanceEquipment::siguienteFecha($ayer, 6), $this->pendiente($id));
+        $this->postJson('/api/mantenimiento/realizado', ['equipos' => [$id], 'fecha' => now()->addDays(2)->toDateString()])->assertStatus(422);
+
+        // Sin periodo: queda sin fecha, o con la próxima que se indique
+        $manual = $this->agregar()->json('equipo.id');
+        $this->postJson('/api/mantenimiento/realizado', ['equipos' => [$manual]])->assertOk();
+        $this->assertNull($this->pendiente($manual));
+        $proxima = now()->addMonths(2)->toDateString();
+        $this->postJson('/api/mantenimiento/realizado', ['equipos' => [$manual], 'proxima' => $proxima])->assertOk();
+        $this->assertSame($proxima, $this->pendiente($manual));
+    }
+
+    public function test_programa_varios_elementos_a_la_misma_fecha_y_salen_en_una_orden(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $sala = $this->componente('Sala');
+        $recamara = $this->componente('Recámara');
+        $cocina = $this->componente('Cocina');
+        $ultimo = now('America/Merida')->subMonth()->toDateString();
+
+        // La cocina ya estaba agendada: se reprograma, no se duplica
+        $this->agregar(['property_component_id' => $cocina, 'tipo' => 'Cocina'])->assertCreated();
+
+        $res = $this->postJson('/api/mantenimiento/programar', [
+            'property_id' => $this->propiedad, 'elementos' => [$sala, $recamara, $cocina], 'frecuencia_meses' => 6, 'ultimo_mantenimiento' => $ultimo,
+        ])->assertOk()->assertJsonCount(3, 'equipos');
+        $fecha = MaintenanceEquipment::siguienteFecha($ultimo, 6);
+        $res->assertJsonPath('fecha', $fecha);
+        $this->assertSame(3, MaintenanceEquipment::where('activo', true)->count());
+        $this->assertSame(3, MaintenanceVisit::where('status', 'pendiente')->whereDate('fecha_programada', $fecha)->count());
+
+        // Elementos de otra propiedad no
+        $otra = DB::table('properties')->insertGetId(['property_name' => 'Otra']);
+        $ajeno = DB::table('property_components')->insertGetId([
+            'property_area_id' => DB::table('property_areas')->insertGetId(['property_id' => $otra, 'name' => 'Sala']),
+            'category' => 'Aire', 'sub_category' => 'Mini',
+        ]);
+        $this->postJson('/api/mantenimiento/programar', ['property_id' => $this->propiedad, 'elementos' => [$sala, $ajeno], 'frecuencia_meses' => 6])->assertStatus(422);
+
+        // Una sola orden con los 3; al pasarla a Listo, cada uno agenda su siguiente fecha desde hoy
+        $ordenId = $this->postJson('/api/mantenimiento/visitas/' . MaintenanceVisit::where('status', 'pendiente')->first()->id . '/convertir')
+            ->assertCreated()->json('work_order_id');
+        $orden = WorkOrder::withoutGlobalScopes()->find($ordenId);
+        $this->assertSame(3, $orden->elementos()->count());
+
+        $orden->update(['status' => 'Listo']);
+        $siguiente = MaintenanceEquipment::siguienteFecha(now('America/Merida'), 6);
+        $this->assertSame(3, MaintenanceVisit::where('status', 'realizada')->where('work_order_id', $ordenId)->count());
+        $this->assertSame(3, MaintenanceVisit::where('status', 'pendiente')->whereDate('fecha_programada', $siguiente)->count());
+
+        // Con una orden en curso, editar el periodo no agenda otra fecha
+        $otraOrden = $this->postJson('/api/mantenimiento/visitas/' . MaintenanceVisit::where('status', 'pendiente')->first()->id . '/convertir')->json('work_order_id');
+        $equipoId = MaintenanceVisit::where('work_order_id', $otraOrden)->value('maintenance_equipment_id');
+        $this->putJson("/api/mantenimiento/equipos/{$equipoId}", ['tipo' => 'Mini', 'frecuencia_meses' => 3])->assertOk();
+        $this->assertSame(0, MaintenanceVisit::where('status', 'pendiente')->count());
+        WorkOrder::withoutGlobalScopes()->find($otraOrden)->update(['status' => 'Listo']);
+        $this->assertSame(3, MaintenanceVisit::where('status', 'pendiente')->count());
+        $this->assertSame(MaintenanceEquipment::siguienteFecha(now('America/Merida'), 3), $this->pendiente($equipoId));
+
+        // Volver a guardarla como Listo no crea nada más
+        $orden->update(['status' => 'Listo', 'priority' => 'Alta']);
+        $this->assertSame(3, MaintenanceVisit::where('status', 'pendiente')->count());
+    }
+
+    public function test_editar_cambia_el_periodo_y_acepta_la_fecha_calculada_aunque_sea_pasada(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $id = $this->agregar()->json('equipo.id');
+        $hace8 = now('America/Merida')->subMonths(8)->toDateString();
+        $calculada = MaintenanceEquipment::siguienteFecha($hace8, 6);
+
+        $this->putJson("/api/mantenimiento/equipos/{$id}", [
+            'tipo' => 'Aire acondicionado', 'frecuencia_meses' => 6, 'ultimo_mantenimiento' => $hace8, 'fecha' => $calculada,
+        ])->assertOk()->assertJsonPath('equipo.frecuencia_meses', 6);
+        $this->assertSame($calculada, $this->pendiente($id));
+
+        // Una fecha pasada escrita a mano que no es la calculada, no
+        $this->putJson("/api/mantenimiento/equipos/{$id}", [
+            'tipo' => 'Aire acondicionado', 'frecuencia_meses' => 6, 'ultimo_mantenimiento' => $hace8, 'fecha' => now()->subDays(2)->toDateString(),
+        ])->assertStatus(422);
+
+        // Quitar el periodo deja la fecha que ya tenía
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Aire acondicionado', 'frecuencia_meses' => null, 'fecha' => $calculada])->assertOk();
+        $this->assertNull(MaintenanceEquipment::find($id)->frecuencia_meses);
+    }
+
     public function test_solo_admins_del_equipo_interno(): void
     {
         DB::table('properties')->insert(['property_name' => 'De la red', 'tenant_id' => 15]);
@@ -392,8 +536,14 @@ class ElementosYMantenimientoTest extends TestCase
         foreach ([2, 3] as $rol) {
             Sanctum::actingAs($this->usuario($rol));
             $this->getJson('/api/mantenimiento/equipos')->assertForbidden();
-            $this->agregar()->assertForbidden();
+            $this->postJson('/api/mantenimiento/realizado', ['equipos' => [$id]])->assertForbidden();
         }
+
+        // El Técnico Agente agenda desde el levantamiento; el cliente no
+        Sanctum::actingAs($this->usuario(2));
+        $this->agregar()->assertCreated();
+        Sanctum::actingAs($this->usuario(3));
+        $this->agregar()->assertForbidden();
 
         // Un admin de otro tenant no ve ni toca lo interno
         Sanctum::actingAs($this->usuario(1, 15));

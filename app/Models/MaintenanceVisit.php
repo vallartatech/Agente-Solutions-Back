@@ -11,10 +11,12 @@ class MaintenanceVisit extends Model
         'fecha_programada',
         'status',
         'work_order_id',
+        'realizada_el',
     ];
 
     protected $casts = [
         'fecha_programada' => 'date:Y-m-d',
+        'realizada_el' => 'date:Y-m-d',
     ];
 
     public function equipment()

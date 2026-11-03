@@ -35,6 +35,22 @@ class WorkOrder extends Model
         'scheduled_at' => 'datetime'
     ];
 
+    protected static function booted(): void
+    {
+        // Mantenimiento por periodo: al pasar a Listo, sus equipos agendan la siguiente fecha.
+        // Un error aquí no debe impedir cerrar la orden.
+        static::updated(function (WorkOrder $orden) {
+            if (!$orden->wasChanged('status') || $orden->status !== 'Listo') {
+                return;
+            }
+            try {
+                MaintenanceEquipment::alCerrarOrden($orden->id, \Carbon\Carbon::now('America/Merida')->toDateString());
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::error("Ciclo de mantenimiento de la orden {$orden->id}: " . $e->getMessage());
+            }
+        });
+    }
+
     public function property()
     {
         return $this->belongsTo(Property::class, 'property_id');

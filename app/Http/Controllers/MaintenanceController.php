@@ -13,8 +13,9 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-// Mantenimiento de Agente Solutions (solo Root y Admin del equipo interno): cada equipo se elige del
-// levantamiento de la propiedad o se agrega a mano, con su próxima fecha, y esa fecha aparece en el calendario.
+// Mantenimiento de Agente Solutions (Root y Admin del equipo interno; el Técnico Agente puede agendar desde el
+// levantamiento): cada equipo se elige del levantamiento de la propiedad o se agrega a mano, con su próxima fecha
+// escrita o calculada por periodo (cada N meses desde el último mantenimiento), y esa fecha aparece en el calendario.
 class MaintenanceController extends Controller
 {
     private const ZONA_LOCAL = 'America/Merida';
@@ -22,6 +23,37 @@ class MaintenanceController extends Controller
     private function esAdmin(Request $request): bool
     {
         return in_array((int) $request->user()->role_id, [0, 1], true);
+    }
+
+    // Agendar y editar equipos también lo hace el Técnico Agente durante el levantamiento
+    private function puedeProgramar(Request $request): bool
+    {
+        return in_array((int) $request->user()->role_id, [0, 1, 2], true);
+    }
+
+    private function reglasPeriodo(): array
+    {
+        return [
+            'frecuencia_meses' => 'nullable|integer|in:' . implode(',', MaintenanceEquipment::FRECUENCIAS),
+            'ultimo_mantenimiento' => 'nullable|date|before_or_equal:' . $this->hoy(),
+        ];
+    }
+
+    // Próxima fecha: con periodo, último mantenimiento (o hoy) + N meses, aunque quede vencida;
+    // una fecha escrita a mano no puede ser pasada, salvo que sea la que ya tenía ($actual).
+    // Devuelve [fecha, error].
+    private function proximaFecha(?string $escrita, ?int $frecuencia, ?string $ultimo, ?string $actual = null): array
+    {
+        $calculada = $frecuencia ? MaintenanceEquipment::siguienteFecha($ultimo ?: $this->hoy(), $frecuencia) : null;
+        if (!$escrita) {
+            return $calculada ? [$calculada, null] : [null, 'Indica la fecha del próximo mantenimiento o cada cuánto se hace.'];
+        }
+
+        $fecha = Carbon::parse($escrita)->toDateString();
+        if ($fecha < $this->hoy() && $fecha !== $calculada && $fecha !== $actual) {
+            return [null, 'La fecha debe ser de hoy en adelante.'];
+        }
+        return [$fecha, null];
     }
 
     // Root ve todo; los demás, solo lo de su equipo
@@ -90,7 +122,7 @@ class MaintenanceController extends Controller
     // Agrega un equipo con la fecha de su próximo mantenimiento
     public function agregar(Request $request)
     {
-        if (!$this->esAdmin($request)) {
+        if (!$this->puedeProgramar($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
         }
 
@@ -99,11 +131,18 @@ class MaintenanceController extends Controller
             'tipo' => 'required|string|max:150',
             'cantidad' => 'nullable|integer|min:1|max:1000',
             'detalle' => 'nullable|string|max:1000',
-            'fecha' => 'required|date|after_or_equal:' . $this->hoy(),
+            'fecha' => 'required_without:frecuencia_meses|nullable|date',
             'property_component_id' => 'nullable|integer',
             'foto_equipo' => 'nullable|file|image|max:10240',
             'foto_datos' => 'nullable|file|image|max:10240',
-        ]);
+        ] + $this->reglasPeriodo());
+
+        $frecuencia = isset($validated['frecuencia_meses']) ? (int) $validated['frecuencia_meses'] : null;
+        $ultimo = $validated['ultimo_mantenimiento'] ?? null;
+        [$fecha, $error] = $this->proximaFecha($validated['fecha'] ?? null, $frecuencia, $ultimo);
+        if ($error) {
+            return response()->json(['error' => $error, 'errors' => ['fecha' => [$error]]], 422);
+        }
 
         $propiedad = $this->propiedad($request, $validated['property_id']);
         if (!$propiedad) {
@@ -129,7 +168,7 @@ class MaintenanceController extends Controller
             }
         }
 
-        $equipo = DB::transaction(function () use ($validated, $propiedad, $urls, $request, $componenteId) {
+        $equipo = DB::transaction(function () use ($validated, $propiedad, $urls, $request, $componenteId, $fecha, $frecuencia, $ultimo) {
             $equipo = MaintenanceEquipment::create($urls + [
                 'tenant_id' => $propiedad->tenant_id,
                 'property_id' => $propiedad->id,
@@ -138,9 +177,11 @@ class MaintenanceController extends Controller
                 'cantidad' => $validated['cantidad'] ?? 1,
                 'detalle' => $validated['detalle'] ?? null,
                 'fecha_base' => $this->hoy(),
+                'frecuencia_meses' => $frecuencia,
+                'ultimo_mantenimiento' => $ultimo,
                 'created_by' => $request->user()->id,
             ]);
-            $equipo->visits()->create(['fecha_programada' => $validated['fecha'], 'status' => 'pendiente']);
+            $equipo->visits()->create(['fecha_programada' => $fecha, 'status' => 'pendiente']);
             return $equipo;
         });
 
@@ -163,7 +204,7 @@ class MaintenanceController extends Controller
     // Mantenimientos programados de una propiedad, para su expediente
     public function dePropiedad(Request $request, $id)
     {
-        if (!$this->esAdmin($request)) {
+        if (!$this->puedeProgramar($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
         }
         if (!$this->propiedad($request, $id)) {
@@ -178,10 +219,10 @@ class MaintenanceController extends Controller
         );
     }
 
-    // Ajusta los datos de un equipo y su próxima fecha (o pone una nueva si la anterior ya se atendió)
+    // Ajusta los datos de un equipo, su periodo y su próxima fecha (o pone una nueva si la anterior ya se atendió)
     public function actualizar(Request $request, $id)
     {
-        if (!$this->esAdmin($request)) {
+        if (!$this->puedeProgramar($request)) {
             return response()->json(['error' => 'No autorizado.'], 403);
         }
         $equipo = $this->equiposDelEquipo($request)->where('activo', true)->find($id);
@@ -193,18 +234,29 @@ class MaintenanceController extends Controller
             'tipo' => 'required|string|max:150',
             'cantidad' => 'nullable|integer|min:1|max:1000',
             'detalle' => 'nullable|string|max:1000',
-            'fecha' => 'required|date',
+            'fecha' => 'required_without:frecuencia_meses|nullable|date',
             'foto_equipo' => 'nullable|file|image|max:10240',
             'foto_datos' => 'nullable|file|image|max:10240',
-        ]);
+        ] + $this->reglasPeriodo());
 
-        $fecha = Carbon::parse($validated['fecha'])->toDateString();
+        // Los campos del periodo que no vengan se quedan como estaban
+        $frecuencia = $request->exists('frecuencia_meses')
+            ? (isset($validated['frecuencia_meses']) ? (int) $validated['frecuencia_meses'] : null)
+            : $equipo->frecuencia_meses;
+        $ultimo = $request->exists('ultimo_mantenimiento')
+            ? ($validated['ultimo_mantenimiento'] ?? null)
+            : $equipo->ultimo_mantenimiento?->toDateString();
+
         $pendiente = $equipo->visits()->where('status', 'pendiente')->first();
-        $cambiaFecha = $pendiente?->fecha_programada->toDateString() !== $fecha;
-
-        // Una fecha vencida puede quedarse al corregir otros datos, pero no se puede agendar una nueva en el pasado
-        if ($cambiaFecha && $fecha < $this->hoy()) {
-            return response()->json(['error' => 'La fecha debe ser de hoy en adelante.'], 422);
+        $actual = $pendiente?->fecha_programada->toDateString();
+        [$fecha, $error] = $this->proximaFecha($validated['fecha'] ?? null, $frecuencia, $ultimo, $actual);
+        if ($error) {
+            return response()->json(['error' => $error, 'errors' => ['fecha' => [$error]]], 422);
+        }
+        $cambiaFecha = $actual !== $fecha;
+        // Con una orden de mantenimiento en curso no se agenda otra fecha calculada: la siguiente sale al cerrarla
+        if ($cambiaFecha && $actual === null && empty($validated['fecha']) && $equipo->visits()->where('status', 'convertida')->exists()) {
+            $cambiaFecha = false;
         }
         if ($cambiaFecha && $equipo->visits()->where('status', '!=', 'pendiente')->whereDate('fecha_programada', $fecha)->exists()) {
             return response()->json(['error' => 'Esa fecha ya se atendió para este equipo. Elige otra.'], 422);
@@ -218,11 +270,13 @@ class MaintenanceController extends Controller
             }
         }
 
-        DB::transaction(function () use ($equipo, $validated, $urls, $cambiaFecha, $fecha) {
+        DB::transaction(function () use ($equipo, $validated, $urls, $cambiaFecha, $fecha, $frecuencia, $ultimo) {
             $equipo->update($urls + [
                 'tipo' => trim($validated['tipo']),
                 'cantidad' => $validated['cantidad'] ?? 1,
                 'detalle' => $validated['detalle'] ?? null,
+                'frecuencia_meses' => $frecuencia,
+                'ultimo_mantenimiento' => $ultimo,
             ]);
             if ($cambiaFecha) {
                 $equipo->visits()->where('status', 'pendiente')->delete();
@@ -231,6 +285,103 @@ class MaintenanceController extends Controller
         });
 
         return response()->json(['success' => true, 'equipo' => $equipo->load(['visits' => fn ($q) => $q->where('status', 'pendiente')])]);
+    }
+
+    // Varios elementos del levantamiento (ej. 3 climas de distintas habitaciones) con el mismo periodo y la
+    // misma próxima fecha; al convertir esa fecha salen en una sola orden. Los que ya estaban se reprograman.
+    public function programarVarios(Request $request)
+    {
+        if (!$this->esAdmin($request)) {
+            return response()->json(['error' => 'No autorizado.'], 403);
+        }
+
+        $validated = $request->validate([
+            'property_id' => 'required|integer',
+            'elementos' => 'required|array|min:1|max:200',
+            'elementos.*' => 'integer|distinct',
+            'fecha' => 'nullable|date',
+            'frecuencia_meses' => 'required|integer|in:' . implode(',', MaintenanceEquipment::FRECUENCIAS),
+            'ultimo_mantenimiento' => 'nullable|date|before_or_equal:' . $this->hoy(),
+        ]);
+
+        $propiedad = $this->propiedad($request, $validated['property_id']);
+        if (!$propiedad) {
+            return response()->json(['error' => 'Propiedad no encontrada.'], 404);
+        }
+        $ids = array_map('intval', $validated['elementos']);
+        $componentes = ElementosTrabajo::delLevantamiento($propiedad->id, $ids);
+        if ($componentes->count() !== count($ids)) {
+            return response()->json(['error' => 'Algún elemento no pertenece a esta propiedad.'], 422);
+        }
+
+        $frecuencia = (int) $validated['frecuencia_meses'];
+        $ultimo = $validated['ultimo_mantenimiento'] ?? null;
+        [$fecha, $error] = $this->proximaFecha($validated['fecha'] ?? null, $frecuencia, $ultimo);
+        if ($error) {
+            return response()->json(['error' => $error, 'errors' => ['fecha' => [$error]]], 422);
+        }
+
+        $ids = DB::transaction(function () use ($componentes, $propiedad, $request, $frecuencia, $ultimo, $fecha) {
+            return $componentes->map(function ($c) use ($propiedad, $request, $frecuencia, $ultimo, $fecha) {
+                $equipo = MaintenanceEquipment::where('property_component_id', $c->id)->where('activo', true)->first()
+                    ?? MaintenanceEquipment::create([
+                        'tenant_id' => $propiedad->tenant_id,
+                        'property_id' => $propiedad->id,
+                        'property_component_id' => $c->id,
+                        'tipo' => mb_substr($c->label, 0, 150),
+                        'cantidad' => 1,
+                        'fecha_base' => $this->hoy(),
+                        'created_by' => $request->user()->id,
+                    ]);
+                $equipo->update(['frecuencia_meses' => $frecuencia, 'ultimo_mantenimiento' => $ultimo]);
+                $equipo->reprogramar($fecha);
+                return $equipo->id;
+            });
+        });
+
+        return response()->json(['success' => true, 'fecha' => $fecha, 'equipos' => $this->conProximaFecha($ids)]);
+    }
+
+    // "Ya se realizó": la fecha pendiente queda como realizada (aunque esté vencida) y el ciclo vuelve a contar
+    // desde ese día. Sin periodo, se puede indicar la próxima fecha a mano.
+    public function realizado(Request $request)
+    {
+        if (!$this->esAdmin($request)) {
+            return response()->json(['error' => 'No autorizado.'], 403);
+        }
+
+        $validated = $request->validate([
+            'equipos' => 'required|array|min:1|max:200',
+            'equipos.*' => 'integer|distinct',
+            'fecha' => 'nullable|date|before_or_equal:' . $this->hoy(),
+            'proxima' => 'nullable|date|after_or_equal:' . $this->hoy(),
+        ]);
+
+        $equipos = $this->equiposDelEquipo($request)->where('activo', true)->whereIn('id', $validated['equipos'])->get();
+        if ($equipos->count() !== count($validated['equipos'])) {
+            return response()->json(['error' => 'Algún equipo no se encontró.'], 404);
+        }
+
+        $fecha = isset($validated['fecha']) ? Carbon::parse($validated['fecha'])->toDateString() : $this->hoy();
+        $proxima = isset($validated['proxima']) ? Carbon::parse($validated['proxima'])->toDateString() : null;
+
+        DB::transaction(function () use ($equipos, $fecha, $proxima) {
+            foreach ($equipos as $equipo) {
+                $equipo->registrarRealizado($fecha);
+                if (!$equipo->frecuencia_meses && $proxima) {
+                    $equipo->reprogramar($proxima);
+                }
+            }
+        });
+
+        return response()->json(['success' => true, 'equipos' => $this->conProximaFecha($equipos->pluck('id'))]);
+    }
+
+    private function conProximaFecha($ids)
+    {
+        return MaintenanceEquipment::with(['property:id,property_name,address', 'visits' => fn ($q) => $q->where('status', 'pendiente')])
+            ->whereIn('id', $ids)
+            ->get();
     }
 
     // Quita un equipo de la lista: sus fechas pendientes desaparecen de la agenda
