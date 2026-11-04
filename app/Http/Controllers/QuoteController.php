@@ -485,6 +485,10 @@ class QuoteController extends Controller
                         'prioridad' => $wo?->priority ?? 'Normal',
                         'batch_id' => $wo?->batch_id ?? null,
                         'scheduled_at' => $scheduledFormatted,
+                        // Fecha y hora real del trabajo (técnico asignado) para precargar la asignación
+                        'programado_en' => $serv?->scheduled_start
+                            ? date('Y-m-d H:i:s', strtotime($serv->scheduled_start))
+                            : ($wo?->scheduled_at ? $wo->scheduled_at->format('Y-m-d H:i:s') : null),
                         'fecha' => $quote->created_at ? $quote->created_at->format('Y-m-d') : '---',
                         'created_at' => $quote->created_at,
                         'total' => $quote->estimated_amount ?? 0,
