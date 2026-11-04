@@ -34,17 +34,6 @@ use App\Http\Controllers\TechnicianReviewController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
-Route::get('/test-email', function () {
-    try {
-        \Illuminate\Support\Facades\Mail::raw('Este es un correo de prueba de Resend', function ($msg) {
-            $msg->to('ppechkoh@gmail.com')->subject('Prueba Resend');
-        });
-        return response()->json(['success' => true, 'message' => 'Correo enviado exitosamente con la configuraciÃ³n actual.']);
-    } catch (\Exception $e) {
-        return response()->json(['success' => false, 'error' => $e->getMessage()]);
-    }
-});
-
 // VerificaciÃ³n de Correo (rutas pÃºblicas)
 Route::get('/email/verify/{id}/{hash}', [AuthController::class, 'verifyEmail'])->name('verification.verify');
 Route::post('/email/resend', [AuthController::class, 'resendVerificationEmail']);
@@ -595,37 +584,35 @@ Route::post('/registro-cliente', function (\Illuminate\Http\Request $request) {
 
 // Rutas para Personalizar Login
 Route::prefix('ui/settings')->group(function () {
-    Route::post('/login-background/image', [AppSettingController::class, 'updateLoginBackground']);
-    Route::post('/login-background/color', [AppSettingController::class, 'updateLoginColor']);
-    Route::delete('/login-background/image', [AppSettingController::class, 'deleteLoginBackground']);
+    // Lectura pública: la usan el login y los headers antes de iniciar sesión
     Route::get('/login-settings', [AppSettingController::class, 'getLoginSettings']);
-
-    // --- LOGO Y FAVICON ---
-    Route::post('/app-logo', [AppSettingController::class, 'updateAppLogo']);
-    Route::delete('/app-logo', [AppSettingController::class, 'deleteAppLogo']);
-
-    // --- SIDEBAR CLIENTE ---
-    Route::post('/sidebar-links', [AppSettingController::class, 'updateSidebarLinks']);
     Route::get('/sidebar-links', [AppSettingController::class, 'getSidebarLinks']);
+
+    // Escritura: solo usuarios autenticados con rol Root (0), Admin (1) o Gestor Inmobiliario (5)
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::post('/login-background/image', [AppSettingController::class, 'updateLoginBackground'])->middleware('role:0,1,5');
+        Route::post('/login-background/color', [AppSettingController::class, 'updateLoginColor'])->middleware('role:0,1,5');
+        Route::delete('/login-background/image', [AppSettingController::class, 'deleteLoginBackground'])->middleware('role:0,1,5');
+        Route::post('/app-logo', [AppSettingController::class, 'updateAppLogo'])->middleware('role:0,1,5');
+        Route::delete('/app-logo', [AppSettingController::class, 'deleteAppLogo'])->middleware('role:0,1,5');
+        Route::post('/sidebar-links', [AppSettingController::class, 'updateSidebarLinks'])->middleware('role:0,1,5');
+    });
 });
 
-// Limpiar cachÃ© de Railway
-Route::get('/limpiar-cache', function () {
-    Artisan::call('config:clear');
-    Artisan::call('cache:clear');
-    Artisan::call('route:clear');
-    Artisan::call('view:clear');
-    return response()->json(['message' => 'Â¡Memoria de Railway reseteada con Ã©xito!']);
-});
+// Mantenimiento del servidor: solo Root (0) autenticado
+Route::middleware(['auth:sanctum', 'role:0'])->prefix('maintenance')->group(function () {
+    Route::post('/clear-cache', function () {
+        Artisan::call('config:clear');
+        Artisan::call('cache:clear');
+        Artisan::call('route:clear');
+        Artisan::call('view:clear');
+        return response()->json(['message' => 'Caché limpiada correctamente.']);
+    });
 
-Route::get('/run-migrations-pago', function () {
-    \Illuminate\Support\Facades\Artisan::call('migrate', ['--force' => true]);
-    return "Migraciones ejecutadas exitosamente!";
-});
-
-
-Route::get('/debug-quote-21', function () {
-    return \App\Models\Quote::find(21);
+    Route::post('/migrate', function () {
+        Artisan::call('migrate', ['--force' => true]);
+        return response()->json(['message' => 'Migraciones ejecutadas.', 'output' => Artisan::output()]);
+    });
 });
 
 // ========================================================
