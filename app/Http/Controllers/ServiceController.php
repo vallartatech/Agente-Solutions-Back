@@ -1086,6 +1086,7 @@ class ServiceController extends Controller
                     'work_orders.description',
                     'work_orders.status',
                     'work_orders.tecnico_id',
+                    'work_orders.batch_id',
                     'work_orders.scheduled_at',
                     'work_orders.arrival_status',
                     'work_orders.arrived_at',
@@ -1149,6 +1150,13 @@ class ServiceController extends Controller
                 return $elegido;
             })->values();
             $servicios = $otros->values()->concat($levantamientos);
+
+            // Ícono de QR de acceso en la tarjeta (solo la bandera, nunca la imagen)
+            try {
+                \App\Services\AccesoQr::marcarListado($workOrders, $servicios);
+            } catch (\Throwable $e) {
+                Log::warning('No se pudo marcar QR de acceso en la lista del técnico: ' . $e->getMessage());
+            }
 
             // 3. Unificar normalizando campos para el frontend
             $unificados = $servicios->map(function ($s) {

@@ -9,6 +9,21 @@ use App\Traits\TenantScoped;
 class Service extends Model
 {
     use HasFactory, TenantScoped;
+
+    protected static function booted(): void
+    {
+        // QR de acceso: se borra cuando el servicio queda finalizado, cancelado o rechazado
+        static::updated(function (Service $servicio) {
+            if ($servicio->wasChanged('status') && \App\Services\AccesoQr::cerrado($servicio->status)) {
+                try {
+                    \App\Services\AccesoQr::purgarSiCerrado($servicio);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error("QR de acceso del servicio {$servicio->id}: " . $e->getMessage());
+                }
+            }
+        });
+    }
+
     protected $fillable = [
         'tenant_id',
         'property_id',

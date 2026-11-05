@@ -27,6 +27,7 @@ use App\Http\Controllers\TenantController;
 use App\Http\Controllers\SpecialtyController;
 use App\Http\Controllers\PropertyManagerController;
 use App\Http\Controllers\TechnicianReviewController;
+use App\Http\Controllers\AccesoQrController;
 
 // ========================================================
 // ðŸŸ¢ ZONA PÃšBLICA (Sin Token - Cualquiera puede entrar)
@@ -884,6 +885,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/work-orders/{id}/status', [PropertyController::class, 'updateWorkOrderStatus']);
     // Trabajos con varios elementos y ciclos de mantenimiento (Agente Solutions)
     Route::get('/work-orders/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDeOrden']);
+
+    // --- QR DE ACCESO A LA PROPIEDAD (tipo: work_order | servicio) ---
+    // Ver: Root/Admin siempre; Técnico asignado solo tras confirmar llegada. Subir/eliminar: Root/Admin.
+    Route::get('/trabajos/{tipo}/{id}/acceso-qr', [AccesoQrController::class, 'index'])
+        ->where(['tipo' => 'work_order|servicio', 'id' => '[0-9]+']);
+    Route::get('/trabajos/{tipo}/{id}/acceso-qr/{slot}/imagen', [AccesoQrController::class, 'imagen'])
+        ->where(['tipo' => 'work_order|servicio', 'id' => '[0-9]+', 'slot' => '[12]']);
+    Route::post('/trabajos/{tipo}/{id}/acceso-qr', [AccesoQrController::class, 'store'])
+        ->where(['tipo' => 'work_order|servicio', 'id' => '[0-9]+'])->middleware('role:0,1');
+    Route::delete('/trabajos/{tipo}/{id}/acceso-qr/{slot}', [AccesoQrController::class, 'destroy'])
+        ->where(['tipo' => 'work_order|servicio', 'id' => '[0-9]+', 'slot' => '[12]'])->middleware('role:0,1');
     Route::get('/mantenimiento/propiedades', [\App\Http\Controllers\MaintenanceController::class, 'propiedades']);
     Route::get('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'equipos']);
     Route::post('/mantenimiento/equipos', [\App\Http\Controllers\MaintenanceController::class, 'agregar']);

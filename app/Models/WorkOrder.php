@@ -49,6 +49,27 @@ class WorkOrder extends Model
                 \Illuminate\Support\Facades\Log::error("Ciclo de mantenimiento de la orden {$orden->id}: " . $e->getMessage());
             }
         });
+
+        // QR de acceso: se borra cuando la orden (o todo su lote) queda finalizada, cancelada o rechazada
+        static::updated(function (WorkOrder $orden) {
+            if ($orden->wasChanged('status') && \App\Services\AccesoQr::cerrado($orden->status)) {
+                try {
+                    \App\Services\AccesoQr::purgarSiCerrado($orden);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error("QR de acceso de la orden {$orden->id}: " . $e->getMessage());
+                }
+            }
+        });
+        // Al borrar una orden de un lote, si ya no queda ninguna abierta se borra el QR del lote
+        static::deleted(function (WorkOrder $orden) {
+            if ($orden->batch_id) {
+                try {
+                    \App\Services\AccesoQr::purgarSiCerrado($orden, 'Orden eliminada');
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::error("QR de acceso del lote {$orden->batch_id}: " . $e->getMessage());
+                }
+            }
+        });
     }
 
     public function property()
