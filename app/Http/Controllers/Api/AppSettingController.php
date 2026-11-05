@@ -172,4 +172,41 @@ class AppSettingController extends Controller
         $links = $setting ? json_decode($setting->setting_value, true) : [];
         return response()->json(['success' => true, 'links' => $links], 200);
     }
+
+    // ── Datos bancarios para pagos por transferencia (sustituyen a Mercado Pago) ──
+    private const DATOS_BANCARIOS_DEFAULT = [
+        'banco' => 'Banorte',
+        'titular' => '',
+        'cuenta' => '1195878544',
+        'clabe' => '072910011958785445',
+    ];
+
+    public function getBankInfo()
+    {
+        $setting = AppSetting::where('setting_key', 'bank_info')->first();
+        $datos = $setting ? json_decode($setting->setting_value, true) : null;
+        return response()->json([
+            'success' => true,
+            'data' => array_merge(self::DATOS_BANCARIOS_DEFAULT, is_array($datos) ? $datos : []),
+        ], 200);
+    }
+
+    public function updateBankInfo(Request $request)
+    {
+        $validated = $request->validate([
+            'banco' => 'required|string|max:80',
+            'titular' => 'nullable|string|max:120',
+            'cuenta' => ['nullable', 'string', 'max:20', 'regex:/^[0-9 ]*$/'],
+            'clabe' => ['required', 'string', 'regex:/^[0-9]{18}$/'],
+        ]);
+        $validated['cuenta'] = preg_replace('/\s+/', '', (string) ($validated['cuenta'] ?? ''));
+        $validated['titular'] = $validated['titular'] ?? '';
+
+        AppSetting::updateOrCreate(
+            ['setting_key' => 'bank_info'],
+            ['setting_value' => json_encode($validated)]
+        );
+
+        return response()->json(['success' => true, 'data' => $validated], 200);
+    }
 }

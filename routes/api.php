@@ -597,6 +597,10 @@ Route::prefix('ui/settings')->group(function () {
         Route::post('/app-logo', [AppSettingController::class, 'updateAppLogo'])->middleware('role:0,1,5');
         Route::delete('/app-logo', [AppSettingController::class, 'deleteAppLogo'])->middleware('role:0,1,5');
         Route::post('/sidebar-links', [AppSettingController::class, 'updateSidebarLinks'])->middleware('role:0,1,5');
+
+        // Datos bancarios para pagos por transferencia: los lee cualquier usuario con sesión, los edita Root/Admin
+        Route::get('/bank-info', [AppSettingController::class, 'getBankInfo']);
+        Route::post('/bank-info', [AppSettingController::class, 'updateBankInfo'])->middleware('role:0,1');
     });
 });
 
