@@ -494,6 +494,7 @@ class PropertyController extends Controller
                 'id' => $r->id,
                 'description' => $r->description,
                 'image_url' => $r->image_url,
+                'stage' => $r->stage,
                 'tecnico_nombre' => $r->technician ? trim("{$r->technician->first_name} {$r->technician->last_name}") : null,
                 'created_at' => $fecha($r->created_at),
             ];
