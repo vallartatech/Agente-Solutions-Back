@@ -45,6 +45,45 @@ class ServiceController extends Controller
         ];
     }
 
+    // ── Evidencias cerradas ──
+    // Agente Solutions: el técnico deja de poder tocar sus evidencias al enviar el trabajo a aprobación;
+    // el admin puede corregirlas hasta validarlo (Listo / Finalizado). La red (Market) conserva su flujo.
+    private const ESTADOS_VALIDADOS = ['listo', 'finalizado', 'completed', 'completado', 'terminado'];
+
+    private function estadoDelTrabajo(string $column, ?int $realId): ?string
+    {
+        if (!$realId) {
+            return null;
+        }
+        $modelo = $column === 'work_order_id'
+            ? WorkOrder::withoutGlobalScopes()->find($realId)
+            : Service::withoutGlobalScopes()->find($realId);
+        return $modelo?->status;
+    }
+
+    private function motivoEvidenciaCerrada($user, ?string $estado): ?string
+    {
+        if (!$user || !in_array((int) $user->role_id, [0, 1, 2], true)) {
+            return null;
+        }
+        $estado = mb_strtolower(trim((string) $estado));
+        if (in_array($estado, self::ESTADOS_VALIDADOS, true)) {
+            return 'Este trabajo ya fue validado: sus evidencias ya no se pueden modificar.';
+        }
+        if ($estado === 'por aprobar' && !in_array((int) $user->role_id, [0, 1], true)) {
+            return 'El trabajo ya se envió a aprobación: solo el administrador puede modificar sus evidencias.';
+        }
+        return null;
+    }
+
+    private function motivoReporteCerrado($user, WorkReport $report): ?string
+    {
+        $estado = $report->work_order_id
+            ? $this->estadoDelTrabajo('work_order_id', (int) $report->work_order_id)
+            : $this->estadoDelTrabajo('service_id', $report->service_id ? (int) $report->service_id : null);
+        return $this->motivoEvidenciaCerrada($user, $estado);
+    }
+
     public function getReports($id)
     {
         try {
@@ -202,6 +241,10 @@ class ServiceController extends Controller
             $column = $parsed['column'];
             $stage = $this->etapaEvidencia($request);
 
+            if ($motivo = $this->motivoEvidenciaCerrada($request->user(), $this->estadoDelTrabajo($column, $realId))) {
+                return response()->json(['success' => false, 'error' => $motivo], 403);
+            }
+
             // Evidencia de un elemento: debe ser de este mismo trabajo
             $elementoId = $request->filled('work_order_component_id') ? (int) $request->work_order_component_id : null;
             if ($elementoId && ($column !== 'work_order_id' || !\App\Models\WorkOrderComponent::where('work_order_id', $realId)->whereKey($elementoId)->exists())) {
@@ -254,6 +297,9 @@ class ServiceController extends Controller
             if (!$report) {
                 return response()->json(['success' => false, 'error' => 'Reporte no encontrado'], 404);
             }
+            if ($motivo = $this->motivoReporteCerrado($request->user(), $report)) {
+                return response()->json(['success' => false, 'error' => $motivo], 403);
+            }
 
             $report->description = $request->description;
             $report->stage = $this->etapaEvidencia($request) ?? $report->stage;
@@ -279,12 +325,15 @@ class ServiceController extends Controller
         }
     }
 
-    public function deleteReport($id)
+    public function deleteReport(Request $request, $id)
     {
         try {
             $report = WorkReport::find($id);
             if (!$report) {
                 return response()->json(['success' => false, 'error' => 'Reporte no encontrado'], 404);
+            }
+            if ($motivo = $this->motivoReporteCerrado($request->user(), $report)) {
+                return response()->json(['success' => false, 'error' => $motivo], 403);
             }
 
             $report->delete();
