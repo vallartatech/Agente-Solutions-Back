@@ -18,8 +18,10 @@ class NetworkQuote extends Model
         return $this->belongsTo(WorkOrder::class, 'work_order_id');
     }
 
+    // El técnico de la red casi nunca es del tenant del cliente: sin quitar el TenantScope
+    // la relación salía null y no se le notificaba (chat, aceptar/rechazar, horario).
     public function technician()
     {
-        return $this->belongsTo(User::class, 'technician_id');
+        return $this->belongsTo(User::class, 'technician_id')->withoutGlobalScopes();
     }
 }

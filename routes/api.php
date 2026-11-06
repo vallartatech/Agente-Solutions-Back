@@ -1559,14 +1559,22 @@ Route::middleware('auth:sanctum')->group(function () {
                     'message' => $msgText,
                     'is_schedule_response' => true,
                     'schedule_confirmed' => $isConfirmed,
+                    'note' => $isConfirmed ? null : ($request->message ?: null),
                     'created_at' => now()->toIso8601String(),
                 ];
                 $quote->chat_history = $history;
                 $quote->save();
 
-                // Notificar al Técnico
-                if ($quote->technician) {
-                    \Illuminate\Support\Facades\Notification::send($quote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $clientName, 'Cliente'));
+                // Notificar al Técnico con un aviso específico de horario (no como mensaje genérico)
+                $tecnico = $quote->technician;
+                if ($tecnico) {
+                    try {
+                        $tecnico->notify(new \App\Notifications\VisitaRespondidaClienteNotification(
+                            $workOrder, $clientName, $isConfirmed, $request->message
+                        ));
+                    } catch (\Throwable $ne) {
+                        \Log::warning("No se pudo notificar respuesta de horario: " . $ne->getMessage());
+                    }
                 }
             }
 
