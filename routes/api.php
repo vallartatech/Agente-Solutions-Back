@@ -507,6 +507,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'full_address' => $order->property ? $order->property->address : 'DirecciÃ³n confirmada',
                     'property_name' => $order->property ? ($order->property->nombre_propiedad ?: $order->property->address) : '',
                     'client_name' => $clientName,
+                    // Usuario dueño del trabajo: agrupa "Mis clientes" y sirve para marcarlo favorito o bloquearlo
+                    'client_user_id' => \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $order->id),
                     'client_phone' => $clientPhone,
                     'client_email' => $clientEmail,
                     'agreed_price' => $acceptedQuote ? (float)$acceptedQuote->price : 0,
@@ -851,6 +853,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Mis técnicos (cliente particular): historial, favoritos y bloqueos
     Route::get('/mis-tecnicos', [\App\Http\Controllers\MisTecnicosController::class, 'index']);
     Route::put('/mis-tecnicos/{tecnicoId}', [\App\Http\Controllers\MisTecnicosController::class, 'marcar'])->whereNumber('tecnicoId');
+    // Mis clientes (técnico de la red): favoritos y bloqueos
+    Route::get('/mis-clientes', [\App\Http\Controllers\MisClientesController::class, 'index']);
+    Route::put('/mis-clientes/{clienteId}', [\App\Http\Controllers\MisClientesController::class, 'marcar'])->whereNumber('clienteId');
 
     // Chat interno del equipo
     Route::get('/chats', [\App\Http\Controllers\ChatController::class, 'index']);
@@ -1206,9 +1211,12 @@ Route::middleware('auth:sanctum')->group(function () {
             return response()->json(['message' => 'No autorizado'], 401);
         }
 
-        // Mis técnicos: el técnico bloqueado por el dueño del trabajo ya no puede escribirle
-        if (in_array((int)$user->role_id, [2, 6, 8]) && \App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$quote->work_order_id, (int)$user->id)) {
-            return response()->json(['message' => 'Este cliente ya no recibe mensajes tuyos.'], 403);
+        // Mis técnicos / Mis clientes: si cliente y técnico están bloqueados (cualquiera de los dos bloqueó), nadie escribe
+        if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$quote->work_order_id, (int)$quote->technician_id)) {
+            $esTecnico = in_array((int)$user->role_id, [2, 6, 8]);
+            return response()->json([
+                'message' => $esTecnico ? 'Este cliente ya no recibe mensajes tuyos.' : 'Este técnico ya no recibe mensajes tuyos.'
+            ], 403);
         }
 
         $senderRole = 'Usuario';

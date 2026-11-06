@@ -87,7 +87,8 @@ class MisTecnicosController extends Controller
             }
         }
 
-        $relaciones = ClientTechnicianRelation::where('client_user_id', $user->id)->pluck('status', 'technician_id');
+        $relaciones = ClientTechnicianRelation::where('client_user_id', $user->id)
+            ->where('set_by', ClientTechnicianRelation::POR_CLIENTE)->pluck('status', 'technician_id');
         $ids = collect(array_keys($porTecnico))->merge($relaciones->keys())->map(fn ($i) => (int) $i)->unique();
 
         // Solo datos públicos del técnico: sin correo, teléfono ni dirección
@@ -138,7 +139,8 @@ class MisTecnicosController extends Controller
             return response()->json(['message' => 'Técnico no válido.'], 422);
         }
 
-        $relacion = ClientTechnicianRelation::where('client_user_id', $user->id)->where('technician_id', $tecnicoId)->first();
+        $relacion = ClientTechnicianRelation::where('client_user_id', $user->id)->where('technician_id', $tecnicoId)
+            ->where('set_by', ClientTechnicianRelation::POR_CLIENTE)->first();
         if (!$relacion && !$this->esDeSuHistorial($user, $tecnicoId)) {
             return response()->json(['message' => 'Este técnico no ha trabajado contigo.'], 403);
         }
@@ -149,8 +151,8 @@ class MisTecnicosController extends Controller
         }
 
         ClientTechnicianRelation::updateOrCreate(
-            ['client_user_id' => $user->id, 'technician_id' => $tecnicoId],
-            ['status' => $data['estado'], 'tenant_id' => $user->tenant_id]
+            ['client_user_id' => $user->id, 'technician_id' => $tecnicoId, 'set_by' => ClientTechnicianRelation::POR_CLIENTE],
+            ['status' => $data['estado'], 'tenant_id' => ClientTechnicianRelation::tenantDeBloqueo($user->tenant_id)]
         );
 
         return response()->json(['success' => true, 'estado' => $data['estado']]);
@@ -165,6 +167,7 @@ class MisTecnicosController extends Controller
     }
 
     // ── Bloqueos: los usan las rutas de la red ──
+    // Cuentan los dos sentidos: el cliente bloqueó al técnico o el técnico bloqueó al cliente.
 
     private static function bloqueosDe(int $tecnicoId)
     {
@@ -173,7 +176,7 @@ class MisTecnicosController extends Controller
             ->get(['client_user_id', 'tenant_id']);
     }
 
-    // Quita de una consulta de órdenes las de los clientes que bloquearon al técnico
+    // Quita de una consulta de órdenes las de clientes bloqueados con el técnico (en cualquier sentido)
     public static function excluirBloqueados($query, ?int $tecnicoId): void
     {
         if (!$tecnicoId) return;
@@ -197,7 +200,7 @@ class MisTecnicosController extends Controller
         }
     }
 
-    // ¿El dueño de esta orden bloqueó al técnico?
+    // ¿El dueño de esta orden y el técnico están bloqueados (en cualquier sentido)?
     public static function estaBloqueado(int $workOrderId, int $tecnicoId): bool
     {
         $orden = DB::table('work_orders')
