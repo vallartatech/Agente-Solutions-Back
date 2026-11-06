@@ -49,6 +49,15 @@ class SpecialtyController extends Controller
             return response()->json(['success' => false, 'message' => 'Usuario no encontrado'], 404);
         }
 
+        // Solo el propio técnico, Root/Admin, o un contratista/gestor de la misma empresa
+        $actor = $request->user();
+        $mismoTenant = !empty($actor?->tenant_id) && (int) $actor->tenant_id === (int) $user->tenant_id
+            && in_array((int) $actor->role_id, [4, 5, 7], true);
+        $esAdmin = $actor && in_array((int) $actor->role_id, [0, 1], true);
+        if (!$actor || ((int) $actor->id !== (int) $user->id && !$esAdmin && !$mismoTenant)) {
+            return response()->json(['success' => false, 'message' => 'No tienes permiso para cambiar las especialidades de este usuario.'], 403);
+        }
+
         $specialties = $request->input('specialties', []);
         $specialtyIds = [];
 

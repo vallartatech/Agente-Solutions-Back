@@ -16,6 +16,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => \App\Http\Middleware\EnsureUserHasRole::class,
         ]);
+        // Técnicos nuevos de la red: solo "completar perfil" hasta que Admin/Root los apruebe
+        $middleware->appendToGroup('api', \App\Http\Middleware\EnsureTecnicoValidado::class);
     })
     ->withExceptions(function (Exceptions $exceptions) {
 

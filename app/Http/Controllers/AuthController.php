@@ -367,11 +367,22 @@ class AuthController extends Controller
         $token = $user->createToken('AgenteToken')->plainTextToken;
         $user->load(['tenant', 'specialties']);
 
+        // Técnicos de la red: si aún no los validan, el frontend los manda a "Completa tu perfil"
+        $perfilProfesional = null;
+        if (\App\Services\PerfilProfesional::esTecnicoRed($user)) {
+            $perfil = \App\Services\PerfilProfesional::perfilDe($user);
+            $perfilProfesional = [
+                'bloqueado' => \App\Services\PerfilProfesional::estaBloqueado($user),
+                'estado' => $perfil->estado ?? 'incompleto',
+            ];
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Inicio de sesión exitoso',
             'user' => $user,
-            'token' => $token
+            'token' => $token,
+            'perfil_profesional' => $perfilProfesional,
         ], 200);
     }
 

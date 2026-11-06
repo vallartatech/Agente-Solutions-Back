@@ -639,6 +639,26 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tenants/pending-technicians', [TenantController::class, 'pendingTechnicians']);
     Route::post('/tenants/approve-technician/{userId}', [TenantController::class, 'approveTechnician']);
 
+    // --- PERFIL PROFESIONAL DE TÉCNICOS DE LA RED (roles 6 y 8) ---
+    // Técnico: completar su perfil (lo único que puede usar hasta que Admin/Root lo apruebe)
+    Route::get('/tecnico/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'mio']);
+    Route::post('/tecnico/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'guardar']);
+    Route::post('/tecnico/perfil-profesional/ine', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirIne']);
+    Route::post('/tecnico/perfil-profesional/cursos', [\App\Http\Controllers\PerfilProfesionalController::class, 'agregarCurso']);
+    Route::delete('/tecnico/perfil-profesional/cursos/{id}', [\App\Http\Controllers\PerfilProfesionalController::class, 'borrarCurso']);
+    Route::post('/tecnico/perfil-profesional/enviar', [\App\Http\Controllers\PerfilProfesionalController::class, 'enviar']);
+    // INE y diplomas (privados): el propio técnico y Admin/Root
+    Route::get('/perfil-profesional/{userId}/archivo/{tipo}/{cursoId?}', [\App\Http\Controllers\PerfilProfesionalController::class, 'archivo']);
+    // Clientes: perfil por niveles (RFC y CLABE solo si ya lo contrató)
+    Route::get('/tecnicos/{userId}/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'publico']);
+    // Admin/Root: validar
+    Route::middleware('role:0,1')->group(function () {
+        Route::get('/admin/perfiles-profesionales', [\App\Http\Controllers\PerfilProfesionalController::class, 'porValidar']);
+        Route::get('/admin/perfiles-profesionales/{userId}', [\App\Http\Controllers\PerfilProfesionalController::class, 'detalleAdmin']);
+        Route::post('/admin/perfiles-profesionales/{userId}/aprobar', [\App\Http\Controllers\PerfilProfesionalController::class, 'aprobar']);
+        Route::post('/admin/perfiles-profesionales/{userId}/rechazar', [\App\Http\Controllers\PerfilProfesionalController::class, 'rechazar']);
+    });
+
     // --- USUARIOS Y PERFILES ---
     Route::post('/specialties', [SpecialtyController::class, 'store']);
     Route::get('/users/{id}/specialties', [SpecialtyController::class, 'getUserSpecialties']);
