@@ -1072,7 +1072,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 'evidence_path_2' => $path2,
                 'tecnico_id' => $tecnicoId,
                 'status' => $status,
-                'priority' => $request->priority ?: ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
+                // La columna es enum('Normal','Urgente'): cualquier otro valor tumbaría el INSERT
+                'priority' => in_array($request->priority, ['Normal', 'Urgente'], true)
+                    ? $request->priority
+                    : ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
                 'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
                 'publish_network' => $publishNetwork,
             ]);
