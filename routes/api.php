@@ -256,6 +256,9 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                   ->whereDoesntHave('networkQuotes', function ($nq) {
                       $nq->where('status', 'accepted');
                   });
+
+            // Mis técnicos: el cliente que bloqueó al técnico ya no le aparece en la red
+            \App\Http\Controllers\MisTecnicosController::excluirBloqueados($query, $authUser?->id);
         }
 
         $jobs = $query->orderBy('created_at', 'desc')->get();
@@ -504,6 +507,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'full_address' => $order->property ? $order->property->address : 'DirecciÃ³n confirmada',
                     'property_name' => $order->property ? ($order->property->nombre_propiedad ?: $order->property->address) : '',
                     'client_name' => $clientName,
+                    // Usuario dueño del trabajo: agrupa "Mis clientes" y sirve para marcarlo favorito o bloquearlo
+                    'client_user_id' => \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $order->id),
                     'client_phone' => $clientPhone,
                     'client_email' => $clientEmail,
                     'agreed_price' => $acceptedQuote ? (float)$acceptedQuote->price : 0,
@@ -865,6 +870,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/calendar/events/{id}/remind', [\App\Http\Controllers\CalendarEventController::class, 'remind']);
 
     // Comprobantes de gastos (Agente Solutions / Mantenere)
+    // Mis técnicos (cliente particular): historial, favoritos y bloqueos
+    Route::get('/mis-tecnicos', [\App\Http\Controllers\MisTecnicosController::class, 'index']);
+    Route::put('/mis-tecnicos/{tecnicoId}', [\App\Http\Controllers\MisTecnicosController::class, 'marcar'])->whereNumber('tecnicoId');
+    // Mis clientes (técnico de la red): favoritos y bloqueos
+    Route::get('/mis-clientes', [\App\Http\Controllers\MisClientesController::class, 'index']);
+    Route::put('/mis-clientes/{clienteId}', [\App\Http\Controllers\MisClientesController::class, 'marcar'])->whereNumber('clienteId');
+
     // Chat interno del equipo
     Route::get('/chats', [\App\Http\Controllers\ChatController::class, 'index']);
     Route::get('/chats/no-leidos', [\App\Http\Controllers\ChatController::class, 'noLeidos']);
@@ -1219,6 +1231,14 @@ Route::middleware('auth:sanctum')->group(function () {
             return response()->json(['message' => 'No autorizado'], 401);
         }
 
+        // Mis técnicos / Mis clientes: si cliente y técnico están bloqueados (cualquiera de los dos bloqueó), nadie escribe
+        if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$quote->work_order_id, (int)$quote->technician_id)) {
+            $esTecnico = in_array((int)$user->role_id, [2, 6, 8]);
+            return response()->json([
+                'message' => $esTecnico ? 'Este cliente ya no recibe mensajes tuyos.' : 'Este técnico ya no recibe mensajes tuyos.'
+            ], 403);
+        }
+
         $senderRole = 'Usuario';
         if (in_array((int)$user->role_id, [3, 4, 5, 7]))
             $senderRole = 'Cliente';
@@ -1275,6 +1295,10 @@ Route::middleware('auth:sanctum')->group(function () {
         if (!$user) return response()->json(['success' => false, 'message' => 'No autorizado'], 401);
 
         $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
+
+        if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)) {
+            return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+        }
 
         // Validar restricciÃ³n activa de 24h (DESACTIVADO TEMPORALMENTE A PETICIÃ“N DEL USUARIO PARA PRUEBAS)
         $isBlocked = false;
@@ -1356,6 +1380,10 @@ Route::middleware('auth:sanctum')->group(function () {
             }
 
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client'])->findOrFail($id);
+
+            if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)) {
+                return response()->json(['success' => false, 'message' => 'Este cliente ya no recibe mensajes tuyos.'], 403);
+            }
 
             // Buscar si ya existe una cotizaciÃ³n / chat de este tÃ©cnico para este trabajo
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
