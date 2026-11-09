@@ -79,7 +79,7 @@ return new class extends Migration
         $tecnico->save();
 
         // Especialidades
-        $specs = ['Electricidad', 'Plomería', 'Aire Acondicionado', 'Pintura', 'Cerrajería', 'Albañilería', 'Refrigeración', 'Mantenimiento General'];
+        $specs = ['Electricidad', 'Plomería', 'Aire Acondicionado (HVAC)', 'Pintura e Impermeabilización', 'Cerrajería y Seguridad', 'Albañilería y Remodelación', 'Refrigeración', 'Mantenimiento General'];
         $specIds = [];
         foreach ($specs as $spName) {
             $sp = Specialty::firstOrCreate(

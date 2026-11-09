@@ -4,9 +4,13 @@ namespace App\Notifications;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
-use NotificationChannels\OneSignal\OneSignalChannel;
-use NotificationChannels\OneSignal\OneSignalMessage;
 
+/**
+ * Aviso genérico para la campanita (solo base de datos).
+ * La push se envía aparte con App\Services\OneSignalPush, como el resto del sistema.
+ *
+ * Datos: titulo, mensaje, url y, opcionales, alert_type y extra (datos adicionales).
+ */
 class MovimientoNotificacion extends Notification
 {
     use Queueable;
@@ -18,28 +22,21 @@ class MovimientoNotificacion extends Notification
         $this->datosMovimiento = $datosMovimiento;
     }
 
-    // Aquí le decimos a Laravel que guarde en la BD y envíe por OneSignal
     public function via($notifiable)
     {
-        return ['database', OneSignalChannel::class];
+        return ['database'];
     }
 
-    // 1. LO QUE SE GUARDA PARA TU CAMPANITA EN REACT
-    public function toDatabase($notifiable)
+    // La campanita lee title, message, url y alert_type
+    public function toArray($notifiable)
     {
-        return [
-            'titulo' => $this->datosMovimiento['titulo'] ?? 'Nuevo Movimiento',
-            'mensaje' => $this->datosMovimiento['mensaje'],
-            'url' => $this->datosMovimiento['url']
-        ];
-    }
+        $d = $this->datosMovimiento;
 
-    // 2. LO QUE HACE VIBRAR EL TELÉFONO DEL USUARIO
-    public function toOneSignal($notifiable)
-    {
-        return OneSignalMessage::create()
-            ->setSubject($this->datosMovimiento['titulo'] ?? 'Design Async')
-            ->setBody($this->datosMovimiento['mensaje'])
-            ->setUrl(url($this->datosMovimiento['url'])); // Redirige a la ruta correcta
+        return array_merge($d['extra'] ?? [], [
+            'alert_type' => $d['alert_type'] ?? 'movimiento',
+            'title' => $d['titulo'] ?? 'Nuevo movimiento',
+            'message' => $d['mensaje'] ?? '',
+            'url' => $d['url'] ?? null,
+        ]);
     }
 }

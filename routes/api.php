@@ -649,6 +649,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tecnico/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'mio']);
     Route::post('/tecnico/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'guardar']);
     Route::post('/tecnico/perfil-profesional/ine', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirIne']);
+    Route::post('/tecnico/perfil-profesional/foto', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirFoto']);
+    Route::post('/tecnico/perfil-profesional/documento/{tipo}', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirDocumento'])
+        ->whereIn('tipo', ['comprobante_domicilio', 'antecedentes_penales']);
     Route::post('/tecnico/perfil-profesional/cursos', [\App\Http\Controllers\PerfilProfesionalController::class, 'agregarCurso']);
     Route::delete('/tecnico/perfil-profesional/cursos/{id}', [\App\Http\Controllers\PerfilProfesionalController::class, 'borrarCurso']);
     Route::post('/tecnico/perfil-profesional/enviar', [\App\Http\Controllers\PerfilProfesionalController::class, 'enviar']);

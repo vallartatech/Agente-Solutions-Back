@@ -78,12 +78,21 @@ class PerfilProfesionalController extends Controller
             'experiencias.*.desde_anio' => 'nullable|integer|min:1950|max:' . date('Y'),
             'experiencias.*.hasta_anio' => 'nullable|integer|min:1950|max:' . date('Y'),
             'experiencias.*.descripcion' => 'nullable|string|max:500',
+            'fecha_nacimiento' => ['sometimes', 'nullable', 'date', 'after_or_equal:1930-01-01', 'before_or_equal:' . now()->subYears(18)->toDateString()],
+        ], [
+            'fecha_nacimiento.before_or_equal' => 'Debes ser mayor de edad para trabajar en la red.',
+            'fecha_nacimiento.after_or_equal' => 'Revisa tu fecha de nacimiento.',
+            'fecha_nacimiento.date' => 'Revisa tu fecha de nacimiento.',
         ]);
 
         $perfil = PerfilProfesional::perfilOCrear($user);
 
         DB::transaction(function () use ($datos, $perfil, $user) {
-            $campos = collect($datos)->except(['especialidades', 'experiencias'])->all();
+            $campos = collect($datos)->except(['especialidades', 'experiencias', 'fecha_nacimiento'])->all();
+            if (array_key_exists('fecha_nacimiento', $datos)) {
+                // La fecha vive en users (la usa también el calendario de cumpleaños)
+                $user->forceFill(['birth_date' => $datos['fecha_nacimiento']])->save();
+            }
             $cambioEstudios = array_key_exists('nivel_estudios', $campos) && $campos['nivel_estudios'] !== $perfil->nivel_estudios;
 
             // Sin factura no se guardan datos fiscales
@@ -115,6 +124,67 @@ class PerfilProfesionalController extends Controller
                 PerfilProfesional::marcarCambio($perfil, 'estudios');
             }
         });
+
+        return response()->json(['success' => true, 'data' => $this->serializar($perfil->fresh(), $user, 'propio')]);
+    }
+
+    /** Foto de perfil (obligatoria): Cloudinary, igual que en "Mi perfil". Permitida con la cuenta bloqueada. */
+    public function subirFoto(Request $request)
+    {
+        $user = $request->user();
+        if (!PerfilProfesional::esTecnicoRed($user)) {
+            return response()->json(['message' => 'Solo para técnicos de la red.'], 403);
+        }
+        $request->validate(['foto' => 'required|image|mimes:jpeg,png,jpg,webp|max:10240'], [
+            'foto.required' => 'Elige una foto.',
+            'foto.image' => 'La foto debe ser una imagen (JPG, PNG o WEBP).',
+            'foto.mimes' => 'La foto debe ser una imagen (JPG, PNG o WEBP).',
+            'foto.max' => 'La foto pesa más de 10 MB.',
+        ]);
+
+        try {
+            $cloudinary = new \Cloudinary\Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
+            $subida = $cloudinary->uploadApi()->upload($request->file('foto')->getRealPath(), ['folder' => 'agente_perfiles']);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json(['message' => 'No se pudo subir la foto. Intenta de nuevo.'], 500);
+        }
+
+        $user->forceFill(['profile_picture' => $subida['secure_url']])->save();
+        $perfil = PerfilProfesional::perfilOCrear($user);
+
+        return response()->json(['success' => true, 'url' => $subida['secure_url'], 'data' => $this->serializar($perfil, $user->fresh(), 'propio')]);
+    }
+
+    // Documentos privados que se suben por separado (tipo => columna)
+    private const DOCUMENTOS = [
+        'comprobante_domicilio' => 'comprobante_domicilio_path',
+        'antecedentes_penales' => 'antecedentes_penales_path',
+    ];
+
+    /** Comprobante de domicilio o antecedentes no penales (foto o PDF, privado). */
+    public function subirDocumento(Request $request, $tipo)
+    {
+        $user = $request->user();
+        if (!PerfilProfesional::esTecnicoRed($user)) {
+            return response()->json(['message' => 'Solo para técnicos de la red.'], 403);
+        }
+        if (!isset(self::DOCUMENTOS[$tipo])) {
+            return response()->json(['message' => 'Documento no válido.'], 422);
+        }
+        $request->validate(['archivo' => 'required|' . self::ARCHIVO_REGLA], [
+            'archivo.required' => 'Elige el archivo del documento.',
+            'archivo.mimes' => 'El documento debe ser una foto (JPG, PNG, WEBP, HEIC) o un PDF.',
+            'archivo.max' => 'El archivo pesa más de 8 MB.',
+        ]);
+
+        $perfil = PerfilProfesional::perfilOCrear($user);
+        $columna = self::DOCUMENTOS[$tipo];
+        $anterior = $perfil->{$columna};
+        $perfil->{$columna} = $request->file('archivo')->store("kyc/{$user->id}", self::DISCO);
+        if ($anterior) Storage::disk(self::DISCO)->delete($anterior);
+        // Un documento nuevo se vuelve a revisar (si ya estaba aprobado, sin bloquear la cuenta)
+        PerfilProfesional::marcarCambio($perfil, 'identidad');
 
         return response()->json(['success' => true, 'data' => $this->serializar($perfil->fresh(), $user, 'propio')]);
     }
@@ -231,6 +301,8 @@ class PerfilProfesionalController extends Controller
         $ruta = null;
         if ($tipo === 'ine_frente' || $tipo === 'ine_reverso') {
             $ruta = TechnicianProfile::where('user_id', $userId)->value("{$tipo}_path");
+        } elseif (isset(self::DOCUMENTOS[$tipo])) {
+            $ruta = TechnicianProfile::where('user_id', $userId)->value(self::DOCUMENTOS[$tipo]);
         } elseif ($tipo === 'curso' && $cursoId) {
             $ruta = TechnicianCourse::where('user_id', $userId)->where('id', $cursoId)->value('archivo_path');
         }
@@ -381,6 +453,17 @@ class PerfilProfesionalController extends Controller
         $data = [
             'user_id' => $tecnico->id,
             'nombre' => trim("{$tecnico->first_name} {$tecnico->last_name}"),
+            'foto' => $tecnico->profile_picture,
+            'rol' => (int) $tecnico->role_id === 8 ? 'Técnico de cuadrilla' : 'Técnico independiente',
+            'miembro_desde' => optional($tecnico->created_at)->toDateString(),
+            'edad' => PerfilProfesional::edad($tecnico->birth_date ?? null),
+            'calificacion' => $tecnico->total_reviews_count ? round((float) $tecnico->rating_stars_avg, 1) : null,
+            'puntualidad' => $tecnico->total_reviews_count ? round((float) $tecnico->rating_time_avg, 1) : null,
+            'total_resenas' => (int) ($tecnico->total_reviews_count ?? 0),
+            'trabajos_terminados' => DB::table('work_orders')
+                ->where('tecnico_id', $tecnico->id)
+                ->whereIn('status', ['Terminado', 'Listo', 'Finalizado', 'Completado'])
+                ->count(),
             'insignias' => [
                 'identidad_verificada' => (bool) $perfil->identidad_verificada_at,
                 'estudios_verificados' => (bool) $perfil->estudios_verificados_at,
@@ -419,10 +502,13 @@ class PerfilProfesionalController extends Controller
                 'motivo_rechazo' => $perfil->motivo_rechazo,
                 'enviado_at' => $perfil->enviado_at,
                 'revisado_at' => $perfil->revisado_at,
+                'fecha_nacimiento' => $tecnico->birth_date ? \Illuminate\Support\Carbon::parse($tecnico->birth_date)->toDateString() : null,
                 'sin_cursos' => (bool) $perfil->sin_cursos,
                 'sin_empleos' => (bool) $perfil->sin_empleos,
                 'tiene_ine_frente' => (bool) $perfil->ine_frente_path,
                 'tiene_ine_reverso' => (bool) $perfil->ine_reverso_path,
+                'tiene_comprobante_domicilio' => (bool) $perfil->comprobante_domicilio_path,
+                'tiene_antecedentes_penales' => (bool) $perfil->antecedentes_penales_path,
                 'faltantes' => PerfilProfesional::faltantes($perfil, $tecnico),
                 'niveles_estudios' => PerfilProfesional::NIVELES_ESTUDIOS,
             ];
@@ -433,6 +519,7 @@ class PerfilProfesionalController extends Controller
                 'email' => $tecnico->email,
                 'telefono' => $tecnico->phone_number,
                 'role_id' => (int) $tecnico->role_id,
+                'registrado_at' => optional($tecnico->created_at)->toIso8601String(),
             ];
         }
 

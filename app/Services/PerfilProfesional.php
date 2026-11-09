@@ -111,6 +111,28 @@ class PerfilProfesional
      * Lo que le falta para poder enviarlo a revisión: [clave => texto].
      * Cursos y empleos anteriores son opcionales.
      */
+    /** Mayor de edad y fecha razonable (1930 en adelante). */
+    public static function fechaNacimientoValida($fecha): bool
+    {
+        if (!$fecha) return false;
+        try {
+            $f = \Illuminate\Support\Carbon::parse($fecha);
+        } catch (\Throwable $e) {
+            return false;
+        }
+        return $f->year >= 1930 && $f->lte(now()->subYears(18));
+    }
+
+    public static function edad($fecha): ?int
+    {
+        if (!$fecha) return null;
+        try {
+            return \Illuminate\Support\Carbon::parse($fecha)->age;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     public static function faltantes(TechnicianProfile $perfil, User $user): array
     {
         $f = [];
@@ -128,8 +150,12 @@ class PerfilProfesional
         if ($perfil->anios_experiencia === null) $f['anios_experiencia'] = 'Años de experiencia';
         if (!array_key_exists((string) $perfil->nivel_estudios, self::NIVELES_ESTUDIOS)) $f['nivel_estudios'] = 'Nivel de estudios';
         if (mb_strlen(trim((string) $perfil->presentacion)) < 20) $f['presentacion'] = 'Presentación (mínimo 20 caracteres)';
+        if (!preg_match('#^https?://#i', (string) $user->profile_picture)) $f['foto'] = 'Foto de perfil';
+        if (!self::fechaNacimientoValida($user->birth_date ?? null)) $f['fecha_nacimiento'] = 'Fecha de nacimiento';
         if (!$perfil->ine_frente_path) $f['ine_frente'] = 'INE (frente)';
         if (!$perfil->ine_reverso_path) $f['ine_reverso'] = 'INE (reverso)';
+        if (!$perfil->comprobante_domicilio_path) $f['comprobante_domicilio'] = 'Comprobante de domicilio';
+        if (!$perfil->antecedentes_penales_path) $f['antecedentes_penales'] = 'Antecedentes no penales';
         return $f;
     }
 
@@ -183,39 +209,70 @@ class PerfilProfesional
         if (!$tecnico) {
             return;
         }
-        try {
-            $revisores = User::withoutGlobalScopes()
-                ->where('role_id', 0)
-                ->where('is_active', 1)
-                ->get();
-            $nombre = trim("{$tecnico->first_name} {$tecnico->last_name}") ?: 'Un técnico';
-            foreach ($revisores as $revisor) {
-                $revisor->notify(new \App\Notifications\MovimientoNotificacion([
-                    'titulo' => $esCambio ? 'Técnico actualizó su perfil' : 'Técnico por validar',
-                    'mensaje' => $esCambio
-                        ? "{$nombre} cambió datos verificados de su perfil. Revísalos."
-                        : "{$nombre} envió su perfil profesional para revisión.",
-                    'url' => '/sala-espera-tecnicos?validar=' . $tecnico->id,
-                ]));
-            }
-        } catch (\Throwable $e) {
-            report($e);
-        }
+        $revisores = User::withoutGlobalScopes()
+            ->where('role_id', 0)
+            ->where('is_active', 1)
+            ->get();
+        $nombre = trim("{$tecnico->first_name} {$tecnico->last_name}") ?: 'Un técnico';
+
+        self::notificar(
+            $revisores,
+            $esCambio ? '🛡️ Técnico actualizó su perfil' : '🛡️ Técnico por validar',
+            $esCambio
+                ? "{$nombre} cambió datos verificados de su perfil. Revísalos."
+                : "{$nombre} envió su perfil profesional para revisión.",
+            '/sala-espera-tecnicos?validar=' . $tecnico->id,
+            ['tecnico_id' => $tecnico->id]
+        );
     }
 
     /** Aviso al técnico del resultado de la revisión. */
     public static function avisarTecnico(User $tecnico, bool $aprobado, ?string $motivo = null): void
     {
-        try {
-            $tecnico->notify(new \App\Notifications\MovimientoNotificacion([
-                'titulo' => $aprobado ? '¡Perfil aprobado!' : 'Revisa tu perfil profesional',
-                'mensaje' => $aprobado
-                    ? 'Tu perfil fue validado. Ya puedes usar tu cuenta y cotizar en la red.'
-                    : 'Tu perfil necesita correcciones: ' . $motivo,
-                'url' => $aprobado ? '/mercado-trabajos' : '/completar-perfil',
-            ]));
-        } catch (\Throwable $e) {
-            report($e);
+        self::notificar(
+            collect([$tecnico]),
+            $aprobado ? '✅ ¡Perfil aprobado!' : '⚠️ Revisa tu perfil profesional',
+            $aprobado
+                ? 'Tu perfil fue validado. Ya puedes usar tu cuenta y cotizar en la red.'
+                : 'Tu perfil necesita correcciones: ' . $motivo,
+            $aprobado ? '/mercado-trabajos' : '/completar-perfil',
+            ['tecnico_id' => $tecnico->id, 'aprobado' => $aprobado]
+        );
+    }
+
+    /**
+     * Campanita (BD) + push (OneSignal por external_id). Cada parte falla por separado
+     * sin detener el flujo de revisión.
+     */
+    private static function notificar($usuarios, string $titulo, string $mensaje, string $url, array $extra = []): void
+    {
+        if ($usuarios->isEmpty()) {
+            return;
+        }
+
+        foreach ($usuarios as $usuario) {
+            try {
+                $usuario->notify(new \App\Notifications\MovimientoNotificacion([
+                    'alert_type' => 'perfil_profesional',
+                    'titulo' => $titulo,
+                    'mensaje' => $mensaje,
+                    'url' => $url,
+                    'extra' => $extra,
+                ]));
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
+        $push = OneSignalPush::sendToUsers(
+            $usuarios->pluck('id')->all(),
+            $titulo,
+            $mensaje,
+            $url,
+            array_merge(['alert_type' => 'perfil_profesional'], $extra)
+        );
+        if (!$push['sent']) {
+            \Illuminate\Support\Facades\Log::warning('Push de perfil profesional no enviada', $push);
         }
     }
 }

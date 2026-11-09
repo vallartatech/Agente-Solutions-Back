@@ -18,11 +18,11 @@ class TechnicianProfile extends Model
         'emite_factura', 'rfc', 'razon_social', 'banco', 'titular_cuenta', 'clabe',
         'acepta_efectivo', 'tiene_terminal',
         'anios_experiencia', 'nivel_estudios', 'presentacion', 'sin_cursos', 'sin_empleos',
-        'ine_frente_path', 'ine_reverso_path',
+        'ine_frente_path', 'ine_reverso_path', 'comprobante_domicilio_path', 'antecedentes_penales_path',
     ];
 
     // Nunca se mandan las rutas internas de los archivos privados
-    protected $hidden = ['ine_frente_path', 'ine_reverso_path'];
+    protected $hidden = ['ine_frente_path', 'ine_reverso_path', 'comprobante_domicilio_path', 'antecedentes_penales_path'];
 
     protected $casts = [
         'obligatorio' => 'boolean',
