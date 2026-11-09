@@ -174,6 +174,9 @@ Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) 
 Route::get('/technicians/{id}/reviews', [TechnicianReviewController::class, 'getTechnicianReviews']);
 Route::get('/technician-reviews/status', [TechnicianReviewController::class, 'checkReviewStatus']);
 
+// QR del técnico de la red: perfil público sin sesión (el QR impreso se escanea con cualquier cámara)
+Route::get('/red/qr/{codigo}', [\App\Http\Controllers\TecnicoQrController::class, 'porCodigo'])->where('codigo', '[A-Za-z0-9]{6,20}');
+
 // 🌐 Mercado de Trabajos Abierto (Visible para técnicos y público, con personalización para usuarios logueados)
 Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
     try {
@@ -259,11 +262,28 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
             // Mis técnicos: el cliente que bloqueó al técnico ya no le aparece en la red
             \App\Http\Controllers\MisTecnicosController::excluirBloqueados($query, $authUser?->id);
+
+            // Solicitud dirigida a un técnico favorito: solo la ve ese técnico (y Root/Admin)
+            if (!$authUser || !in_array((int) $authUser->role_id, [0, 1], true)) {
+                $query->where(function ($q) use ($authUser) {
+                    $q->whereNull('tecnico_dirigido_id');
+                    if ($authUser) $q->orWhere('tecnico_dirigido_id', $authUser->id);
+                });
+            }
         }
 
         $jobs = $query->orderBy('created_at', 'desc')->get();
 
-        $jobs->transform(function ($job) use ($authUser) {
+        // Nombres de los técnicos a los que se dirigieron las solicitudes (para que el cliente vea a quién)
+        $nombresDirigidos = \App\Models\User::withoutGlobalScopes()
+            ->whereIn('id', $jobs->pluck('tecnico_dirigido_id')->filter()->unique())
+            ->get(['id', 'first_name', 'last_name', 'name'])
+            ->mapWithKeys(fn ($u) => [$u->id => trim("{$u->first_name} {$u->last_name}") ?: $u->name]);
+
+        $jobs->transform(function ($job) use ($authUser, $nombresDirigidos) {
+            $job->dirigida_a_mi = $authUser && $job->tecnico_dirigido_id && (int) $job->tecnico_dirigido_id === (int) $authUser->id;
+            $job->tecnico_dirigido_nombre = $job->tecnico_dirigido_id ? ($nombresDirigidos[$job->tecnico_dirigido_id] ?? 'Tu técnico') : null;
+
             $ownerName = '';
             $ownerUserId = null;
             $ownerTenantId = $job->tenant_id ?: ($job->property?->tenant_id ?? null);
@@ -876,6 +896,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // Mis técnicos (cliente particular): historial, favoritos y bloqueos
     Route::get('/mis-tecnicos', [\App\Http\Controllers\MisTecnicosController::class, 'index']);
     Route::put('/mis-tecnicos/{tecnicoId}', [\App\Http\Controllers\MisTecnicosController::class, 'marcar'])->whereNumber('tecnicoId');
+    Route::get('/mis-tecnicos/{tecnicoId}/detalle', [\App\Http\Controllers\TecnicoQrController::class, 'detalle'])->whereNumber('tecnicoId');
+    Route::post('/red/qr/{codigo}/contratar', [\App\Http\Controllers\TecnicoQrController::class, 'contratar'])->where('codigo', '[A-Za-z0-9]{6,20}');
+    Route::get('/mi-qr', [\App\Http\Controllers\TecnicoQrController::class, 'miQr']);
     // Mis clientes (técnico de la red): favoritos y bloqueos
     Route::get('/mis-clientes', [\App\Http\Controllers\MisClientesController::class, 'index']);
     Route::put('/mis-clientes/{clienteId}', [\App\Http\Controllers\MisClientesController::class, 'marcar'])->whereNumber('clienteId');
@@ -1027,6 +1050,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'publish_network' => 'nullable|boolean',
             'tecnico_id' => 'nullable|integer',
             'assigned_technician_id' => 'nullable|integer',
+            'tecnico_dirigido_id' => 'nullable|integer',
             'evidence_1' => 'nullable|file|image|max:5120',
             'evidence_2' => 'nullable|file|image|max:5120'
         ]);
@@ -1037,6 +1061,16 @@ Route::middleware('auth:sanctum')->group(function () {
             $elementos = \App\Services\ElementosTrabajo::preparar($request);
             if (isset($elementos['error'])) {
                 return response()->json(['success' => false, 'message' => $elementos['error']], $elementos['codigo']);
+            }
+        }
+
+        // Solicitud dirigida (cliente de la red → uno de sus técnicos favoritos): se publica en la red pero
+        // solo la ve ese técnico, que la cotiza y sigue el flujo normal. Se valida antes de subir fotos.
+        $tecnicoDirigidoId = $request->tecnico_dirigido_id ? (int) $request->tecnico_dirigido_id : null;
+        if ($tecnicoDirigidoId) {
+            $solicitante = $request->user();
+            if (!$solicitante || !\App\Http\Controllers\MisTecnicosController::esFavorito((int) $solicitante->id, $tecnicoDirigidoId)) {
+                return response()->json(['success' => false, 'message' => 'Solo puedes enviar solicitudes directas a tus técnicos favoritos.'], 422);
             }
         }
 
@@ -1060,10 +1094,14 @@ Route::middleware('auth:sanctum')->group(function () {
             $tecnicoId = intval($tecnicoId);
         }
         $publishNetwork = filter_var($request->publish_network, FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+        if ($tecnicoDirigidoId) {
+            $tecnicoId = null;
+            $publishNetwork = 1;
+        }
         $status = $tecnicoId ? 'Asignado' : 'Por Hacer';
 
         // 3. Insertar en la BD usando el Modelo Eloquent
-        $workOrder = DB::transaction(function () use ($request, $path1, $path2, $tecnicoId, $status, $publishNetwork, $elementos) {
+        $workOrder = DB::transaction(function () use ($request, $path1, $path2, $tecnicoId, $status, $publishNetwork, $elementos, $tecnicoDirigidoId) {
             $orden = WorkOrder::create([
                 'property_id' => $request->property_id,
                 'type' => $request->type,
@@ -1081,6 +1119,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     : ($request->type === 'SOS' ? 'Urgente' : 'Normal'),
                 'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
                 'publish_network' => $publishNetwork,
+                'tecnico_dirigido_id' => $tecnicoDirigidoId,
             ]);
             if ($elementos) {
                 \App\Services\ElementosTrabajo::adjuntar($orden, $elementos, $request->user());
@@ -1103,8 +1142,9 @@ Route::middleware('auth:sanctum')->group(function () {
             // Notificamos a los admins y al usuario actual para confirmar
             $notifiables = $admins->merge([$user]);
 
-            if ($tecnicoId) {
-                $assignedTech = User::withoutGlobalScopes()->find($tecnicoId);
+            $tecnicoAvisar = $tecnicoId ?: $tecnicoDirigidoId;
+            if ($tecnicoAvisar) {
+                $assignedTech = User::withoutGlobalScopes()->find($tecnicoAvisar);
                 if ($assignedTech) {
                     $notifiables = $notifiables->merge([$assignedTech]);
                 }
@@ -1302,7 +1342,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
 
-        if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)) {
+        if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)
+            || \App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
             return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
         }
 
@@ -1390,6 +1431,9 @@ Route::middleware('auth:sanctum')->group(function () {
             if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)) {
                 return response()->json(['success' => false, 'message' => 'Este cliente ya no recibe mensajes tuyos.'], 403);
             }
+            if (\App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
+                return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+            }
 
             // Buscar si ya existe una cotización / chat de este técnico para este trabajo
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
@@ -1432,6 +1476,9 @@ Route::middleware('auth:sanctum')->group(function () {
             }
 
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+            if (\App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
+                return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+            }
             $scheduledDateTime = date('Y-m-d H:i:s', strtotime($request->scheduled_at));
             $workOrder->scheduled_at = $scheduledDateTime;
             if (empty($workOrder->tecnico_id)) {
@@ -1830,6 +1877,7 @@ Route::middleware('auth:sanctum')->group(function () {
             $workOrder->scheduled_at = null;
             $workOrder->cancelled_by_tech = false;
             $workOrder->publish_network = 1;
+            $workOrder->tecnico_dirigido_id = null; // ya no es solo para su técnico favorito: la ve toda la red
             $workOrder->save();
 
             // Rechazar cotizaciones previas asignadas

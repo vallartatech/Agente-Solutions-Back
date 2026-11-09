@@ -333,6 +333,13 @@ class PerfilProfesionalController extends Controller
         return response()->json(['success' => true, 'nivel' => $nivel, 'data' => $this->serializar($perfil, $tecnico, $nivel)]);
     }
 
+    // Perfil a nivel "público" (sin RFC, CLABE, contacto ni documentos), para el QR y "Ver detalles"
+    public function datosPublicos(User $tecnico): array
+    {
+        $perfil = PerfilProfesional::perfilDe($tecnico) ?? new TechnicianProfile(['user_id' => $tecnico->id, 'estado' => 'incompleto']);
+        return $this->serializar($perfil, $tecnico, 'publico');
+    }
+
     // ─────────────────────────── Admin / Root ───────────────────────────
 
     public function porValidar(Request $request)

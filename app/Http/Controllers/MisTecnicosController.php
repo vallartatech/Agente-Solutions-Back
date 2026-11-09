@@ -16,7 +16,10 @@ use Illuminate\Support\Facades\DB;
  */
 class MisTecnicosController extends Controller
 {
-    private const ROL_CLIENTE_PARTICULAR = 4;
+    public const ROL_CLIENTE_PARTICULAR = 4;
+
+    // Máximo de técnicos favoritos por cliente: son a los que puede mandarles una solicitud directa
+    public const LIMITE_FAVORITOS = 3;
 
     private const NOMBRES_ROL = [
         2 => 'Técnico',
@@ -122,7 +125,7 @@ class MisTecnicosController extends Controller
             ])
             ->values();
 
-        return response()->json(['success' => true, 'tecnicos' => $tecnicos]);
+        return response()->json(['success' => true, 'tecnicos' => $tecnicos, 'limite_favoritos' => self::LIMITE_FAVORITOS]);
     }
 
     // estado: "favorito", "bloqueado" o null para quitar la marca
@@ -150,12 +153,45 @@ class MisTecnicosController extends Controller
             return response()->json(['success' => true, 'estado' => null]);
         }
 
+        if ($data['estado'] === ClientTechnicianRelation::FAVORITO && $relacion?->status !== ClientTechnicianRelation::FAVORITO
+            && self::totalFavoritos($user->id) >= self::LIMITE_FAVORITOS) {
+            return response()->json(['message' => self::mensajeLimite(), 'codigo' => 'limite_favoritos'], 422);
+        }
+
         ClientTechnicianRelation::updateOrCreate(
             ['client_user_id' => $user->id, 'technician_id' => $tecnicoId, 'set_by' => ClientTechnicianRelation::POR_CLIENTE],
             ['status' => $data['estado'], 'tenant_id' => ClientTechnicianRelation::tenantDeBloqueo($user->tenant_id)]
         );
 
         return response()->json(['success' => true, 'estado' => $data['estado']]);
+    }
+
+    public static function totalFavoritos(int $clienteId): int
+    {
+        return ClientTechnicianRelation::where('client_user_id', $clienteId)
+            ->where('set_by', ClientTechnicianRelation::POR_CLIENTE)
+            ->where('status', ClientTechnicianRelation::FAVORITO)
+            ->count();
+    }
+
+    public static function esFavorito(int $clienteId, int $tecnicoId): bool
+    {
+        return ClientTechnicianRelation::where('client_user_id', $clienteId)->where('technician_id', $tecnicoId)
+            ->where('set_by', ClientTechnicianRelation::POR_CLIENTE)
+            ->where('status', ClientTechnicianRelation::FAVORITO)
+            ->exists();
+    }
+
+    // ¿La orden es una solicitud dirigida a otro técnico? (entonces este no puede cotizar ni escribir)
+    public static function dirigidaAOtro(int $workOrderId, int $tecnicoId): bool
+    {
+        $dirigido = DB::table('work_orders')->where('id', $workOrderId)->value('tecnico_dirigido_id');
+        return $dirigido && (int) $dirigido !== $tecnicoId;
+    }
+
+    public static function mensajeLimite(): string
+    {
+        return 'Ya tienes ' . self::LIMITE_FAVORITOS . ' técnicos favoritos. Quita uno de tus favoritos para agregar a otro.';
     }
 
     private function esDeSuHistorial(User $user, int $tecnicoId): bool
