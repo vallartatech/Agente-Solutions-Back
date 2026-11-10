@@ -136,6 +136,7 @@ class PerfilProfesional
     public static function faltantes(TechnicianProfile $perfil, User $user): array
     {
         $f = [];
+        if (!$perfil->consentimiento_datos_at) $f['consentimiento_datos'] = 'Consentimiento para datos bancarios y de identificación';
         if ($perfil->emite_factura === null) $f['emite_factura'] = '¿Emites factura?';
         if ($perfil->emite_factura) {
             if (!self::rfcValido($perfil->rfc)) $f['rfc'] = 'RFC';

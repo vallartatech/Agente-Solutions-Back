@@ -50,6 +50,8 @@ class AuthController extends Controller
 
         // 1. Actualizamos la validación para requerir first_name y last_name
         $request->validate([
+            // Quien se registra solo debe aceptar el aviso de privacidad; las altas desde el panel no
+            'acepta_privacidad' => $porAdmin ? 'nullable' : 'accepted',
             'role_id' => $porAdmin ? 'required|integer' : ['required', 'integer', \Illuminate\Validation\Rule::in(self::ROLES_AUTO_REGISTRO)],
             'first_name' => 'required|string|max:191',
             'last_name' => 'required|string|max:191',
@@ -65,6 +67,7 @@ class AuthController extends Controller
             'email.unique' => 'Este correo electrónico ya está registrado en otra cuenta.',
             'phone_number.unique' => 'Este número de teléfono ya está registrado en otra cuenta.',
             'captcha_token.required' => 'Por favor verifica que no eres un robot.',
+            'acepta_privacidad.accepted' => 'Debes aceptar el Aviso de Privacidad para crear tu cuenta.'
         ]);
 
         // El registro público nunca hereda la sesión: solo el alta desde el panel crea usuarios "directos"
@@ -157,6 +160,10 @@ class AuthController extends Controller
             'phone_number'    => $request->phone_number ?? null,
             'is_active'       => $isActive
         ]);
+
+        if ($request->boolean('acepta_privacidad') && \Illuminate\Support\Facades\Schema::hasColumn('users', 'privacy_accepted_at')) {
+            \DB::table('users')->where('id', $user->id)->update(['privacy_accepted_at' => now()]);
+        }
 
         // Si es cliente directo de Agente Solutions (Rol 3)
         if ($roleToAssign == 3) {
@@ -311,6 +318,19 @@ class AuthController extends Controller
             ], 401);
         }
 
+        // Eliminación de cuenta pendiente (30 días) o ya eliminada: sin acceso
+        if (in_array($user->approval_status, [\App\Services\CuentaEliminacion::PENDIENTE, 'deleted_by_user'], true)) {
+            return response()->json([
+                'status' => \App\Services\CuentaEliminacion::PENDIENTE,
+                'error' => \App\Services\CuentaEliminacion::MENSAJE_PENDIENTE,
+            ], 403);
+        }
+        if ($user->approval_status === \App\Services\CuentaEliminacion::ANONIMIZADA) {
+            return response()->json([
+                'message' => 'Credenciales incorrectas. Verifica tus datos y contraseña.'
+            ], 401);
+        }
+
         /*
         if (!$user->hasVerifiedEmail()) {
             return response()->json([
@@ -335,12 +355,6 @@ class AuthController extends Controller
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'error' => 'No tienes un Autónomo o Empresa vinculada. Por favor ingresa el código.'
-            ], 403);
-        }
-
-        if ($user->approval_status === 'deleted_by_user') {
-            return response()->json([
-                'error' => 'Tu cuenta fue eliminada y desactivada a solicitud del titular. Si deseas restaurar tu acceso o solicitar el respaldo y recuperación de tus datos y propiedades, por favor comunícate con Soporte Técnico.'
             ], 403);
         }
 

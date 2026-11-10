@@ -87,6 +87,10 @@ class PerfilProfesionalController extends Controller
 
         $perfil = PerfilProfesional::perfilOCrear($user);
 
+        // Datos financieros solo con consentimiento expreso
+        $financieros = collect($datos)->only(['rfc', 'razon_social', 'banco', 'titular_cuenta', 'clabe'])->filter(fn ($v) => $v !== null && $v !== '');
+        if ($financieros->isNotEmpty() && ($r = $this->sinConsentimiento($perfil))) return $r;
+
         DB::transaction(function () use ($datos, $perfil, $user) {
             $campos = collect($datos)->except(['especialidades', 'experiencias', 'fecha_nacimiento'])->all();
             if (array_key_exists('fecha_nacimiento', $datos)) {
@@ -126,6 +130,33 @@ class PerfilProfesionalController extends Controller
         });
 
         return response()->json(['success' => true, 'data' => $this->serializar($perfil->fresh(), $user, 'propio')]);
+    }
+
+    /**
+     * Consentimiento expreso para tratar datos financieros (CLABE, RFC) y de identificación
+     * (INE, comprobante de domicilio, antecedentes). Se guarda la fecha y hora de aceptación.
+     */
+    public function consentir(Request $request)
+    {
+        $user = $request->user();
+        if (!PerfilProfesional::esTecnicoRed($user)) {
+            return response()->json(['message' => 'Solo para técnicos de la red.'], 403);
+        }
+        $request->validate(['acepto' => 'accepted'], ['acepto.accepted' => 'Debes marcar la casilla para continuar.']);
+
+        $perfil = PerfilProfesional::perfilOCrear($user);
+        if (!$perfil->consentimiento_datos_at) {
+            $perfil->forceFill(['consentimiento_datos_at' => now()])->save();
+        }
+        return response()->json(['success' => true, 'data' => $this->serializar($perfil->fresh(), $user, 'propio')]);
+    }
+
+    private function sinConsentimiento(TechnicianProfile $perfil)
+    {
+        return $perfil->consentimiento_datos_at ? null : response()->json([
+            'message' => 'Primero acepta el consentimiento para el tratamiento de tus datos bancarios y de identificación.',
+            'requiere_consentimiento' => true,
+        ], 422);
     }
 
     /** Foto de perfil (obligatoria): Cloudinary, igual que en "Mi perfil". Permitida con la cuenta bloqueada. */
@@ -179,6 +210,7 @@ class PerfilProfesionalController extends Controller
         ]);
 
         $perfil = PerfilProfesional::perfilOCrear($user);
+        if ($r = $this->sinConsentimiento($perfil)) return $r;
         $columna = self::DOCUMENTOS[$tipo];
         $anterior = $perfil->{$columna};
         $perfil->{$columna} = $request->file('archivo')->store("kyc/{$user->id}", self::DISCO);
@@ -205,6 +237,7 @@ class PerfilProfesionalController extends Controller
         ]);
 
         $perfil = PerfilProfesional::perfilOCrear($user);
+        if ($r = $this->sinConsentimiento($perfil)) return $r;
         foreach (['frente' => 'ine_frente_path', 'reverso' => 'ine_reverso_path'] as $campo => $columna) {
             if (!$request->hasFile($campo)) continue;
             $anterior = $perfil->{$columna};
@@ -562,6 +595,7 @@ class PerfilProfesionalController extends Controller
                 'obligatorio' => (bool) $perfil->obligatorio,
                 'bloqueado' => PerfilProfesional::estaBloqueado($tecnico),
                 'motivo_rechazo' => $perfil->motivo_rechazo,
+                'consentimiento_datos_at' => optional($perfil->consentimiento_datos_at)->toIso8601String(),
                 'enviado_at' => $perfil->enviado_at,
                 'revisado_at' => $perfil->revisado_at,
                 'fecha_nacimiento' => $tecnico->birth_date ? \Illuminate\Support\Carbon::parse($tecnico->birth_date)->toDateString() : null,

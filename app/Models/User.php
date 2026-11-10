@@ -82,6 +82,17 @@ class User extends Authenticatable
     }
 
 
+    /**
+     * Un usuario NUNCA se borra de la tabla: las llaves foráneas en cascada se llevarían
+     * reportes, calificaciones y pagos. Para eliminar una cuenta usa App\Services\CuentaEliminacion.
+     */
+    protected static function booted(): void
+    {
+        static::deleting(function () {
+            throw new \LogicException('Los usuarios no se borran: usa CuentaEliminacion::anonimizar().');
+        });
+    }
+
     public function getNameAttribute()
     {
         return trim("{$this->first_name} {$this->last_name}");

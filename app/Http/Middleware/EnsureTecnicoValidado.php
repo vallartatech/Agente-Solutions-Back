@@ -24,6 +24,9 @@ class EnsureTecnicoValidado
         'login',
         'notifications/*',
         'tenants/my-membership-status',
+        // Google Play: eliminar la cuenta debe ser posible siempre, aun con el perfil sin aprobar
+        'users/delete-my-account',
+        'usuarios/delete-my-account',
     ];
 
     public function handle(Request $request, Closure $next): Response

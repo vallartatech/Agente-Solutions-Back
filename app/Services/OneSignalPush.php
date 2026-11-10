@@ -166,4 +166,28 @@ class OneSignalPush
             return false;
         }
     }
+
+    /**
+     * Borra en OneSignal al usuario (external_id = user id) con todas sus suscripciones.
+     * Devuelve 'borrado', 'no_existe', 'sin_configurar' o 'error'. Nunca lanza excepción.
+     */
+    public static function borrarUsuario(string $externalId): string
+    {
+        $appId = config('services.onesignal.app_id');
+        $apiKey = config('services.onesignal.rest_api_key');
+        if (!$appId || !$apiKey) {
+            return 'sin_configurar';
+        }
+
+        try {
+            $response = Http::withHeaders(['Authorization' => 'Key ' . $apiKey])
+                ->acceptJson()
+                ->timeout(10)
+                ->delete('https://api.onesignal.com/apps/' . urlencode($appId) . '/users/by/external_id/' . urlencode($externalId));
+            if ($response->status() === 404) return 'no_existe';
+            return $response->successful() ? 'borrado' : 'error';
+        } catch (\Throwable $e) {
+            return 'error';
+        }
+    }
 }

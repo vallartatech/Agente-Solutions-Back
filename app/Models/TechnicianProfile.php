@@ -19,6 +19,7 @@ class TechnicianProfile extends Model
         'acepta_efectivo', 'tiene_terminal',
         'anios_experiencia', 'nivel_estudios', 'presentacion', 'sin_cursos', 'sin_empleos',
         'ine_frente_path', 'ine_reverso_path', 'comprobante_domicilio_path', 'antecedentes_penales_path',
+        'consentimiento_datos_at',
     ];
 
     // Nunca se mandan las rutas internas de los archivos privados
@@ -39,6 +40,7 @@ class TechnicianProfile extends Model
         'revisado_at' => 'datetime',
         'identidad_verificada_at' => 'datetime',
         'estudios_verificados_at' => 'datetime',
+        'consentimiento_datos_at' => 'datetime',
     ];
 
     public function user()

@@ -16,6 +16,17 @@ class Client extends Model
     'email',
     'phone',
     'address',
-    'profile_picture' 
+    'profile_picture'
 ];
+
+    /**
+     * Un cliente NUNCA se borra de la tabla: la cascada se llevaría sus propiedades,
+     * órdenes de trabajo y pagos. Para eliminarlo usa App\Services\CuentaEliminacion.
+     */
+    protected static function booted(): void
+    {
+        static::deleting(function () {
+            throw new \LogicException('Los clientes no se borran: usa CuentaEliminacion::anonimizarCliente().');
+        });
+    }
 }

@@ -570,6 +570,19 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 // Registro Privado (Exclusivo para el Admin)
 Route::post('/registro-usuario', [AuthController::class, 'registro']);
 
+// Purga diaria de cuentas eliminadas. La dispara el servicio Cron de Railway con el header
+// X-Cron-Token = CRON_TOKEN. Corre aquí (servicio web) porque los documentos KYC viven en su disco.
+Route::post('/interno/cuentas/purgar', function (\Illuminate\Http\Request $request) {
+    $esperado = (string) config('services.cron.token', '');
+    if ($esperado === '' || !hash_equals($esperado, (string) $request->header('X-Cron-Token'))) {
+        abort(404);
+    }
+    @set_time_limit(600);
+    $codigo = \Illuminate\Support\Facades\Artisan::call('cuentas:purgar-eliminadas', $request->boolean('dry_run') ? ['--dry-run' => true] : []);
+    return response(\Illuminate\Support\Facades\Artisan::output(), $codigo === 0 ? 200 : 500)
+        ->header('Content-Type', 'text/plain; charset=utf-8');
+})->middleware('throttle:5,1');
+
 // Registro Público (Exclusivo para Clientes)
 Route::post('/registro-cliente', function (\Illuminate\Http\Request $request) {
     try {
@@ -672,6 +685,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Técnico: completar su perfil (lo único que puede usar hasta que Admin/Root lo apruebe)
     Route::get('/tecnico/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'mio']);
     Route::post('/tecnico/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'guardar']);
+    Route::post('/tecnico/perfil-profesional/consentimiento', [\App\Http\Controllers\PerfilProfesionalController::class, 'consentir']);
     Route::post('/tecnico/perfil-profesional/ine', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirIne']);
     Route::post('/tecnico/perfil-profesional/foto', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirFoto']);
     Route::post('/tecnico/perfil-profesional/documento/{tipo}', [\App\Http\Controllers\PerfilProfesionalController::class, 'subirDocumento'])
@@ -703,8 +717,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/users', [UserController::class, 'getUsuarios']);
     Route::delete('/usuarios/delete-my-account', [UserController::class, 'deleteMyAccount']);
     Route::delete('/users/delete-my-account', [UserController::class, 'deleteMyAccount']);
+    Route::post('/usuarios/{id}/cancelar-eliminacion', [UserController::class, 'cancelarEliminacion']);
     // Alta de usuarios desde el panel (sin captcha; valida sesión y rol)
     Route::post('/admin/usuarios', [AuthController::class, 'registroPorAdmin']);
+    // "Eliminar definitivamente": anonimiza (nunca borra la fila)
     Route::delete('/usuarios/{id}', [UserController::class, 'eliminarUsuario']);
     Route::delete('/users/{id}', [UserController::class, 'eliminarUsuario']);
     Route::put('/usuarios/{id}/toggle-bloqueo', [UserController::class, 'toggleBloqueo']);

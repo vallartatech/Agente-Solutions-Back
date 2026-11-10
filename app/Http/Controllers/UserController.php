@@ -389,6 +389,9 @@ class UserController extends Controller
                 })->where('role_id', '!=', 0);
             }
 
+            // Cuentas eliminadas definitivamente: ya no son usuarios (la fila solo se conserva por integridad)
+            $usersQuery->where('approval_status', '!=', \App\Services\CuentaEliminacion::ANONIMIZADA);
+
             $usuariosQuery = $usersQuery->get();
 
             $usuarios = $usuariosQuery->map(function ($u) use ($currentUser) {
@@ -456,7 +459,8 @@ class UserController extends Controller
             $userIds = $usuariosQuery->pluck('id')->toArray();
 
             $clientesDbQuery = DB::table('clients')
-                ->select('id', 'user_id', 'name', 'email', 'phone', 'profile_picture', 'is_active', 'tenant_id');
+                ->select('id', 'user_id', 'name', 'email', 'phone', 'profile_picture', 'is_active', 'tenant_id')
+                ->where('email', 'not like', 'eliminado-c%@eliminado.invalid');
 
             if ($currentUser && $currentUser->role_id === 0) {
                 // ROOT ve todos los clientes
@@ -500,43 +504,89 @@ class UserController extends Controller
         }
     }
 
-    public function eliminarUsuario($id)
+    /**
+     * "Eliminar definitivamente" (Admin/Root), p. ej. por una solicitud recibida por correo.
+     * NUNCA borra la fila de users/clients (la cascada se llevaría propiedades, órdenes y pagos):
+     * anonimiza al instante con CuentaEliminacion.
+     */
+    public function eliminarUsuario(Request $request, $id)
     {
+        $actual = auth('sanctum')->user();
+        if (!$actual || !in_array((int) $actual->role_id, [0, 1, 4, 5, 7], true)) {
+            return response()->json(['error' => 'Acceso Denegado.'], 403);
+        }
+        $esRoot = (int) $actual->role_id === 0;
+
         try {
-            if (str_starts_with($id, 'c_')) {
-                $realId = str_replace('c_', '', $id);
-                DB::table('clients')->where('id', $realId)->delete();
-                return response()->json(['message' => 'Cliente eliminado correctamente'], 200);
+            // Cliente sin cuenta de acceso (o con ella): se anonimiza igual
+            if (str_starts_with((string) $id, 'c_')) {
+                $cliente = DB::table('clients')->where('id', (int) substr($id, 2))->first();
+                if (!$cliente) {
+                    return response()->json(['error' => 'Cliente no encontrado'], 404);
+                }
+                if (!$esRoot && (int) $cliente->tenant_id !== (int) $actual->tenant_id) {
+                    return response()->json(['error' => 'Acceso Denegado.'], 403);
+                }
+                if ($cliente->user_id) {
+                    $id = 'u_' . $cliente->user_id;
+                } else {
+                    \App\Services\CuentaEliminacion::anonimizarCliente((int) $cliente->id);
+                    return response()->json(['message' => 'Datos del cliente eliminados definitivamente.'], 200);
+                }
             }
 
-            $realId = str_replace('u_', '', $id);
-            $usuario = \App\Models\User::find($realId);
-
+            $usuario = User::withoutGlobalScopes()->find((int) str_replace('u_', '', (string) $id));
             if (!$usuario) {
                 return response()->json(['error' => 'Usuario no encontrado'], 404);
             }
-
-            if ($usuario->role_id === 0) {
+            if ((int) $usuario->role_id === 0) {
                 return response()->json(['error' => 'Acceso Denegado: No se puede eliminar al ROOT'], 403);
             }
-
-            $currentUser = auth('sanctum')->user();
-            if ($usuario->role_id === 4 && (!$currentUser || $currentUser->role_id !== 0)) {
+            if ((int) $usuario->id === (int) $actual->id) {
+                return response()->json(['error' => 'Para eliminar tu propia cuenta usa "Eliminar mi Cuenta" en tu perfil.'], 422);
+            }
+            if (!$esRoot && (int) $usuario->tenant_id !== (int) $actual->tenant_id) {
+                return response()->json(['error' => 'Acceso Denegado.'], 403);
+            }
+            if ((int) $usuario->role_id === 4 && !$esRoot) {
                 return response()->json(['error' => 'Acceso Denegado: Solo el ROOT puede eliminar usuarios Autónomos.'], 403);
             }
-
-            if ($usuario->role_id === 4 && $usuario->tenant_id) {
-                \App\Models\Tenant::where('owner_user_id', $usuario->id)->delete();
+            if ($usuario->approval_status === \App\Services\CuentaEliminacion::ANONIMIZADA) {
+                return response()->json(['message' => 'Esta cuenta ya estaba eliminada.'], 200);
             }
 
-            $usuario->delete();
-            return response()->json(['message' => 'Usuario eliminado correctamente'], 200);
+            \App\Services\CuentaEliminacion::anonimizar((int) $usuario->id);
+            return response()->json(['message' => 'Cuenta eliminada definitivamente. Sus datos personales fueron borrados.'], 200);
 
-        } catch (\Exception $e) {
-            return response()->json(['error' => 'Error al eliminar: ' . $e->getMessage()], 500);
+        } catch (\Throwable $e) {
+            \Log::error('[CuentaEliminacion] falló la eliminación inmediata', ['id' => (string) $id, 'error' => class_basename($e)]);
+            return response()->json(['error' => 'No se pudo eliminar la cuenta. Intenta de nuevo o contacta a soporte.'], 500);
         }
     }
 
+    /** Soporte reactiva una cuenta en eliminación pendiente (dentro de los 30 días). */
+    public function cancelarEliminacion($id)
+    {
+        $actual = auth('sanctum')->user();
+        if (!$actual || !in_array((int) $actual->role_id, [0, 1], true)) {
+            return response()->json(['error' => 'Acceso Denegado.'], 403);
+        }
+
+        $usuario = User::withoutGlobalScopes()->find((int) str_replace('u_', '', (string) $id));
+        if (!$usuario) {
+            return response()->json(['error' => 'Usuario no encontrado'], 404);
+        }
+        if ((int) $actual->role_id !== 0 && (int) $usuario->tenant_id !== (int) $actual->tenant_id) {
+            return response()->json(['error' => 'Acceso Denegado.'], 403);
+        }
+
+        if (!\App\Services\CuentaEliminacion::cancelar($usuario)) {
+            return response()->json(['error' => 'Esta cuenta no tiene una eliminación pendiente (o ya fue eliminada definitivamente).'], 422);
+        }
+        return response()->json(['message' => 'Eliminación cancelada. La cuenta vuelve a estar activa.'], 200);
+    }
+
+    /** "Eliminar mi Cuenta": eliminación pendiente 30 días, sin acceso; luego se anonimiza. */
     public function deleteMyAccount(Request $request)
     {
         try {
@@ -549,27 +599,17 @@ class UserController extends Controller
                 return response()->json(['error' => 'Acceso Denegado: El administrador ROOT no puede auto-eliminar su cuenta.'], 403);
             }
 
-            $user->is_active = 0;
-            $user->approval_status = 'deleted_by_user';
-            $user->save();
+            \App\Services\CuentaEliminacion::solicitar($user);
 
-            if ((int)$user->role_id === 3) {
-                DB::table('clients')->where('user_id', $user->id)->update(['is_active' => 0]);
-            }
+            return response()->json([
+                'message' => \App\Services\CuentaEliminacion::MENSAJE_PENDIENTE,
+                'status' => \App\Services\CuentaEliminacion::PENDIENTE,
+                'dias' => \App\Services\CuentaEliminacion::DIAS_GRACIA,
+            ], 200);
 
-            // Revocar todos los tokens de Sanctum para cerrar sesión al instante
-            $user->tokens()->delete();
-
-            // Enviar notificación a los usuarios ROOT (role_id === 0)
-            $admins = User::withoutGlobalScopes()->where('role_id', 0)->get();
-            if ($admins->isNotEmpty()) {
-                Notification::send($admins, new \App\Notifications\UserAccountDeletedNotification($user));
-            }
-
-            return response()->json(['message' => 'Tu perfil y cuenta han sido eliminados y cerrados exitosamente.'], 200);
-
-        } catch (\Exception $e) {
-            return response()->json(['error' => 'Error al procesar la eliminación: ' . $e->getMessage()], 500);
+        } catch (\Throwable $e) {
+            \Log::error('[CuentaEliminacion] falló la solicitud', ['error' => class_basename($e)]);
+            return response()->json(['error' => 'No se pudo procesar la eliminación. Por favor contacta a soporte.'], 500);
         }
     }
 

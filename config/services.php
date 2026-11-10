@@ -34,6 +34,15 @@ return [
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
     ],
+// Token del servicio Cron de Railway para POST /api/interno/cuentas/purgar
+'cron' => [
+        'token' => env('CRON_TOKEN'),
+    ],
+// Eliminación de cuentas: con false solo se anonimiza la base y los archivos del disco propio;
+// no se borra nada en servicios externos (Cloudinary, OneSignal). En local/pruebas va en false.
+'cuentas' => [
+        'purge_remote_delete' => (bool) env('ACCOUNT_PURGE_REMOTE_DELETE', true),
+    ],
 'onesignal' => [
         'app_id' => env('ONESIGNAL_APP_ID'),
         'rest_api_key' => env('ONESIGNAL_REST_API_KEY'),
