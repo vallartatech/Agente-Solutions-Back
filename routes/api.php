@@ -277,7 +277,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
         // Nombres de los técnicos a los que se dirigieron las solicitudes (para que el cliente vea a quién)
         $nombresDirigidos = \App\Models\User::withoutGlobalScopes()
             ->whereIn('id', $jobs->pluck('tecnico_dirigido_id')->filter()->unique())
-            ->get(['id', 'first_name', 'last_name', 'name'])
+            ->get(['id', 'first_name', 'last_name'])
             ->mapWithKeys(fn ($u) => [$u->id => trim("{$u->first_name} {$u->last_name}") ?: $u->name]);
 
         $jobs->transform(function ($job) use ($authUser, $nombresDirigidos, $request) {
