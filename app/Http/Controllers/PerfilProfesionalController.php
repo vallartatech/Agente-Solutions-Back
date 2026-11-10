@@ -340,6 +340,61 @@ class PerfilProfesionalController extends Controller
         return $this->serializar($perfil, $tecnico, 'publico');
     }
 
+    /**
+     * Resumen corto de varios técnicos para las tarjetas de cotización del cliente.
+     * GET /tecnicos/resumenes?ids=1,2,3  →  { data: { "1": {...}, "2": {...} } }
+     */
+    public function resumenes(Request $request)
+    {
+        $ids = collect(explode(',', (string) $request->query('ids')))
+            ->map(fn ($id) => (int) str_replace('u_', '', trim($id)))
+            ->filter()
+            ->unique()
+            ->take(30)
+            ->values();
+        if ($ids->isEmpty()) {
+            return response()->json(['success' => true, 'data' => (object) []]);
+        }
+
+        $usuarios = User::withoutGlobalScopes()->whereIn('id', $ids)->get();
+        $perfiles = TechnicianProfile::whereIn('user_id', $ids)->get()->keyBy('user_id');
+        $terminados = DB::table('work_orders')
+            ->whereIn('tecnico_id', $ids)
+            ->whereIn('status', ['Terminado', 'Listo', 'Finalizado', 'Completado'])
+            ->selectRaw('tecnico_id, COUNT(*) as total')
+            ->groupBy('tecnico_id')
+            ->pluck('total', 'tecnico_id');
+        $especialidades = DB::table('technician_specialties as ts')
+            ->join('specialties as s', 's.id', '=', 'ts.specialty_id')
+            ->whereIn('ts.user_id', $ids)
+            ->orderBy('s.name')
+            ->get(['ts.user_id', 's.id', 's.name'])
+            ->groupBy('user_id');
+
+        $data = [];
+        foreach ($usuarios as $u) {
+            $perfil = $perfiles->get($u->id);
+            $resenas = (int) ($u->total_reviews_count ?? 0);
+            $esps = ($especialidades->get($u->id) ?? collect())->map(fn ($e) => ['id' => $e->id, 'name' => $e->name])->values();
+            $data[(string) $u->id] = [
+                'user_id' => $u->id,
+                'nombre' => trim("{$u->first_name} {$u->last_name}"),
+                'foto' => $u->profile_picture,
+                'verificado' => (bool) ($perfil?->identidad_verificada_at),
+                'estudios_verificados' => (bool) ($perfil?->estudios_verificados_at),
+                'calificacion' => $resenas ? round((float) $u->rating_stars_avg, 1) : null,
+                'puntualidad' => $resenas ? round((float) $u->rating_time_avg, 1) : null,
+                'total_resenas' => $resenas,
+                'anios_experiencia' => $perfil?->anios_experiencia,
+                'trabajos_terminados' => (int) ($terminados[$u->id] ?? 0),
+                'especialidades' => $esps->take(3)->values(),
+                'mas_especialidades' => max(0, $esps->count() - 3),
+            ];
+        }
+
+        return response()->json(['success' => true, 'data' => (object) $data]);
+    }
+
     // ─────────────────────────── Admin / Root ───────────────────────────
 
     public function porValidar(Request $request)

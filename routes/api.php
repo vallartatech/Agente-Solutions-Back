@@ -280,7 +280,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             ->get(['id', 'first_name', 'last_name', 'name'])
             ->mapWithKeys(fn ($u) => [$u->id => trim("{$u->first_name} {$u->last_name}") ?: $u->name]);
 
-        $jobs->transform(function ($job) use ($authUser, $nombresDirigidos) {
+        $jobs->transform(function ($job) use ($authUser, $nombresDirigidos, $request) {
             $job->dirigida_a_mi = $authUser && $job->tecnico_dirigido_id && (int) $job->tecnico_dirigido_id === (int) $authUser->id;
             $job->tecnico_dirigido_nombre = $job->tecnico_dirigido_id ? ($nombresDirigidos[$job->tecnico_dirigido_id] ?? 'Tu técnico') : null;
 
@@ -345,6 +345,10 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $job->owner_name = $ownerName ?: 'Cliente de la Red';
             $job->owner_user_id = $ownerUserId;
             $job->owner_tenant_id = $ownerTenantId;
+            // ★ trato / ⏱ pago del cliente: exclusivo de los técnicos (el cliente no ve su calificación)
+            $job->owner_rating = ($authUser && in_array((int) $authUser->role_id, [0, 1, 2, 6, 8], true) && !$request->boolean('only_mine'))
+                ? \App\Services\CalificacionCliente::resumen($ownerUserId)
+                : null;
 
             // Coordenadas fijas y estables (nunca saltan en recargas)
             $rawLat = 21.0181;
@@ -678,7 +682,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // INE y diplomas (privados): el propio técnico y Admin/Root
     Route::get('/perfil-profesional/{userId}/archivo/{tipo}/{cursoId?}', [\App\Http\Controllers\PerfilProfesionalController::class, 'archivo']);
     // Clientes: perfil por niveles (RFC y CLABE solo si ya lo contrató)
+    Route::get('/tecnicos/resumenes', [\App\Http\Controllers\PerfilProfesionalController::class, 'resumenes']);
     Route::get('/tecnicos/{userId}/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'publico']);
+    // Calificación de clientes de la red (★ trato, ⏱ pago)
+    Route::get('/tecnico/calificaciones-cliente/pendientes', [\App\Http\Controllers\CalificacionClienteController::class, 'pendientes']);
+    Route::post('/tecnico/calificaciones-cliente/{workOrderId}', [\App\Http\Controllers\CalificacionClienteController::class, 'guardar']);
     // Admin/Root: validar
     Route::middleware('role:0,1')->group(function () {
         Route::get('/admin/perfiles-profesionales', [\App\Http\Controllers\PerfilProfesionalController::class, 'porValidar']);
@@ -1345,6 +1353,15 @@ Route::middleware('auth:sanctum')->group(function () {
         if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)
             || \App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
             return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+        }
+
+        // Calificar al cliente de los trabajos terminados es obligatorio antes de seguir cotizando
+        if (\App\Services\CalificacionCliente::tienePendientes($user)) {
+            return response()->json([
+                'success' => false,
+                'reason' => 'calificacion_cliente_pendiente',
+                'message' => 'Antes de cotizar, califica a los clientes de tus trabajos terminados.',
+            ], 409);
         }
 
         // Validar restricción activa de 24h (DESACTIVADO TEMPORALMENTE A PETICIÓN DEL USUARIO PARA PRUEBAS)

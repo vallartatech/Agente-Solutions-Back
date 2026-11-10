@@ -52,6 +52,10 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        // Calificación del cliente: exclusiva de los técnicos (se lee con CalificacionCliente::resumen)
+        'client_trato_avg',
+        'client_pago_avg',
+        'client_reviews_count',
     ];
 
     /**
