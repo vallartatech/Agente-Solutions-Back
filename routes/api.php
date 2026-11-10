@@ -703,6 +703,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/users', [UserController::class, 'getUsuarios']);
     Route::delete('/usuarios/delete-my-account', [UserController::class, 'deleteMyAccount']);
     Route::delete('/users/delete-my-account', [UserController::class, 'deleteMyAccount']);
+    // Alta de usuarios desde el panel (sin captcha; valida sesión y rol)
+    Route::post('/admin/usuarios', [AuthController::class, 'registroPorAdmin']);
     Route::delete('/usuarios/{id}', [UserController::class, 'eliminarUsuario']);
     Route::delete('/users/{id}', [UserController::class, 'eliminarUsuario']);
     Route::put('/usuarios/{id}/toggle-bloqueo', [UserController::class, 'toggleBloqueo']);

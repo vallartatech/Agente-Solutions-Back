@@ -10,40 +10,76 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
+    /** Roles que un admin de empresa (no ROOT) puede dar de alta desde el panel. */
+    private const ROLES_ALTA_ADMIN = [2, 3, 5, 6, 7, 8];
+    /** Roles que cualquiera puede elegir al registrarse solo (nunca ROOT ni Admin). */
+    private const ROLES_AUTO_REGISTRO = [2, 3, 4, 5, 6, 7, 8];
+    /** Roles que pueden dar de alta usuarios desde el panel. */
+    private const ROLES_QUE_DAN_ALTA = [0, 1, 4, 5, 7];
+
+    /**
+     * Alta de usuarios desde el panel (sin captcha): requiere sesión y un rol de administración.
+     * Reemplaza al antiguo token fijo "from_admin_bypass" que mandaba el frontend.
+     */
+    public function registroPorAdmin(Request $request)
+    {
+        $admin = $request->user();
+        if (!$admin || !in_array((int) $admin->role_id, self::ROLES_QUE_DAN_ALTA, true)) {
+            return response()->json(['message' => 'No tienes permiso para dar de alta usuarios.'], 403);
+        }
+        $permitidos = (int) $admin->role_id === 0 ? [1, 2, 3, 4, 5, 6, 7, 8] : self::ROLES_ALTA_ADMIN;
+        if (!in_array((int) $request->input('role_id'), $permitidos, true)) {
+            return response()->json(['message' => 'No puedes crear usuarios con ese rol.'], 403);
+        }
+
+        // Un admin de empresa solo da de alta dentro de su propia empresa
+        if ((int) $admin->role_id !== 0) {
+            $request->merge(['tenant_id' => $admin->tenant_id, 'company_code' => null]);
+        }
+
+        $request->attributes->set('alta_por_admin', true);
+        return $this->registro($request);
+    }
+
     public function registro(Request $request)
     {
+        // Alta desde el panel: solo llega aquí por registroPorAdmin (con sesión y rol verificados)
+        $porAdmin = $request->attributes->get('alta_por_admin') === true;
+        // Fuera de producción (local/testing) no se valida el reCAPTCHA
+        $sinCaptchaLocal = app()->environment(['local', 'testing']);
+
         // 1. Actualizamos la validación para requerir first_name y last_name
         $request->validate([
+            'role_id' => $porAdmin ? 'required|integer' : ['required', 'integer', \Illuminate\Validation\Rule::in(self::ROLES_AUTO_REGISTRO)],
             'first_name' => 'required|string|max:191',
             'last_name' => 'required|string|max:191',
             'email' => 'required|string|email|max:191|unique:users',
             'password' => 'required|string|min:6',
-            'role_id' => 'required|integer',
             'phone_number' => 'nullable|string|max:20|unique:users,phone_number',
             'company_code' => 'nullable|string',
             'tenant_id' => 'nullable|integer',
             'company_name' => 'nullable|string|max:191',
-            'captcha_token' => $request->boolean('from_admin') ? 'nullable|string' : 'required|string'
+            'captcha_token' => ($porAdmin || $sinCaptchaLocal) ? 'nullable|string' : 'required|string'
         ], [
+            'role_id.in' => 'Tipo de cuenta no válido.',
             'email.unique' => 'Este correo electrónico ya está registrado en otra cuenta.',
             'phone_number.unique' => 'Este número de teléfono ya está registrado en otra cuenta.',
-            'captcha_token.required' => 'Por favor verifica que no eres un robot.'
+            'captcha_token.required' => 'Por favor verifica que no eres un robot.',
         ]);
 
-        $currentUser = auth('sanctum')->user();
-        $isDirectCreation = ($currentUser !== null) || $request->boolean('from_admin');
-        $isRootOrAdmin = ($currentUser && in_array($currentUser->role_id, [0, 1])) || $request->boolean('from_admin');
-        $isLocalhostBypass = ($request->captcha_token === 'localhost_dev_token' || $request->captcha_token === 'from_admin_bypass' || app()->environment('local'));
+        // El registro público nunca hereda la sesión: solo el alta desde el panel crea usuarios "directos"
+        $currentUser = $porAdmin ? $request->user() : null;
+        $isDirectCreation = $porAdmin;
 
-        // Validar con Google reCAPTCHA únicamente si no es un registro administrativo o bypass local
-        if (!$isRootOrAdmin && !$isLocalhostBypass) {
+        // reCAPTCHA obligatorio en todo registro público (sin tokens de bypass)
+        if (!$porAdmin && !$sinCaptchaLocal) {
             $recaptchaResponse = \Illuminate\Support\Facades\Http::asForm()->post('https://www.google.com/recaptcha/api/siteverify', [
                 'secret' => env('RECAPTCHA_SECRET_KEY', '6LccVsstAAAAAIhyLM4y25IaCF2bC8YgzWBonbFR'),
                 'response' => $request->captcha_token,
             ]);
 
             $recaptchaData = $recaptchaResponse->json();
-            if (!$recaptchaData['success']) {
+            if (empty($recaptchaData['success'])) {
                 return response()->json([
                     'errors' => ['captcha' => ['La validación del reCAPTCHA ha fallado. Por favor recarga la página e intenta de nuevo.']]
                 ], 422);
@@ -98,7 +134,7 @@ class AuthController extends Controller
         $createsTenant = ($request->role_id == 4 || $request->role_id == 5 || $request->role_id == 7) && empty($tenantId);
 
         // Estado inicial de aprobación
-        // Si fue creado directamente desde el panel interno por un usuario logueado o from_admin, queda activo y aprobado
+        // Si fue creado directamente desde el panel interno (registroPorAdmin), queda activo y aprobado
         $isPendingApprovalTech = in_array($request->role_id, [2, 8]);
         $approvalStatus = ($isPendingApprovalTech && !$isDirectCreation) ? 'pending' : 'approved';
         $isActive = ($isPendingApprovalTech && !$isDirectCreation) ? 0 : 1;
