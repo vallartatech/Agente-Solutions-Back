@@ -522,6 +522,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     // Llegada al sitio: así, al recargar, el técnico ya no ve "Llegué al lugar"
                     'arrived_at' => $order->arrived_at ? \Carbon\Carbon::parse($order->arrived_at)->format('Y-m-d H:i:s') : null,
                     'arrival_status' => $order->arrival_status,
+                    // El dueño confirmó la llegada: el técnico ya puede comenzar
+                    'arrival_confirmed_at' => $order->arrival_confirmed_at ? \Carbon\Carbon::parse($order->arrival_confirmed_at)->format('Y-m-d H:i:s') : null,
                     'evidence_path' => $order->evidence_path,
                     'evidence_path_2' => $order->evidence_path_2,
                     'property' => $order->property,
@@ -737,6 +739,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/services/{id}/confirm-arrival', [ServiceController::class, 'confirmArrival']);
     Route::post('/work-orders/{id}/confirm-arrival', [ServiceController::class, 'confirmArrival']);
+    // Red: el dueño de la propiedad confirma la llegada del técnico (autoriza comenzar)
+    Route::post('/work-orders/{id}/client-confirm-arrival', [ServiceController::class, 'clientConfirmArrival']);
 
     Route::post('/upload-profile-picture', [ImageController::class, 'uploadProfilePicture']);
     Route::post('/update-photos', function (\Illuminate\Http\Request $request) {

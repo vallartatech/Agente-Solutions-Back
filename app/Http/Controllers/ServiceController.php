@@ -1546,6 +1546,66 @@ class ServiceController extends Controller
         }
     }
 
+    /**
+     * Red: el dueño de la propiedad confirma que el técnico ya llegó y autoriza el inicio del trabajo.
+     * Requiere que el técnico haya marcado su llegada (arrived_at). Solo se registra una vez.
+     */
+    public function clientConfirmArrival(Request $request, $id)
+    {
+        try {
+            $user = auth('sanctum')->user();
+            if (!$user) {
+                return response()->json(['error' => 'No autenticado'], 401);
+            }
+
+            $parsed = $this->parseCompositeId($id);
+            $orden = $parsed['realId'] ? WorkOrder::withoutGlobalScopes()->find($parsed['realId']) : null;
+            if (!$orden) {
+                return response()->json(['error' => 'Trabajo no encontrado'], 404);
+            }
+
+            // Solo el dueño de la propiedad (o Root/Admin)
+            $duenoId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $orden->id);
+            $esDueno = $duenoId && (int) $duenoId === (int) $user->id;
+            if (!$esDueno && !in_array((int) $user->role_id, [0, 1], true)) {
+                return response()->json(['error' => 'Solo el dueño de la propiedad puede confirmar la llegada'], 403);
+            }
+
+            if (empty($orden->arrived_at)) {
+                return response()->json(['error' => 'El técnico todavía no ha marcado su llegada'], 422);
+            }
+
+            if (empty($orden->arrival_confirmed_at)) {
+                $orden->arrival_confirmed_at = now()->setTimezone('America/Merida')->format('Y-m-d H:i:s');
+                $orden->save();
+
+                // Avisar al técnico: el asignado o el de la cotización aceptada
+                try {
+                    $tecnicoId = $orden->tecnico_id ?: DB::table('network_quotes')
+                        ->where('work_order_id', $orden->id)
+                        ->where('status', 'accepted')
+                        ->value('technician_id');
+                    $tecnico = $tecnicoId ? User::withoutGlobalScopes()->find($tecnicoId) : null;
+                    if ($tecnico) {
+                        $nombre = trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? '')) ?: ($user->name ?? 'El cliente');
+                        $tecnico->notify(new \App\Notifications\LlegadaConfirmadaClienteNotification($orden, $nombre));
+                    }
+                } catch (\Exception $notifErr) {
+                    Log::warning("No se pudo avisar al técnico de la llegada confirmada: " . $notifErr->getMessage());
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Llegada confirmada. El técnico ya puede comenzar.',
+                'arrived_at' => \Carbon\Carbon::parse($orden->arrived_at)->format('Y-m-d H:i:s'),
+                'arrival_confirmed_at' => \Carbon\Carbon::parse($orden->arrival_confirmed_at)->format('Y-m-d H:i:s'),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Error al confirmar la llegada: ' . $e->getMessage()], 500);
+        }
+    }
+
     public function getRootTechniciansLiveMap()
     {
         try {
