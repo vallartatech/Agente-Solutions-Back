@@ -519,6 +519,9 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'priority' => $order->priority ?: 'Normal',
                     'is_urgent' => in_array(strtolower($order->priority ?? ''), ['urgente', 'sos', 'urgent']),
                     'scheduled_at' => $order->scheduled_at ? (\Carbon\Carbon::parse($order->scheduled_at)->format('Y-m-d H:i')) : null,
+                    // Llegada al sitio: así, al recargar, el técnico ya no ve "Llegué al lugar"
+                    'arrived_at' => $order->arrived_at ? \Carbon\Carbon::parse($order->arrived_at)->format('Y-m-d H:i:s') : null,
+                    'arrival_status' => $order->arrival_status,
                     'evidence_path' => $order->evidence_path,
                     'evidence_path_2' => $order->evidence_path_2,
                     'property' => $order->property,

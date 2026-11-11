@@ -1459,11 +1459,18 @@ class ServiceController extends Controller
                 return response()->json(['error' => 'Trabajo no encontrado'], 404);
             }
 
-            $item->arrived_at = $now->format('Y-m-d H:i:s');
-            $item->arrived_latitude = $lat;
-            $item->arrived_longitude = $lng;
-            $item->arrival_status = 'EN_SITIO';
-            $item->save();
+            // Red (técnicos 6, 7, 8): la hora de llegada se registra una sola vez; si ya llegó,
+            // se conserva la primera y no se vuelve a notificar. Agente Solutions conserva su flujo.
+            $esTecnicoRed = $user && in_array((int) $user->role_id, [6, 7, 8]);
+            $yaHabiaLlegado = $esTecnicoRed && !empty($item->arrived_at);
+            if (!$yaHabiaLlegado) {
+                $item->arrived_at = $now->format('Y-m-d H:i:s');
+                $item->arrived_latitude = $lat;
+                $item->arrived_longitude = $lng;
+                $item->arrival_status = 'EN_SITIO';
+                $item->save();
+            }
+            $llegada = \Carbon\Carbon::parse($item->arrived_at)->format('Y-m-d H:i:s');
 
             // Guardar o actualizar ubicación en vivo del técnico
             if ($user && $lat && $lng) {
@@ -1477,15 +1484,39 @@ class ServiceController extends Controller
                 );
             }
 
-            // Notificar a Root, Admins y Cliente de la llegada del técnico
+            if ($yaHabiaLlegado) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'La llegada ya estaba registrada.',
+                    'arrived_at' => $llegada,
+                    'arrival_status' => 'EN_SITIO'
+                ]);
+            }
+
+            // Notificar la llegada del técnico
             try {
                 $property = \App\Models\Property::withoutGlobalScopes()->find($item->property_id);
                 $propName = $property ? ($property->property_name ?: $property->address) : 'la propiedad';
-
-                // Usar withoutGlobalScopes para asegurar que los usuarios Root y Admin reciban la notificación independientemente del tenant_id
-                $admins = User::withoutGlobalScopes()->whereIn('role_id', [0, 1])->get();
                 $notif = new \App\Notifications\TechnicianArrivedNotification($user, $item, $propName);
 
+                // Red: solo se avisa al dueño de la propiedad, no a Root ni a los Admin
+                if ($esTecnicoRed && $item instanceof WorkOrder) {
+                    $duenoId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $item->id);
+                    $dueno = $duenoId ? User::withoutGlobalScopes()->find($duenoId) : null;
+                    if ($dueno && (int) $dueno->id !== (int) $user->id) {
+                        $dueno->notify($notif);
+                    }
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Llegada confirmada con éxito.',
+                        'arrived_at' => $llegada,
+                        'arrival_status' => 'EN_SITIO'
+                    ]);
+                }
+
+                // Agente Solutions: Root, Admins y el cliente de la propiedad
+                // (withoutGlobalScopes para que Root y Admin la reciban sin importar el tenant_id)
+                $admins = User::withoutGlobalScopes()->whereIn('role_id', [0, 1])->get();
                 foreach ($admins as $admin) {
                     $admin->notify($notif);
                 }
@@ -1506,7 +1537,7 @@ class ServiceController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Llegada confirmada con éxito.',
-                'arrived_at' => $now->format('Y-m-d H:i:s'),
+                'arrived_at' => $llegada,
                 'arrival_status' => 'EN_SITIO'
             ]);
 
