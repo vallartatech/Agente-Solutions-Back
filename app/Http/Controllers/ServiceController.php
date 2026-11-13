@@ -450,6 +450,13 @@ class ServiceController extends Controller
         }
     }
 
+    /** La columna preferred_start existe (su migración puede no haber corrido aún). */
+    private static function tienePreferredStart(): bool
+    {
+        static $existe = null;
+        return $existe ??= \Illuminate\Support\Facades\Schema::hasColumn('services', 'preferred_start');
+    }
+
     public function store(Request $request)
     {
         try {
@@ -473,6 +480,14 @@ class ServiceController extends Controller
                     ->first();
 
                 if ($abierto) {
+                    // El cliente vuelve a pedir el mismo levantamiento: se actualiza su fecha preferida
+                    if ($request->filled('preferred_start') && self::tienePreferredStart()) {
+                        DB::table('services')->where('id', $abierto->id)->update([
+                            'preferred_start' => $request->preferred_start,
+                            'updated_at' => now(),
+                        ]);
+                    }
+
                     $rawTec = $request->input('technician_id', $request->input('tecnico_id'));
                     $tecId = !empty($rawTec) ? (int) str_replace('u_', '', (string) $rawTec) : null;
                     if ($tecId) {
@@ -581,6 +596,11 @@ class ServiceController extends Controller
             $servicio->assigned_to = $tecnicoId;
             $servicio->scheduled_start = $request->filled('scheduled_start') ? $request->scheduled_start : ($request->filled('date') ? $request->date : now());
             $servicio->scheduled_end = $request->scheduled_end;
+
+            // Red: fecha y hora en que el cliente prefiere la visita (el Root la ajusta con el técnico)
+            if ($request->filled('preferred_start') && self::tienePreferredStart()) {
+                $servicio->preferred_start = $request->preferred_start;
+            }
 
             $servicio->save();
 
@@ -725,6 +745,7 @@ class ServiceController extends Controller
                     'cliente_email' => ($s->property && $s->property->client) ? $s->property->client->email : '',
                     'direccion' => $s->property ? $s->property->address : 'N/A',
                     'fecha_programada' => $s->scheduled_start,
+                    'fecha_preferida' => $s->preferred_start ?? null,
                     'foto_fachada' => $s->property ? $s->property->facade_photo_path : null,
                     'supervisor_name' => $s->supervisor_name,
                     'description' => $s->description,
