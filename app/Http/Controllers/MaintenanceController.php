@@ -69,7 +69,14 @@ class MaintenanceController extends Controller
     private function propiedad(Request $request, $id): ?Property
     {
         $query = Property::withoutGlobalScopes()->whereKey($id);
-        return $this->delEquipo($query, $request)->first();
+        $propiedad = $this->delEquipo($query, $request)->first();
+
+        // Casa de la Red (otra empresa) con levantamiento asignado a este técnico interno:
+        // el filtro por equipo se la escondería, pero él agenda sus mantenimientos al levantarla
+        if (!$propiedad && \App\Services\PropiedadRed::tecnicoAsignado($request->user(), $id)) {
+            $propiedad = Property::withoutGlobalScopes()->find($id);
+        }
+        return $propiedad;
     }
 
     private function equiposDelEquipo(Request $request)
@@ -226,6 +233,13 @@ class MaintenanceController extends Controller
             return response()->json(['error' => 'No autorizado.'], 403);
         }
         $equipo = $this->equiposDelEquipo($request)->where('activo', true)->find($id);
+        // Equipo de una casa de la Red que levanta este técnico interno (queda con el tenant de la casa)
+        if (!$equipo) {
+            $candidato = MaintenanceEquipment::where('activo', true)->find($id);
+            if ($candidato && \App\Services\PropiedadRed::tecnicoAsignado($request->user(), $candidato->property_id)) {
+                $equipo = $candidato;
+            }
+        }
         if (!$equipo) {
             return response()->json(['error' => 'Equipo no encontrado.'], 404);
         }

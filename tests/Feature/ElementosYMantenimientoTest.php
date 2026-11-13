@@ -106,6 +106,18 @@ class ElementosYMantenimientoTest extends TestCase
             $t->timestamp('closed_at')->nullable();
             $t->timestamps();
         });
+        // Servicios: el técnico interno asignado a una casa de la Red (PropiedadRed::tecnicoAsignado)
+        Schema::create('services', function (Blueprint $t) {
+            $t->id();
+            $t->unsignedBigInteger('property_id')->nullable();
+            $t->unsignedBigInteger('assigned_to')->nullable();
+            $t->timestamps();
+        });
+        Schema::create('service_technician', function (Blueprint $t) {
+            $t->id();
+            $t->unsignedBigInteger('service_id');
+            $t->unsignedBigInteger('technician_id');
+        });
         Schema::create('work_order_technician', function (Blueprint $t) {
             $t->unsignedBigInteger('work_order_id');
             $t->unsignedBigInteger('technician_id');
@@ -614,5 +626,32 @@ class ElementosYMantenimientoTest extends TestCase
                 ->assertOk()
                 ->assertJsonFragment(['status' => 'Por Aprobar']);
         }
+    }
+
+    // Casa de la Red (otra empresa) con levantamiento asignado a un técnico interno:
+    // él agenda, lista y edita sus mantenimientos; otro técnico no.
+    public function test_tecnico_interno_asignado_agenda_mantenimiento_en_casa_de_la_red(): void
+    {
+
+        $casaRed = DB::table('properties')->insertGetId(['property_name' => 'Casa de la red', 'address' => 'Centro', 'tenant_id' => 15]);
+        $tecnico = $this->usuario(2);
+        $otroTecnico = $this->usuario(2);
+        DB::table('services')->insert(['property_id' => $casaRed, 'assigned_to' => $tecnico->id]);
+
+        // Sin asignación, la casa de otra empresa no se ve
+        Sanctum::actingAs($otroTecnico);
+        $this->agregar(['property_id' => $casaRed])->assertNotFound();
+        $this->getJson("/api/properties/{$casaRed}/mantenimiento")->assertNotFound();
+
+        Sanctum::actingAs($tecnico);
+        $id = $this->agregar(['property_id' => $casaRed, 'frecuencia_meses' => 6, 'fecha' => null])
+            ->assertCreated()->json('equipo.id');
+        $this->getJson("/api/properties/{$casaRed}/mantenimiento")->assertOk()->assertJsonCount(1);
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Minisplit', 'frecuencia_meses' => 3])->assertOk();
+        $this->assertSame('Minisplit', MaintenanceEquipment::find($id)->tipo);
+        $this->assertSame(15, (int) MaintenanceEquipment::find($id)->tenant_id);
+
+        Sanctum::actingAs($otroTecnico);
+        $this->putJson("/api/mantenimiento/equipos/{$id}", ['tipo' => 'Otro', 'frecuencia_meses' => 3])->assertNotFound();
     }
 }
