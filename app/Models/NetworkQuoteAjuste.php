@@ -20,6 +20,7 @@ class NetworkQuoteAjuste extends Model
         'desglose' => 'array',
         'fotos' => 'array',
         'respondido_at' => 'datetime',
+        'con_iva' => 'boolean',
     ];
 
     public function quote()

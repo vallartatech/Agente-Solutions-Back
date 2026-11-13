@@ -36,6 +36,7 @@ class AjusteCotizacionTest extends TestCase
         config(['services.onesignal.app_id' => null, 'services.onesignal.rest_api_key' => null]);
         $this->crearEsquema();
         (require database_path('migrations/2026_11_13_100000_create_network_quote_ajustes_table.php'))->up();
+        (require database_path('migrations/2026_11_13_140000_add_archivo_iva_to_network_quote_ajustes.php'))->up();
 
         $this->cliente = $this->usuario(4, 'cliente@red.mx');
         $this->tecnico = $this->usuario(6, 'tecnico@red.mx');
@@ -127,11 +128,15 @@ class AjusteCotizacionTest extends TestCase
         return User::withoutGlobalScopes()->find($id);
     }
 
+    // Como el cotizador: el total sale de los conceptos (un concepto con el precio pedido)
     private function proponer(array $datos = [])
     {
         Sanctum::actingAs($this->tecnico);
+        $precio = $datos['precio'] ?? 850;
         return $this->postJson("/api/mercado-trabajos/{$this->orden}/ajustes", array_merge([
-            'precio' => 850, 'motivo' => 'El compresor está dañado y hay que cambiarlo.',
+            'precio' => $precio,
+            'motivo' => 'El compresor está dañado y hay que cambiarlo.',
+            'desglose' => json_encode(['servicios' => [['descripcion' => 'Cambio de compresor', 'cantidad' => 1, 'precio' => $precio]], 'materiales' => []]),
         ], $datos));
     }
 
@@ -269,5 +274,15 @@ class AjusteCotizacionTest extends TestCase
         Sanctum::actingAs($this->cliente);
         $this->postJson("/api/network-quotes/{$pendiente}/reject")->assertOk();
         $this->assertSame('rejected', DB::table('network_quotes')->where('id', $pendiente)->value('status'));
+    }
+
+    public function test_con_iva_suma_el_16_por_ciento_y_sin_conceptos_ni_archivo_no_se_envia(): void
+    {
+        $this->proponer(['precio' => 1000, 'con_iva' => true])->assertOk()
+            ->assertJsonPath('ajuste_pendiente.precio', 1160)
+            ->assertJsonPath('ajuste_pendiente.con_iva', true);
+
+        DB::table('network_quote_ajustes')->update(['status' => 'retirado']);
+        $this->proponer(['desglose' => null])->assertStatus(422);
     }
 }

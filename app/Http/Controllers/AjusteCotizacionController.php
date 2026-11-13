@@ -11,6 +11,7 @@ use Cloudinary\Cloudinary;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Red (Agente Market): ajuste de una cotización ya aceptada.
@@ -26,6 +27,7 @@ class AjusteCotizacionController extends Controller
     private const ESTADOS_AJUSTABLES = ['Asignado', 'En Progreso'];
     private const MAX_FOTOS = 4;
     private const MAX_FILAS = 50;
+    private const IVA = 0.16;
 
     /**
      * ¿Puede este usuario aceptar/rechazar por el dueño de la orden?
@@ -98,7 +100,12 @@ class AjusteCotizacionController extends Controller
             'desglose' => 'nullable|string|max:20000',
             'fotos' => 'nullable|array|max:' . self::MAX_FOTOS,
             'fotos.*' => 'image|max:12288',
+            // Pestaña "Cargar archivo": la cotización del técnico en PDF o imagen
+            'archivo' => 'nullable|file|mimes:pdf,jpg,jpeg,png,webp|max:10240',
+            'con_iva' => 'nullable|boolean',
         ], [
+            'archivo.mimes' => 'El archivo debe ser PDF o imagen (JPG, PNG, WEBP).',
+            'archivo.max' => 'El archivo debe pesar menos de 10 MB.',
             'motivo.required' => 'Explica al cliente por qué cambia el precio.',
             'motivo.min' => 'Explica al cliente por qué cambia el precio.',
             'fotos.max' => 'Puedes adjuntar hasta ' . self::MAX_FOTOS . ' fotos.',
@@ -107,9 +114,16 @@ class AjusteCotizacionController extends Controller
         ]);
 
         $desglose = $this->limpiarDesglose($request->input('desglose'));
-        // Con desglose, el total es la suma de las filas (no se confía en el precio enviado)
-        $precio = $desglose ? $this->totalDesglose($desglose) : round((float) $request->input('precio'), 2);
+        $conIva = $request->boolean('con_iva');
+        // Con desglose, el total es la suma de las filas (+16% si marcó IVA); no se confía en el precio enviado
+        $precio = $desglose
+            ? round($this->totalDesglose($desglose) * ($conIva ? 1 + self::IVA : 1), 2)
+            : round((float) $request->input('precio'), 2);
         $precioAnterior = (float) $quote->price;
+
+        if (!$desglose && !$request->hasFile('archivo')) {
+            return response()->json(['success' => false, 'message' => 'Agrega al menos un concepto o material, o carga el archivo de la cotización.'], 422);
+        }
 
         if (abs($precio - $precioAnterior) < 0.01) {
             return response()->json(['success' => false, 'message' => 'El nuevo precio es igual al vigente'], 422);
@@ -125,11 +139,28 @@ class AjusteCotizacionController extends Controller
             return response()->json(['success' => false, 'message' => 'No se pudieron subir las fotos. Inténtalo de nuevo.'], 500);
         }
 
-        $ajuste = DB::transaction(function () use ($quote, $orden, $user, $precio, $precioAnterior, $request, $desglose, $fotos) {
+        $archivo = null;
+        if ($request->hasFile('archivo')) {
+            try {
+                $archivo = [
+                    'archivo_url' => $this->subirArchivo($request->file('archivo')->getRealPath()),
+                    'archivo_nombre' => mb_substr($request->file('archivo')->getClientOriginalName(), 0, 191),
+                ];
+            } catch (\Throwable $e) {
+                Log::error('Ajuste de cotización: error subiendo el archivo: ' . $e->getMessage());
+                return response()->json(['success' => false, 'message' => 'No se pudo subir el archivo. Inténtalo de nuevo.'], 500);
+            }
+        }
+        // Mientras no corra la migración 2026_11_13_140000, el archivo y el IVA no se guardan aparte
+        $extra = Schema::hasColumn('network_quote_ajustes', 'con_iva')
+            ? (($archivo ?? []) + ['con_iva' => $conIva])
+            : [];
+
+        $ajuste = DB::transaction(function () use ($quote, $orden, $user, $precio, $precioAnterior, $request, $desglose, $fotos, $extra) {
             // Sin el orderBy de la relación: MAX con ORDER BY falla con ONLY_FULL_GROUP_BY
             $ultima = (int) NetworkQuoteAjuste::where('network_quote_id', $quote->id)->lockForUpdate()->max('version');
             $version = max($ultima, 1) + 1;
-            return NetworkQuoteAjuste::create([
+            return NetworkQuoteAjuste::create($extra + [
                 'network_quote_id' => $quote->id,
                 'work_order_id' => $orden->id,
                 'technician_id' => $user->id,
@@ -369,6 +400,9 @@ class AjusteCotizacionController extends Controller
             'motivo' => $a->motivo,
             'desglose' => $a->desglose,
             'fotos' => $a->fotos ?: [],
+            'archivo_url' => $a->archivo_url ?? null,
+            'archivo_nombre' => $a->archivo_nombre ?? null,
+            'con_iva' => (bool) ($a->con_iva ?? false),
             'status' => $a->status,
             'decision_tecnico' => $a->decision_tecnico,
             'created_at' => optional($a->created_at)->toIso8601String(),
@@ -408,6 +442,12 @@ class AjusteCotizacionController extends Controller
             }
         }
         return round($total, 2);
+    }
+
+    private function subirArchivo(string $ruta): string
+    {
+        $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
+        return $cloudinary->uploadApi()->upload($ruta, ['folder' => 'ajustes_cotizacion/archivos', 'resource_type' => 'auto'])['secure_url'];
     }
 
     private function subirFoto(string $ruta): string

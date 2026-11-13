@@ -250,7 +250,7 @@ class NotificacionesRedTest extends TestCase
         Notification::fake();
 
         Sanctum::actingAs($this->tecnico);
-        $this->postJson("/api/mercado-trabajos/{$this->orden}/ajustes", ['precio' => 850, 'motivo' => 'El compresor está dañado.'])->assertOk();
+        $this->postJson("/api/mercado-trabajos/{$this->orden}/ajustes", ['precio' => 850, 'motivo' => 'El compresor está dañado.', 'desglose' => json_encode(['servicios' => [['descripcion' => 'Compresor', 'cantidad' => 1, 'precio' => 850]]])])->assertOk();
         Notification::assertSentTo($this->cliente, \App\Notifications\MovimientoNotificacion::class);
 
         Sanctum::actingAs($this->cliente);
