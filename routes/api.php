@@ -205,7 +205,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
         // Si se pide filtrar solo los del usuario autónomo o cliente (role_id 3, 4, 5, 7) con only_mine
         if ($request->boolean('only_mine')) {
-            $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico']);
+            $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico', 'Cancelado_Cliente']);
             if ($authUser && !in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
                     $q->whereHas('property.client', function ($qc) use ($authUser) {
@@ -464,6 +464,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'networkQuotes' => fn($q) => $q->withoutGlobalScopes()->where('technician_id', $authUser->id),
                     'networkQuotes.technician' => fn($q) => $q->withoutGlobalScopes(),
                 ])
+                // Ajustes de cotización (si ya corrió la migración; sin la tabla el mercado no debe caerse)
+                ->when(\Illuminate\Support\Facades\Schema::hasTable('network_quote_ajustes'), fn ($q) => $q->with('networkQuotes.ajustes'))
                 ->where(function ($q) use ($authUser) {
                     $q->where('tecnico_id', $authUser->id)
                       ->orWhereHas('networkQuotes', function ($nq) use ($authUser) {
@@ -486,6 +488,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     }
                 }
                 $acceptedQuote = $order->networkQuotes->firstWhere('status', 'accepted') ?: $order->networkQuotes->first();
+                $ajustesDeLaCotizacion = ($acceptedQuote && $acceptedQuote->relationLoaded('ajustes')) ? $acceptedQuote->ajustes : collect();
 
                 $clientName = 'Cliente';
                 $clientPhone = '';
@@ -541,6 +544,12 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'client_phone' => $clientPhone,
                     'client_email' => $clientEmail,
                     'agreed_price' => $acceptedQuote ? (float)$acceptedQuote->price : 0,
+                    // Ajustes de cotización: precio con el que se aceptó al inicio y si hay uno en curso
+                    'precio_original' => $acceptedQuote
+                        ? (float) ($ajustesDeLaCotizacion->first()?->precio_anterior ?? $acceptedQuote->price)
+                        : 0,
+                    'ajuste_pendiente' => $ajustesDeLaCotizacion->contains('status', 'pending'),
+                    'ajuste_por_decidir' => $ajustesDeLaCotizacion->contains(fn ($a) => $a->status === 'rejected' && !$a->decision_tecnico),
                     'myQuote' => $acceptedQuote,
                     'review' => $jobReview ? [
                         'rating_stars' => (float)$jobReview->rating_stars,
@@ -931,6 +940,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/mis-tecnicos/{tecnicoId}', [\App\Http\Controllers\MisTecnicosController::class, 'marcar'])->whereNumber('tecnicoId');
     Route::get('/mis-tecnicos/{tecnicoId}/detalle', [\App\Http\Controllers\TecnicoQrController::class, 'detalle'])->whereNumber('tecnicoId');
     Route::post('/red/qr/{codigo}/contratar', [\App\Http\Controllers\TecnicoQrController::class, 'contratar'])->where('codigo', '[A-Za-z0-9]{6,20}');
+    // Red: ajuste de una cotización ya aceptada (el técnico propone, el dueño responde)
+    Route::get('/mercado-trabajos/{id}/ajustes', [\App\Http\Controllers\AjusteCotizacionController::class, 'index'])->whereNumber('id');
+    Route::post('/mercado-trabajos/{id}/ajustes', [\App\Http\Controllers\AjusteCotizacionController::class, 'proponer'])->whereNumber('id');
+    Route::post('/ajustes-cotizacion/{id}/responder', [\App\Http\Controllers\AjusteCotizacionController::class, 'responder'])->whereNumber('id');
+    Route::post('/ajustes-cotizacion/{id}/retirar', [\App\Http\Controllers\AjusteCotizacionController::class, 'retirar'])->whereNumber('id');
+    Route::post('/ajustes-cotizacion/{id}/decidir', [\App\Http\Controllers\AjusteCotizacionController::class, 'decidir'])->whereNumber('id');
+    // Red: el cliente cancela un trabajo asignado; el técnico retira su cotización o confirma que sigue disponible
+    Route::post('/mercado-trabajos/{id}/cancelar-cliente', [\App\Http\Controllers\RedCancelacionController::class, 'cancelarCliente'])->whereNumber('id');
+    Route::post('/network-quotes/{id}/retirar', [\App\Http\Controllers\RedCancelacionController::class, 'retirarCotizacion'])->whereNumber('id');
+    Route::post('/network-quotes/{id}/confirmar', [\App\Http\Controllers\RedCancelacionController::class, 'confirmarDisponibilidad'])->whereNumber('id');
+    Route::post('/network-quotes/{id}/cancelar-confirmacion', [\App\Http\Controllers\RedCancelacionController::class, 'cancelarSolicitudConfirmacion'])->whereNumber('id');
+    // Red: acceso a la propiedad (QR y/o código). Sube el dueño; el técnico lo ve al marcar "Llegué"
+    Route::get('/red/trabajos/{id}/acceso', [\App\Http\Controllers\AccesoQrRedController::class, 'index'])->whereNumber('id');
+    Route::get('/red/trabajos/{id}/acceso/{slot}/imagen', [\App\Http\Controllers\AccesoQrRedController::class, 'imagen'])->where(['id' => '[0-9]+', 'slot' => '[12]']);
+    Route::post('/red/trabajos/{id}/acceso', [\App\Http\Controllers\AccesoQrRedController::class, 'store'])->whereNumber('id');
+    Route::delete('/red/trabajos/{id}/acceso/{slot}', [\App\Http\Controllers\AccesoQrRedController::class, 'destroy'])->where(['id' => '[0-9]+', 'slot' => '[12]']);
     Route::get('/mi-qr', [\App\Http\Controllers\TecnicoQrController::class, 'miQr']);
     // Mis clientes (técnico de la red): favoritos y bloqueos
     Route::get('/mis-clientes', [\App\Http\Controllers\MisClientesController::class, 'index']);
@@ -1206,52 +1231,27 @@ Route::middleware('auth:sanctum')->group(function () {
                 return response()->json(['success' => false, 'message' => 'Cotización no encontrada'], 404);
             }
 
-            $quote->status = 'accepted';
-            $quote->save();
-
-            $workOrder = $quote->workOrder ?: \App\Models\WorkOrder::withoutGlobalScopes()->find($quote->work_order_id);
-
-            if ($workOrder) {
-                $workOrder->tecnico_id = $quote->technician_id;
-                $workOrder->status = 'Asignado';
-                $workOrder->save();
-
-                try {
-                    \Illuminate\Support\Facades\DB::table('work_order_technician')->insertOrIgnore([
-                        'work_order_id' => $workOrder->id,
-                        'technician_id' => $quote->technician_id,
-                        'created_at' => now(),
-                        'updated_at' => now()
-                    ]);
-                } catch (\Throwable $e) {
-                    \Log::warning("No se pudo insertar en work_order_technician: " . $e->getMessage());
-                }
-
-                $title = $workOrder->type . ($workOrder->equipment ? ' - ' . $workOrder->equipment : '');
-                $techName = $quote->technician ? ($quote->technician->first_name . ' ' . $quote->technician->last_name) : 'Técnico';
-
-                // 1. Notificar al Técnico
-                try {
-                    if ($quote->technician) {
-                        $quote->technician->notify(new \App\Notifications\NetworkQuoteAccepted($quote, $title));
-                    }
-                } catch (\Throwable $e) {
-                    \Log::error("Error notificando al técnico: " . $e->getMessage());
-                }
-
-                // 2. Notificar al Cliente/Autónomo
-                try {
-                    $user = auth('sanctum')->user();
-                    if (!$user && $workOrder->tenant_id) {
-                        $user = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
-                    }
-                    if ($user) {
-                        $user->notify(new \App\Notifications\NetworkQuoteAcceptedClient($quote, $techName, $title));
-                    }
-                } catch (\Throwable $e) {
-                    \Log::error("Error notificando al cliente: " . $e->getMessage());
-                }
+            // Solo el dueño del trabajo (o Root/Admin) acepta cotizaciones
+            $ordenDeLaCotizacion = \App\Models\WorkOrder::withoutGlobalScopes()->find($quote->work_order_id);
+            if (!\App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno(auth('sanctum')->user(), $ordenDeLaCotizacion)) {
+                return response()->json(['success' => false, 'message' => 'Solo el dueño del trabajo puede aceptar esta cotización'], 403);
             }
+
+            // El técnico la retiró: ya no se puede aceptar
+            if (!empty($quote->retirada_at)) {
+                return response()->json(['success' => false, 'message' => 'El técnico retiró esta cotización.'], 422);
+            }
+            // Trabajo cancelado: primero se reenvía a la red
+            if ($ordenDeLaCotizacion && str_starts_with((string) $ordenDeLaCotizacion->status, 'Cancelado')) {
+                return response()->json(['success' => false, 'message' => 'Este servicio está cancelado. Reenvíalo a la red para elegir una cotización.'], 422);
+            }
+
+            // Cotización anterior a un reenvío a la red: primero el técnico confirma que sigue disponible
+            if (\App\Http\Controllers\RedCancelacionController::requiereConfirmacion($quote, $ordenDeLaCotizacion)) {
+                return \App\Http\Controllers\RedCancelacionController::pedirConfirmacion($quote, $ordenDeLaCotizacion, auth('sanctum')->user());
+            }
+
+            \App\Http\Controllers\RedCancelacionController::asignarCotizacion($quote, auth('sanctum')->user());
 
             return response()->json([
                 'success' => true,
@@ -1271,6 +1271,12 @@ Route::middleware('auth:sanctum')->group(function () {
         $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->find($id);
         if (!$quote) {
             return response()->json(['message' => 'Cotización no encontrada'], 404);
+        }
+
+        // Solo el dueño del trabajo (o Root/Admin) rechaza cotizaciones
+        $ordenDeLaCotizacion = \App\Models\WorkOrder::withoutGlobalScopes()->find($quote->work_order_id);
+        if (!\App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno(auth('sanctum')->user(), $ordenDeLaCotizacion)) {
+            return response()->json(['success' => false, 'message' => 'Solo el dueño del trabajo puede rechazar esta cotización'], 403);
         }
 
         $quote->status = 'rejected';
@@ -1346,14 +1352,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // Disparar Notificaciones
         if (in_array((int)$user->role_id, [2, 6, 8])) {
             // El técnico envió el mensaje -> notificar al Cliente / Autónomo dueño del reporte
-            $clientUser = null;
-            if ($quote->workOrder?->property?->client?->user_id) {
-                $clientUser = \App\Models\User::withoutGlobalScopes()->find($quote->workOrder->property->client->user_id);
-            }
-            if (!$clientUser && $quote->workOrder?->tenant_id) {
-                $clientUser = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $quote->workOrder->tenant_id)->first();
-            }
-            if ($clientUser) {
+            // Solo el dueño de la orden (no el primer usuario del tenant, que puede ser un Admin)
+            $clientUserId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $quote->work_order_id);
+            $clientUser = $clientUserId ? \App\Models\User::withoutGlobalScopes()->find($clientUserId) : null;
+            if ($clientUser && (int) $clientUser->id !== (int) $user->id) {
                 \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'Técnico'));
             }
         } else {
@@ -1436,17 +1438,17 @@ Route::middleware('auth:sanctum')->group(function () {
                 'status' => 'pending'
             ]
         );
+        // Cotizar (o recotizar) la deja vigente: ya no está retirada ni pide confirmación
+        if (\App\Http\Controllers\RedCancelacionController::hayColumnasNuevas()) {
+            $quote->forceFill(['cotizada_at' => now(), 'retirada_at' => null, 'confirmacion_pedida_at' => null])->save();
+        }
 
         // Notificar al dueño de la orden de trabajo (el Autónomo o Cliente)
         try {
-            $owner = null;
-            if ($workOrder->property && $workOrder->property->client && $workOrder->property->client->user_id) {
-                $owner = \App\Models\User::withoutGlobalScopes()->find($workOrder->property->client->user_id);
-            }
-            if (!$owner && $workOrder->tenant_id) {
-                $owner = \App\Models\User::withoutGlobalScopes()->where('tenant_id', $workOrder->tenant_id)->first();
-            }
-            if ($owner) {
+            // Solo el dueño de la orden (no el primer usuario del tenant, que puede ser un Admin)
+            $ownerId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $workOrder->id);
+            $owner = $ownerId ? \App\Models\User::withoutGlobalScopes()->find($ownerId) : null;
+            if ($owner && (int) $owner->id !== (int) $user->id) {
                 $techName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
                 $propName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad';
                 \Illuminate\Support\Facades\Notification::send($owner, new \App\Notifications\NetworkQuoteReceived($quote, $techName, $propName));
@@ -1569,16 +1571,11 @@ Route::middleware('auth:sanctum')->group(function () {
                     $u = \App\Models\User::withoutGlobalScopes()->where('email', $workOrder->property->client->email)->first();
                     if ($u) $clientUsers->push($u);
                 }
-                // 3. Por el tenant de la orden o propiedad
-                $tenantId = $workOrder->tenant_id ?: ($workOrder->property?->tenant_id ?? null);
-                if ($tenantId) {
-                    $tenantUsers = \App\Models\User::withoutGlobalScopes()
-                        ->where('tenant_id', $tenantId)
-                        ->whereIn('role_id', [0, 1, 3, 4, 5, 7])
-                        ->get();
-                    foreach ($tenantUsers as $tu) {
-                        $clientUsers->push($tu);
-                    }
+                // 3. Si no hay cliente ligado, el dueño de la orden (nunca Root/Admin ni todo el tenant)
+                if ($clientUsers->isEmpty()) {
+                    $duenoId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $workOrder->id);
+                    $u = $duenoId ? \App\Models\User::withoutGlobalScopes()->find($duenoId) : null;
+                    if ($u) $clientUsers->push($u);
                 }
 
                 $clientUsers = $clientUsers->unique('id');
@@ -1756,17 +1753,10 @@ Route::middleware('auth:sanctum')->group(function () {
             // 4. Notificar a los clientes / propietarios
             try {
                 $clientUsers = collect();
-                if ($clientUserId) {
-                    $u = \App\Models\User::withoutGlobalScopes()->find($clientUserId);
-                    if ($u) $clientUsers->push($u);
-                }
-                if ($tenantId) {
-                    $tenantUsers = \App\Models\User::withoutGlobalScopes()
-                        ->where('tenant_id', $tenantId)
-                        ->whereIn('role_id', [0, 1, 3, 4, 5, 7])
-                        ->get();
-                    foreach ($tenantUsers as $tu) $clientUsers->push($tu);
-                }
+                // Solo el dueño (nunca Root/Admin ni todos los usuarios del tenant)
+                $duenoId = $clientUserId ?: \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $workOrder->id);
+                $u = $duenoId ? \App\Models\User::withoutGlobalScopes()->find($duenoId) : null;
+                if ($u) $clientUsers->push($u);
                 $clientUsers = $clientUsers->unique('id');
 
                 foreach ($clientUsers as $targetClient) {
@@ -1855,6 +1845,14 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             $user = auth('sanctum')->user();
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+            if (!\App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($user, $workOrder)) {
+                return response()->json(['success' => false, 'message' => 'Solo el dueño del trabajo puede hacer esto'], 403);
+            }
+            $hayColumnasRed = \App\Http\Controllers\RedCancelacionController::hayColumnasNuevas();
+            // Si el técnico canceló, primero el cliente lo califica
+            if ($faltaCalificar = \App\Http\Controllers\RedCancelacionController::exigirCalificacionDelTecnico((int) $workOrder->id)) {
+                return $faltaCalificar;
+            }
 
             // Marcar cualquier registro de cancelación como evaluado/resuelto
             \Illuminate\Support\Facades\DB::table('technician_cancellations')
@@ -1868,6 +1866,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 $workOrder->cancelled_by_tech = false;
                 $workOrder->cancelled_technician_id = null;
                 $workOrder->publish_network = 1;
+                if ($hayColumnasRed) {
+                    $workOrder->cancelled_by_client = false;
+                    $workOrder->reabierta_at = now(); // las cotizaciones anteriores piden confirmación al técnico
+                }
                 $workOrder->save();
 
                 \App\Models\NetworkQuote::withoutGlobalScopes()
@@ -1877,7 +1879,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
                 return response()->json([
                     'success' => true,
-                    'message' => '¡Solicitud reenviada a la Red! Otros técnicos podrán enviarte nuevas cotizaciones.',
+                    'message' => '¡Solicitud reenviada a la Red! Puedes elegir una de las cotizaciones vigentes o esperar nuevas.',
                     'work_order' => $workOrder
                 ]);
             } else {
@@ -1899,10 +1901,19 @@ Route::middleware('auth:sanctum')->group(function () {
     // Descartar aviso de cancelación para que no vuelva a aparecer
     Route::post('/client/dismiss-cancellation/{id}', function (Request $request, $id) {
         try {
-            \Illuminate\Support\Facades\DB::table('technician_cancellations')
+            // La calificación es obligatoria: solo se descarta si el cliente ya calificó al técnico
+            $registros = \Illuminate\Support\Facades\DB::table('technician_cancellations')
                 ->where('id', $id)
                 ->orWhere('work_order_id', $id)
-                ->update(['rated' => true, 'updated_at' => now()]);
+                ->get();
+            foreach ($registros as $r) {
+                $calificado = \Illuminate\Support\Facades\DB::table('technician_reviews')
+                    ->where('work_order_id', $r->work_order_id)->where('technician_id', $r->technician_id)->exists();
+                if ($calificado) {
+                    \Illuminate\Support\Facades\DB::table('technician_cancellations')->where('id', $r->id)
+                        ->update(['rated' => true, 'updated_at' => now()]);
+                }
+            }
             return response()->json(['success' => true]);
         } catch (\Throwable $e) {
             return response()->json(['success' => false], 500);
@@ -1914,6 +1925,13 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             $user = auth('sanctum')->user();
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+            if (!\App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($user, $workOrder)) {
+                return response()->json(['success' => false, 'message' => 'Solo el dueño del trabajo puede reenviarlo a la red'], 403);
+            }
+            // Si el técnico canceló, primero el cliente lo califica
+            if ($faltaCalificar = \App\Http\Controllers\RedCancelacionController::exigirCalificacionDelTecnico((int) $workOrder->id)) {
+                return $faltaCalificar;
+            }
 
             // Resetear orden para que vuelva a estar disponible en la red
             $workOrder->status = 'Por Hacer';
@@ -1922,6 +1940,10 @@ Route::middleware('auth:sanctum')->group(function () {
             $workOrder->cancelled_by_tech = false;
             $workOrder->publish_network = 1;
             $workOrder->tecnico_dirigido_id = null; // ya no es solo para su técnico favorito: la ve toda la red
+            if (\App\Http\Controllers\RedCancelacionController::hayColumnasNuevas()) {
+                $workOrder->cancelled_by_client = false;
+                $workOrder->reabierta_at = now(); // las cotizaciones anteriores piden confirmación al técnico
+            }
             $workOrder->save();
 
             // Rechazar cotizaciones previas asignadas
@@ -1932,7 +1954,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return response()->json([
                 'success' => true,
-                'message' => '¡Solicitud reenviada a la Red! Otros técnicos podrán enviarte nuevas cotizaciones.',
+                'message' => '¡Solicitud reenviada a la Red! Puedes elegir una de las cotizaciones vigentes o esperar nuevas.',
                 'work_order' => $workOrder
             ]);
         } catch (\Throwable $e) {

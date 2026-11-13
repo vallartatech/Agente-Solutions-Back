@@ -24,4 +24,10 @@ class NetworkQuote extends Model
     {
         return $this->belongsTo(User::class, 'technician_id')->withoutGlobalScopes();
     }
+
+    // Ajustes de precio propuestos después de aceptarla (v2, v3…)
+    public function ajustes()
+    {
+        return $this->hasMany(NetworkQuoteAjuste::class, 'network_quote_id')->orderBy('version');
+    }
 }

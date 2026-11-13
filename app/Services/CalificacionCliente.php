@@ -88,6 +88,46 @@ class CalificacionCliente
                 ];
             })
             ->filter()
+            ->concat(self::cancelacionesPendientes($tecnico))
+            ->values();
+    }
+
+    /** El cliente le canceló al técnico un trabajo asignado: también debe calificarlo (trato y seriedad). */
+    public static function cancelacionesPendientes(User $tecnico)
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('client_cancellations')) {
+            return collect();
+        }
+
+        return DB::table('client_cancellations')
+            ->where('technician_id', $tecnico->id)
+            ->where('rated', false)
+            ->orderBy('cancelled_at')
+            ->get()
+            ->map(function ($c) {
+                $orden = WorkOrder::withoutGlobalScopes()->find($c->work_order_id);
+                $clienteId = $c->client_user_id ?: ($orden ? self::duenoDe($orden) : null);
+                if (!$clienteId) {
+                    return null;
+                }
+                $cliente = User::withoutGlobalScopes()->find($clienteId, ['id', 'first_name', 'last_name', 'profile_picture']);
+                $titulo = $orden ? trim(($orden->type ?: 'Servicio') . ($orden->equipment ? " - {$orden->equipment}" : '')) : 'Servicio';
+
+                return [
+                    'work_order_id' => (int) $c->work_order_id,
+                    'titulo' => $titulo,
+                    'estado' => 'Cancelado por el cliente',
+                    'cancelacion' => true,
+                    'motivo' => $c->reason,
+                    'terminado_at' => $c->cancelled_at ? \Carbon\Carbon::parse($c->cancelled_at)->toIso8601String() : null,
+                    'cliente' => [
+                        'id' => $clienteId,
+                        'nombre' => $cliente ? trim("{$cliente->first_name} {$cliente->last_name}") : 'Cliente',
+                        'foto' => $cliente?->profile_picture,
+                    ],
+                ];
+            })
+            ->filter()
             ->values();
     }
 

@@ -29,7 +29,7 @@ class AccesoQr
 
     private const CERRADOS = [
         'listo', 'finalizado', 'terminado', 'completado', 'completed',
-        'cancelado', 'cancelado_tecnico', 'rechazado',
+        'cancelado', 'cancelado_tecnico', 'cancelado_cliente', 'rechazado',
     ];
 
     public static function cerrado(?string $status): bool

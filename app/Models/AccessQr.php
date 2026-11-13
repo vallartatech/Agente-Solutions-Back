@@ -21,11 +21,12 @@ class AccessQr extends Model
         'valid_until',
         'mime',
         'image',
+        'codigo',
         'uploaded_by',
     ];
 
-    // La imagen nunca sale en un JSON: solo se entrega por el endpoint autenticado de imagen
-    protected $hidden = ['image'];
+    // La imagen y el código nunca salen en un JSON: solo los entregan los endpoints autenticados
+    protected $hidden = ['image', 'codigo'];
 
     protected $casts = [
         'slot' => 'integer',
