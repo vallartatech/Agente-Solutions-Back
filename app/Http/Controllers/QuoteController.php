@@ -795,7 +795,7 @@ class QuoteController extends Controller
                     $senderRole = 'Cliente';
                 elseif ($user->role_id == 4)
                     $senderRole = 'Autónomo';
-                elseif (in_array($user->role_id, [2, 8]))
+                elseif (in_array((int) $user->role_id, [2, 6, 8], true))
                     $senderRole = 'Técnico de la Red';
                 elseif (in_array($user->role_id, [0, 1]))
                     $senderRole = 'Admin';
@@ -815,18 +815,16 @@ class QuoteController extends Controller
 
                 $senderNameStr = $user->name ?: ($user->first_name . ' ' . $user->last_name);
 
-                if (in_array($user->role_id, [2, 8])) {
-                    $clientUserId = $netQuote->workOrder?->tenant_id ?: ($netQuote->workOrder?->property?->client?->user_id ?? null);
-                    if ($clientUserId) {
-                        $clientUser = User::find($clientUserId);
-                        if ($clientUser) {
-                            \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, 'Técnico'));
-                        }
+                $esElTecnico = (int) $netQuote->technician_id === (int) $user->id;
+                if ($esElTecnico) {
+                    // Antes usaba el tenant_id como si fuera un usuario: el aviso le llegaba a otra persona
+                    $clientUserId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $netQuote->work_order_id);
+                    $clientUser = $clientUserId ? User::withoutGlobalScopes()->find($clientUserId) : null;
+                    if ($clientUser && (int) $clientUser->id !== (int) $user->id) {
+                        \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, 'Técnico'));
                     }
-                } else {
-                    if ($netQuote->technician) {
-                        \Illuminate\Support\Facades\Notification::send($netQuote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, $senderRole));
-                    }
+                } elseif ($netQuote->technician && (int) $netQuote->technician->id !== (int) $user->id) {
+                    \Illuminate\Support\Facades\Notification::send($netQuote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, $senderRole));
                 }
 
                 return response()->json(['message' => 'Mensaje enviado', 'chat_history' => $history], 200);

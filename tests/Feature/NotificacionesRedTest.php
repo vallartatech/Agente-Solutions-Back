@@ -323,4 +323,36 @@ class NotificacionesRedTest extends TestCase
             Notification::assertNothingSentTo($ajeno);
         }
     }
+
+    // Sin Notification::fake: el envío real pasa por SinAutoNotificaciones y se ve en la campanita
+    public function test_nadie_recibe_aviso_de_su_propio_mensaje(): void
+    {
+        $quoteId = $this->cotizarYAceptar();
+        Schema::create('notifications', function (Blueprint $t) {
+            $t->uuid('id')->primary();
+            $t->string('type');
+            $t->morphs('notifiable');
+            $t->text('data');
+            $t->timestamp('read_at')->nullable();
+            $t->timestamps();
+        });
+        // Despachador real (el de setUp es un fake que no guarda ni dispara eventos)
+        Notification::swap(new \Illuminate\Notifications\ChannelManager($this->app));
+
+        // El cliente escribe en el chat de la cotización: le llega al técnico, no a él
+        Sanctum::actingAs($this->cliente);
+        $this->postJson("/api/network-quotes/{$quoteId}/chat", ['message' => 'Hola, ¿a qué hora llega?'])->assertOk();
+        $this->assertSame(0, $this->cliente->notifications()->count());
+        $this->assertSame(1, $this->tecnico->notifications()->count());
+
+        // El técnico independiente (rol 6) contesta desde Cotizaciones: le llega al cliente, no a él
+        Sanctum::actingAs($this->tecnico);
+        $this->postJson("/api/cotizaciones/net_{$quoteId}/chat", ['message' => 'A las 5'])->assertOk();
+        $this->assertSame(1, $this->tecnico->notifications()->count());
+        $this->assertSame(1, $this->cliente->notifications()->count());
+
+        foreach ([$this->root, $this->admin, $this->otroCliente, $this->otroTecnico] as $ajeno) {
+            $this->assertSame(0, $ajeno->notifications()->count());
+        }
+    }
 }

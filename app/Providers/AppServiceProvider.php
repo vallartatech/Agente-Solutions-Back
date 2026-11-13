@@ -6,9 +6,11 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Schema; 
 use Illuminate\Auth\Notifications\VerifyEmail;
 use Illuminate\Auth\Notifications\ResetPassword;
+use Illuminate\Notifications\Events\NotificationSending;
 use Illuminate\Notifications\Events\NotificationSent;
 use Illuminate\Support\Facades\Event;
 use App\Services\PushForDatabaseNotifications;
+use App\Services\SinAutoNotificaciones;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -26,6 +28,9 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Schema::defaultStringLength(191);
+
+        // Nadie recibe aviso de lo que él mismo hizo (p. ej. su propio mensaje en el chat)
+        Event::listen(NotificationSending::class, [SinAutoNotificaciones::class, 'handle']);
 
         // Toda notificación de la campanita también se envía como push (OneSignal)
         Event::listen(NotificationSent::class, [PushForDatabaseNotifications::class, 'handle']);
