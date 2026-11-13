@@ -1239,6 +1239,13 @@ class ServiceController extends Controller
     {
         try {
             $servicio = Service::find($id);
+            // Levantamiento de una casa de la Red asignado a un técnico interno (otra empresa)
+            if (!$servicio) {
+                $candidato = Service::withoutGlobalScopes()->find($id);
+                if ($candidato && \App\Services\PropiedadRed::tecnicoAsignado(auth('sanctum')->user(), $candidato->property_id)) {
+                    $servicio = $candidato;
+                }
+            }
 
             if (!$servicio) {
                 $workOrder = WorkOrder::find($id);

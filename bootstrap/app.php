@@ -15,6 +15,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->alias([
             'role' => \App\Http\Middleware\EnsureUserHasRole::class,
+            // Root: solo lectura en el levantamiento de las casas de la Red
+            'solo-lectura-red' => \App\Http\Middleware\SoloLecturaRootRed::class,
         ]);
         // Técnicos nuevos de la red: solo "completar perfil" hasta que Admin/Root los apruebe
         $middleware->appendToGroup('api', \App\Http\Middleware\EnsureTecnicoValidado::class);

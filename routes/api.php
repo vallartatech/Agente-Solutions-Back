@@ -1012,25 +1012,27 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/work-orders/global-stats', [PropertyController::class, 'getGlobalServiceStats']);
 
     // --- GESTIÓN DE ZONAS (NIVEL 3 y 4) ---
-    Route::post('/property-areas', [PropertyAreaController::class, 'store']);
+    // Las altas, cambios y bajas pasan por 'solo-lectura-red': el Root solo consulta el
+    // levantamiento de una casa de la Red (lo captura el técnico interno asignado)
+    Route::post('/property-areas', [PropertyAreaController::class, 'store'])->middleware('solo-lectura-red');
     Route::get('/property-areas', [PropertyAreaController::class, 'index']);
     Route::get('/properties/{id}/areas', [PropertyAreaController::class, 'getByProperty']);
-    Route::put('/property-areas/{id}', [PropertyAreaController::class, 'update']);
-    Route::post('/property-areas/{id}/update-photo', [PropertyAreaController::class, 'updatePhoto']);
-    Route::delete('/property-areas/{id}', [PropertyAreaController::class, 'destroy']);
+    Route::put('/property-areas/{id}', [PropertyAreaController::class, 'update'])->middleware('solo-lectura-red');
+    Route::post('/property-areas/{id}/update-photo', [PropertyAreaController::class, 'updatePhoto'])->middleware('solo-lectura-red');
+    Route::delete('/property-areas/{id}', [PropertyAreaController::class, 'destroy'])->middleware('solo-lectura-red');
     Route::get('/areas/{id}/subareas', [PropertyAreaController::class, 'getSubAreas']);
 
     // --- CATEGORÍAS Y COMPONENTES (NIVEL 5) ---
     Route::get('/areas/{id}/categories', [PropertyCategoryController::class, 'getByArea']);
-    Route::post('/property-categories', [PropertyCategoryController::class, 'store']);
-    Route::put('/property-categories/{id}', [PropertyCategoryController::class, 'update']);
-    Route::delete('/property-categories/{id}', [PropertyCategoryController::class, 'destroy']);
+    Route::post('/property-categories', [PropertyCategoryController::class, 'store'])->middleware('solo-lectura-red');
+    Route::put('/property-categories/{id}', [PropertyCategoryController::class, 'update'])->middleware('solo-lectura-red');
+    Route::delete('/property-categories/{id}', [PropertyCategoryController::class, 'destroy'])->middleware('solo-lectura-red');
 
     // --- CATEGORÍAS Y COMPONENTES (NIVEL 5) ---
     Route::get('/areas/{id}/components', [PropertyComponentController::class, 'getByArea']);
-    Route::post('/property-components', [PropertyComponentController::class, 'store']);
-    Route::delete('/property-components/{id}', [PropertyComponentController::class, 'destroy']);
-    Route::put('/property-components/{id}', [PropertyComponentController::class, 'update']);
+    Route::post('/property-components', [PropertyComponentController::class, 'store'])->middleware('solo-lectura-red');
+    Route::delete('/property-components/{id}', [PropertyComponentController::class, 'destroy'])->middleware('solo-lectura-red');
+    Route::put('/property-components/{id}', [PropertyComponentController::class, 'update'])->middleware('solo-lectura-red');
     Route::get('/properties/{propertyId}/components', [PropertyComponentController::class, 'getComponentsByProperty']);
 
     // --- INVENTARIOS GLOBALES ---

@@ -895,6 +895,25 @@ class PropertyController extends Controller
             $property = Property::whereRaw("REPLACE(REPLACE(custom_curp, ' ', ''), '-', '') = ?", [$curpLimpio])
                 ->first();
 
+            // Casa de la Red con levantamiento asignado a un técnico interno: el filtro por empresa
+            // se la escondería, pero el técnico asignado sí debe poder abrirla para capturarla
+            $user = auth('sanctum')->user();
+            if (!$property && $user) {
+                $candidata = Property::withoutGlobalScopes()
+                    ->whereRaw("REPLACE(REPLACE(custom_curp, ' ', ''), '-', '') = ?", [$curpLimpio])
+                    ->first();
+                if ($candidata && \App\Services\PropiedadRed::tecnicoAsignado($user, $candidata->id)) {
+                    $property = $candidata;
+                }
+            }
+
+            if ($property) {
+                $esRed = \App\Services\PropiedadRed::esRed($property->id);
+                $property->setAttribute('es_red', $esRed);
+                // El Root solo consulta el levantamiento de las casas de la Red
+                $property->setAttribute('solo_lectura', $esRed && $user && (int) $user->role_id === 0);
+            }
+
             if (!$property) {
                 return response()->json([
                     'error' => 'Propiedad no encontrada',
@@ -1319,7 +1338,14 @@ class PropertyController extends Controller
     public function finalizeSurvey($id)
     {
         try {
-            $propiedad = Property::findOrFail($id);
+            $propiedad = Property::find($id);
+            // Técnico interno asignado al levantamiento de una casa de la Red (otra empresa)
+            if (!$propiedad && \App\Services\PropiedadRed::tecnicoAsignado(auth('sanctum')->user(), $id)) {
+                $propiedad = Property::withoutGlobalScopes()->find($id);
+            }
+            if (!$propiedad) {
+                throw (new \Illuminate\Database\Eloquent\ModelNotFoundException)->setModel(Property::class, [$id]);
+            }
             $propiedad->levantamiento_realizado = true;
             $propiedad->save();
 
