@@ -276,6 +276,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
         $jobs = $query->orderBy('created_at', 'desc')->get();
 
+        // El técnico abrió el mercado: los trabajos que llevaba sin avisar ya los vio
+        if (!$request->boolean('only_mine')) {
+            \App\Services\AvisoTrabajosRed::visto($authUser);
+        }
+
         // Nombres de los técnicos a los que se dirigieron las solicitudes (para que el cliente vea a quién)
         $nombresDirigidos = \App\Models\User::withoutGlobalScopes()
             ->whereIn('id', $jobs->pluck('tecnico_dirigido_id')->filter()->unique())
@@ -1251,6 +1256,11 @@ Route::middleware('auth:sanctum')->group(function () {
             \Log::error("Error enviando notificación de WorkOrder: " . $e->getMessage());
         }
 
+        // Red: "Hay trabajos de tu especialidad" a los técnicos que la tienen (agrupado, ver AvisoTrabajosRed).
+        // Corre después de responder para no hacer esperar al cliente.
+        $publicadoPor = $request->user()?->id;
+        app()->terminating(fn () => \App\Services\AvisoTrabajosRed::nuevoTrabajo($workOrder->fresh(), $publicadoPor));
+
         return response()->json([
             'success' => true,
             'id' => $workOrder->id,
@@ -1986,6 +1996,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 ->where('work_order_id', $workOrder->id)
                 ->where('status', 'accepted')
                 ->update(['status' => 'rejected']);
+
+            // Vuelve a estar disponible: cuenta para el aviso "Hay trabajos de tu especialidad"
+            $reenviadoPor = $user?->id;
+            app()->terminating(fn () => \App\Services\AvisoTrabajosRed::nuevoTrabajo($workOrder->fresh(), $reenviadoPor));
 
             return response()->json([
                 'success' => true,
