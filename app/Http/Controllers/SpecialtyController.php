@@ -22,6 +22,11 @@ class SpecialtyController extends Controller
      */
     public function store(Request $request)
     {
+        // El catálogo es fijo: los técnicos sugieren (SugerenciaEspecialidadController) y Root/Admin aprueban
+        if (!SugerenciaEspecialidadController::esRevisor($request->user())) {
+            return response()->json(['success' => false, 'message' => 'Solo Root y Admin agregan habilidades al catálogo. Puedes sugerirla desde tu perfil.'], 403);
+        }
+
         $request->validate([
             'name' => 'required|string|max:191|unique:specialties',
             'icon' => 'nullable|string|max:50',
@@ -58,20 +63,8 @@ class SpecialtyController extends Controller
             return response()->json(['success' => false, 'message' => 'No tienes permiso para cambiar las especialidades de este usuario.'], 403);
         }
 
-        $specialties = $request->input('specialties', []);
-        $specialtyIds = [];
-
-        foreach ((array) $specialties as $specItem) {
-            if (is_numeric($specItem)) {
-                $specialtyIds[] = (int) $specItem;
-            } elseif (is_string($specItem) && trim($specItem) !== '') {
-                $specObj = Specialty::firstOrCreate(
-                    ['name' => trim($specItem)],
-                    ['icon' => '🔧', 'category' => 'General']
-                );
-                $specialtyIds[] = $specObj->id;
-            }
-        }
+        // Nombres nuevos: solo Root/Admin los agregan al catálogo; de los demás quedan como sugerencia
+        $specialtyIds = SugerenciaEspecialidadController::idsDesdeEntrada((array) $request->input('specialties', []), $user, $actor);
 
         $user->specialties()->sync($specialtyIds);
 

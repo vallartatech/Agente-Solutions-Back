@@ -107,7 +107,7 @@ class PerfilProfesionalController extends Controller
             $perfil->fill($campos)->save();
 
             if (array_key_exists('especialidades', $datos)) {
-                $user->specialties()->sync($this->idsEspecialidades($datos['especialidades']));
+                $user->specialties()->sync($this->idsEspecialidades($datos['especialidades'], $user));
             }
 
             if (array_key_exists('experiencias', $datos)) {
@@ -516,21 +516,10 @@ class PerfilProfesionalController extends Controller
 
     // ─────────────────────────── Ayudas ───────────────────────────
 
-    /** Ids del catálogo; un nombre nuevo se agrega al catálogo para todos los técnicos. */
-    private function idsEspecialidades(array $items): array
+    /** Ids del catálogo. Un nombre nuevo ya no se agrega al catálogo: queda como sugerencia para Root/Admin. */
+    private function idsEspecialidades(array $items, ?User $tecnico = null): array
     {
-        $ids = [];
-        foreach ($items as $item) {
-            if (is_numeric($item)) {
-                if (Specialty::whereKey((int) $item)->exists()) $ids[] = (int) $item;
-                continue;
-            }
-            $nombre = trim(preg_replace('/\s+/', ' ', (string) $item));
-            if ($nombre === '' || mb_strlen($nombre) > 60) continue;
-            $existente = Specialty::whereRaw('LOWER(name) = ?', [mb_strtolower($nombre)])->first();
-            $ids[] = ($existente ?? Specialty::create(['name' => $nombre, 'icon' => '🔧', 'category' => 'Agregada por técnicos']))->id;
-        }
-        return array_values(array_unique($ids));
+        return SugerenciaEspecialidadController::idsDesdeEntrada($items, $tecnico ?? request()->user(), request()->user());
     }
 
     /**

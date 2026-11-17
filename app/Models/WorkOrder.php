@@ -28,7 +28,9 @@ class WorkOrder extends Model
         'custom_checklist',
         'scheduled_at',
         'publish_network',
-        'tecnico_dirigido_id'
+        'tecnico_dirigido_id',
+        // Red: habilidad que necesita el trabajo (null = "No estoy seguro", le aparece a todos)
+        'specialty_id'
     ];
 
     protected $casts = [
@@ -108,5 +110,11 @@ class WorkOrder extends Model
     public function networkQuotes()
     {
         return $this->hasMany(NetworkQuote::class, 'work_order_id');
+    }
+
+    // Red: habilidad que necesita el trabajo
+    public function specialty()
+    {
+        return $this->belongsTo(Specialty::class, 'specialty_id');
     }
 }

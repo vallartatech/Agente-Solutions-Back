@@ -194,8 +194,9 @@ class PerfilProfesionalTest extends TestCase
         $perfil = TechnicianProfile::where('user_id', $tecnico->id)->first();
         $this->assertSame(self::CLABE_OK, $perfil->clabe);
         $this->assertSame('PEPJ800101AB1', $perfil->rfc);
-        $this->assertSame(2, $tecnico->specialties()->count());
-        $this->assertDatabaseHas('specialties', ['name' => 'Paneles solares']); // nueva, para todos
+        // "Paneles solares" no está en el catálogo: ya no se agrega sola, queda como sugerencia para Root/Admin
+        $this->assertSame(1, $tecnico->specialties()->count());
+        $this->assertDatabaseMissing('specialties', ['name' => 'Paneles solares']);
     }
 
     public function test_no_se_envia_incompleto(): void

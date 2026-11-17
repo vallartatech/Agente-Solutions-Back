@@ -200,6 +200,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     $q->withoutGlobalScopes();
                 }
             ])
+            // Habilidad que necesita el trabajo: { id, name, icon } (null = "No estoy seguro")
+            ->when(\Illuminate\Support\Facades\Schema::hasColumn('work_orders', 'specialty_id'), fn ($q) => $q->with('specialty:id,name,icon'))
             ->withCount('networkQuotes')
             ->where('publish_network', 1);
 
@@ -451,6 +453,25 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             }
             $job->is_mine = $isMine;
 
+            // 🔒 Privacidad: antes de que acepten su cotización, el técnico (o un visitante sin sesión) no recibe
+            // la dirección exacta, las coordenadas ni los datos del cliente; solo la zona aproximada calculada arriba.
+            // Se usa la regla estricta de dueño (no $isMine, que compara nombres) y aplica también con only_mine.
+            $veDetalle = $authUser && (
+                \App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($authUser, $job)
+                || \App\Http\Controllers\AccesoQrRedController::esTecnicoDelTrabajo($authUser, $job)
+            );
+            if (!$veDetalle) {
+                $job->unsetRelation('property');
+                // Solo sus propias cotizaciones: no ve los precios de los demás técnicos (el total va en network_quotes_count)
+                $job->setRelation('networkQuotes', $job->networkQuotes
+                    ->filter(fn ($q) => $authUser && (int) $q->technician_id === (int) $authUser->id)
+                    ->values());
+                $job->owner_name = 'Cliente de la Red';
+                $job->owner_user_id = null;
+                $job->owner_tenant_id = null;
+                $job->is_mine = false;
+            }
+
             return $job;
         });
 
@@ -516,6 +537,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'type' => $order->type,
                     'titulo' => $order->type . ($order->equipment ? ' - ' . $order->equipment : ''),
                     'equipment' => $order->equipment,
+                    'specialty' => $order->specialty_id ? $order->specialty()->first(['id', 'name', 'icon']) : null,
                     'zone' => $order->zone,
                     'description' => $order->description,
                     'status' => $order->status,
@@ -725,6 +747,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // --- USUARIOS Y PERFILES ---
     Route::post('/specialties', [SpecialtyController::class, 'store']);
+    // Habilidades sugeridas: el técnico sugiere; Root/Admin aprueban, unen o rechazan
+    Route::post('/especialidades/sugerencias', [\App\Http\Controllers\SugerenciaEspecialidadController::class, 'store']);
+    Route::get('/especialidades/sugerencias/mias', [\App\Http\Controllers\SugerenciaEspecialidadController::class, 'mias']);
+    Route::get('/admin/especialidades/sugerencias', [\App\Http\Controllers\SugerenciaEspecialidadController::class, 'index']);
+    Route::post('/admin/especialidades/sugerencias/{id}/aprobar', [\App\Http\Controllers\SugerenciaEspecialidadController::class, 'aprobar'])->whereNumber('id');
+    Route::post('/admin/especialidades/sugerencias/{id}/unir', [\App\Http\Controllers\SugerenciaEspecialidadController::class, 'unir'])->whereNumber('id');
+    Route::post('/admin/especialidades/sugerencias/{id}/rechazar', [\App\Http\Controllers\SugerenciaEspecialidadController::class, 'rechazar'])->whereNumber('id');
     Route::get('/users/{id}/specialties', [SpecialtyController::class, 'getUserSpecialties']);
     Route::post('/users/{id}/specialties', [SpecialtyController::class, 'syncUserSpecialties']);
     Route::get('/usuarios', [UserController::class, 'getUsuarios']);
@@ -1111,8 +1140,12 @@ Route::middleware('auth:sanctum')->group(function () {
             'tecnico_id' => 'nullable|integer',
             'assigned_technician_id' => 'nullable|integer',
             'tecnico_dirigido_id' => 'nullable|integer',
+            // Habilidad que necesita el trabajo (vacía = "No estoy seguro")
+            'specialty_id' => 'nullable|integer|exists:specialties,id',
             'evidence_1' => 'nullable|file|image|max:5120',
             'evidence_2' => 'nullable|file|image|max:5120'
+        ], [
+            'specialty_id.exists' => 'La habilidad elegida ya no existe. Elige otra.',
         ]);
 
         // Elementos del trabajo (opcional): se validan y se suben sus fotos antes de crear la orden
@@ -1180,7 +1213,9 @@ Route::middleware('auth:sanctum')->group(function () {
                 'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
                 'publish_network' => $publishNetwork,
                 'tecnico_dirigido_id' => $tecnicoDirigidoId,
-            ]);
+            ] + (\Illuminate\Support\Facades\Schema::hasColumn('work_orders', 'specialty_id')
+                ? ['specialty_id' => $request->specialty_id ? (int) $request->specialty_id : null]
+                : []));
             if ($elementos) {
                 \App\Services\ElementosTrabajo::adjuntar($orden, $elementos, $request->user());
             }

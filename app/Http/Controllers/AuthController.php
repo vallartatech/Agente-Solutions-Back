@@ -179,18 +179,8 @@ class AuthController extends Controller
 
         // Si es técnico o contratista, guardar especialidades
         if (($isTechnician || $roleToAssign == 7) && $request->has('specialties')) {
-            $specialtyIds = [];
-            foreach ((array) $request->specialties as $specItem) {
-                if (is_numeric($specItem)) {
-                    $specialtyIds[] = (int) $specItem;
-                } elseif (is_string($specItem) && trim($specItem) !== '') {
-                    $specObj = Specialty::firstOrCreate(
-                        ['name' => trim($specItem)],
-                        ['icon' => '⚡', 'category' => 'General']
-                    );
-                    $specialtyIds[] = $specObj->id;
-                }
-            }
+            // Nombres nuevos no se agregan al catálogo: quedan como sugerencia del técnico para Root/Admin
+            $specialtyIds = \App\Http\Controllers\SugerenciaEspecialidadController::idsDesdeEntrada((array) $request->specialties, $user);
             if (!empty($specialtyIds)) {
                 $user->specialties()->sync($specialtyIds);
             }
