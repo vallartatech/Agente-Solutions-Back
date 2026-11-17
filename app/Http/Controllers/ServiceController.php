@@ -1525,7 +1525,7 @@ class ServiceController extends Controller
             try {
                 $property = \App\Models\Property::withoutGlobalScopes()->find($item->property_id);
                 $propName = $property ? ($property->property_name ?: $property->address) : 'la propiedad';
-                $notif = new \App\Notifications\TechnicianArrivedNotification($user, $item, $propName);
+                $notif = new \App\Notifications\TechnicianArrivedNotification($user, $item, $propName, $esTecnicoRed && $item instanceof WorkOrder);
 
                 // Red: solo se avisa al dueño de la propiedad, no a Root ni a los Admin
                 if ($esTecnicoRed && $item instanceof WorkOrder) {

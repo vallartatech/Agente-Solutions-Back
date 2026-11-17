@@ -12,12 +12,14 @@ class TechnicianArrivedNotification extends Notification
     protected $technician;
     protected $item;
     protected $propertyName;
+    protected $esRed;
 
-    public function __construct($technician, $item, $propertyName)
+    public function __construct($technician, $item, $propertyName, $esRed = false)
     {
         $this->technician = $technician;
         $this->item = $item;
         $this->propertyName = $propertyName;
+        $this->esRed = (bool) $esRed;
     }
 
     public function via($notifiable)
@@ -31,7 +33,7 @@ class TechnicianArrivedNotification extends Notification
         $prop = $this->propertyName ?: 'la propiedad';
         $workId = $this->item->id;
 
-        return [
+        $datos = [
             'type' => 'technician_arrived',
             'title' => '📍 Técnico en el Lugar de Trabajo',
             'message' => "El Técnico {$techName} ha llegado al servicio de la propiedad {$prop} (Trabajo #{$workId}).",
@@ -39,5 +41,13 @@ class TechnicianArrivedNotification extends Notification
             'technician_id' => $this->technician ? $this->technician->id : null,
             'arrived_at' => now()->toDateTimeString()
         ];
+
+        // Red: el cliente abre el detalle del trabajo (ahí confirma la llegada)
+        if ($this->esRed) {
+            $datos['es_red'] = true;
+            $datos['url'] = '/red-autonomos?trabajo=' . $workId;
+        }
+
+        return $datos;
     }
 }
