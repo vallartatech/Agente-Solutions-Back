@@ -855,9 +855,13 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($user) {
             // Rol 4 sin tenant cae abajo como cliente: tenant_id NULL devolvería todas las propiedades
             if ($user->role_id == 4 && $user->tenant_id) {
-                $query->where(function ($q) use ($user) {
+                // También las propiedades que otros le compartieron a su perfil de cliente
+                $clienteIds = \Illuminate\Support\Facades\DB::table('clients')->where('user_id', $user->id)->pluck('id');
+                $sharedPropertyIds = \Illuminate\Support\Facades\DB::table('property_shares')->whereIn('client_id', $clienteIds)->pluck('property_id');
+                $query->where(function ($q) use ($user, $sharedPropertyIds) {
                     $q->where('properties.tenant_id', $user->tenant_id)
-                        ->orWhere('clients.tenant_id', $user->tenant_id);
+                        ->orWhere('clients.tenant_id', $user->tenant_id)
+                        ->orWhereIn('properties.id', $sharedPropertyIds);
                 });
             } elseif ($user->role_id !== 0 && $user->tenant_id) {
                 $query->where(function ($q) use ($user) {

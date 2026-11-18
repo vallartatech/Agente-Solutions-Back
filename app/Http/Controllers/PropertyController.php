@@ -197,6 +197,17 @@ class PropertyController extends Controller
                 // Propiedades que otros le compartieron a su perfil de cliente
                 $sharedPropertyIds = DB::table('property_shares')->whereIn('client_id', $clienteIds)->pluck('property_id');
 
+                // Este filtro ya limita a lo suyo; el TenantScope dejaría fuera las compartidas de otro tenant
+                $query->withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+                    ->with(['client' => function ($qc) {
+                        $qc->withoutGlobalScopes();
+                    }]);
+
+                // Cliente de la red (rol 4): su perfil de cliente para marcar las compartidas con ella
+                if ($user->role_id == 4) {
+                    $cliente = DB::table('clients')->where('user_id', $user->id)->first();
+                }
+
                 $query->where(function ($q) use ($tenantId, $clienteIds, $sharedPropertyIds) {
                     $q->whereIn('client_id', $clienteIds)
                         ->orWhereIn('id', $sharedPropertyIds);
