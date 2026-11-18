@@ -180,18 +180,32 @@ class PropertyController extends Controller
                 }
             } elseif ($user->role_id == 4 || $user->role_id == 5) {
                 // Autónomo: ve las propiedades de su empresa, de sus clientes, o creadas bajo su perfil
+                // Sin tenant_id NO se filtra por tenant: where('tenant_id', null) equivale
+                // a "IS NULL" y devolvería todas las propiedades de Agente Solutions.
+                $tenantId = $user->tenant_id;
+
                 $clienteIds = DB::table('clients')
-                    ->where('user_id', $user->id)
-                    ->orWhere('email', $user->email)
-                    ->orWhere('tenant_id', $user->tenant_id)
+                    ->where(function ($q) use ($user, $tenantId) {
+                        $q->where('user_id', $user->id)
+                            ->orWhere('email', $user->email);
+                        if ($tenantId) {
+                            $q->orWhere('tenant_id', $tenantId);
+                        }
+                    })
                     ->pluck('id');
 
-                $query->where(function ($q) use ($user, $clienteIds) {
-                    $q->where('tenant_id', $user->tenant_id)
-                        ->orWhereIn('client_id', $clienteIds)
-                        ->orWhereHas('client', function ($qc) use ($user) {
-                            $qc->where('tenant_id', $user->tenant_id);
-                        });
+                // Propiedades que otros le compartieron a su perfil de cliente
+                $sharedPropertyIds = DB::table('property_shares')->whereIn('client_id', $clienteIds)->pluck('property_id');
+
+                $query->where(function ($q) use ($tenantId, $clienteIds, $sharedPropertyIds) {
+                    $q->whereIn('client_id', $clienteIds)
+                        ->orWhereIn('id', $sharedPropertyIds);
+                    if ($tenantId) {
+                        $q->orWhere('tenant_id', $tenantId)
+                            ->orWhereHas('client', function ($qc) use ($tenantId) {
+                                $qc->where('tenant_id', $tenantId);
+                            });
+                    }
                 });
             } elseif ($user->role_id !== 0 && $user->tenant_id) {
                 // Admin o técnico de un tenant

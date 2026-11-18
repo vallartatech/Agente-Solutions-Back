@@ -853,7 +853,8 @@ Route::middleware('auth:sanctum')->group(function () {
             ->where('properties.coordinates', '!=', '');
 
         if ($user) {
-            if ($user->role_id == 4) {
+            // Rol 4 sin tenant cae abajo como cliente: tenant_id NULL devolvería todas las propiedades
+            if ($user->role_id == 4 && $user->tenant_id) {
                 $query->where(function ($q) use ($user) {
                     $q->where('properties.tenant_id', $user->tenant_id)
                         ->orWhere('clients.tenant_id', $user->tenant_id);
@@ -863,7 +864,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     $q->where('properties.tenant_id', $user->tenant_id)
                         ->orWhere('clients.tenant_id', $user->tenant_id);
                 });
-            } elseif ($user->role_id == 3) {
+            } elseif ($user->role_id == 3 || $user->role_id == 4) {
                 $cliente = \Illuminate\Support\Facades\DB::table('clients')->where('user_id', $user->id)->first();
                 if ($cliente) {
                     $sharedPropertyIds = \Illuminate\Support\Facades\DB::table('property_shares')->where('client_id', $cliente->id)->pluck('property_id');
