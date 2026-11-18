@@ -1571,6 +1571,38 @@ Route::middleware('auth:sanctum')->group(function () {
             if (\App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
                 return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
             }
+            // Buscar la cotización aceptada o del técnico para registrar en el chat
+            $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)
+                ->where('technician_id', $user->id)
+                ->first();
+
+            // Máximo 2 oportunidades de agendar (agendar + 1 cambio) para evitar "pelotear" al cliente.
+            // Si el cliente pidió otro horario, la nueva propuesta responde a su petición y no gasta oportunidad.
+            $maxAgendados = 2;
+            $usadas = 0;
+            $clientePidioOtro = false;
+            $huboPropuesta = false;
+            foreach (($quote?->chat_history ?? []) as $m) {
+                if (!empty($m['is_schedule'])) {
+                    $huboPropuesta = true;
+                    if (!$clientePidioOtro) $usadas++;
+                    $clientePidioOtro = false;
+                } elseif (!empty($m['is_schedule_response'])) {
+                    $clientePidioOtro = ($m['schedule_confirmed'] ?? null) === false;
+                }
+            }
+            if (!$clientePidioOtro && $usadas >= $maxAgendados) {
+                return response()->json([
+                    'success' => false,
+                    'reason' => 'limite_agendados',
+                    'message' => 'Ya usaste tus 2 oportunidades para agendar esta visita. Solo podrás proponer otro horario si el cliente lo solicita.',
+                ], 422);
+            }
+
+            $horarioAnterior = $workOrder->scheduled_at;
+            $esModificacion = $huboPropuesta || !empty($horarioAnterior);
+
             $scheduledDateTime = date('Y-m-d H:i:s', strtotime($request->scheduled_at));
             $workOrder->scheduled_at = $scheduledDateTime;
             if (empty($workOrder->tecnico_id)) {
@@ -1578,15 +1610,16 @@ Route::middleware('auth:sanctum')->group(function () {
             }
             $workOrder->save();
 
-            // Buscar la cotización aceptada o del técnico para registrar en el chat
-            $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
-                ->where('work_order_id', $workOrder->id)
-                ->where('technician_id', $user->id)
-                ->first();
-
             $formattedTime = date('d/m/Y \a \l\a\s h:i A', strtotime($scheduledDateTime));
             $techName = $user->first_name ? "{$user->first_name} {$user->last_name}" : ($user->name ?: 'El Técnico');
-            $msgText = "📅 {$techName} ha programado la visita para el {$formattedTime}." . ($request->notes ? " Nota: \"{$request->notes}\"" : "");
+            $nota = $request->notes ? " Nota: \"{$request->notes}\"" : "";
+            if ($esModificacion && $horarioAnterior) {
+                $antes = date('d/m/Y \a \l\a\s h:i A', strtotime($horarioAnterior));
+                $msgText = "🗓️ {$techName} modificó el horario de la visita: antes {$antes}, ahora {$formattedTime}." . $nota;
+            } else {
+                $msgText = "📅 {$techName} ha programado la visita para el {$formattedTime}." . $nota;
+            }
+            $restantes = $clientePidioOtro ? max(0, $maxAgendados - $usadas) : max(0, $maxAgendados - $usadas - 1);
 
             if ($quote) {
                 $history = $quote->chat_history ?? [];
@@ -1596,6 +1629,8 @@ Route::middleware('auth:sanctum')->group(function () {
                     'sender_role' => 'Técnico de la Red',
                     'message' => $msgText,
                     'is_schedule' => true,
+                    'is_modification' => $esModificacion,
+                    'previous_scheduled_at' => $horarioAnterior,
                     'scheduled_at' => $scheduledDateTime,
                     'schedule_status' => 'pending_confirmation',
                     'created_at' => now()->toIso8601String(),
@@ -1629,16 +1664,15 @@ Route::middleware('auth:sanctum')->group(function () {
                 $title = $workOrder->type . ($workOrder->equipment ? ' - ' . $workOrder->equipment : '');
                 $propName = $workOrder->property ? ($workOrder->property->nombre_propiedad ?: $workOrder->property->address) : 'Propiedad';
 
+                // Un solo aviso claro por acción: "Visita programada" o "Modificación del trabajo"
+                // (antes también salía un "Nuevo mensaje en la Red" que confundía al cliente)
                 foreach ($clientUsers as $targetClient) {
                     try {
-                        $targetClient->notify(new \App\Notifications\WorkOrderScheduledNotification($workOrder, $techName, $propName));
+                        $targetClient->notify($esModificacion
+                            ? new \App\Notifications\HorarioModificadoRedNotification($workOrder, $techName, $horarioAnterior, $request->notes)
+                            : new \App\Notifications\WorkOrderScheduledNotification($workOrder, $techName, $propName));
                     } catch (\Throwable $ne) {
                         \Log::warning("Notification error: " . $ne->getMessage());
-                    }
-                    if ($quote) {
-                        try {
-                            $targetClient->notify(new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $techName, 'Técnico'));
-                        } catch (\Throwable $qe) {}
                     }
                 }
             } catch (\Throwable $e) {
@@ -1647,8 +1681,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
             return response()->json([
                 'success' => true,
-                'message' => "Visita programada para el {$formattedTime} correctamente.",
+                'message' => ($esModificacion ? "Horario modificado al {$formattedTime}. Le avisamos al cliente." : "Visita programada para el {$formattedTime} correctamente.")
+                    . ($restantes === 0 ? " Ya no podrás cambiarlo de nuevo, salvo que el cliente pida otro horario." : ""),
                 'scheduled_at' => $scheduledDateTime,
+                'cambios_restantes' => $restantes,
                 'chat_history' => $quote?->chat_history ?? []
             ]);
         } catch (\Throwable $e) {
