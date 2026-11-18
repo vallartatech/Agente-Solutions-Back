@@ -1909,35 +1909,17 @@ class ServiceController extends Controller
                 Notification::send($admins, new \App\Notifications\SecondVisitRequested($model, $request->fecha_propuesta, $request->motivo, $techName));
             }
 
-            // 2. Notificar al Cliente (buscando por Client email o User ID sin scope de tenant)
+            // 2. Notificar al cliente dueño de la propiedad (su usuario, por user_id o por correo) y a sus invitados.
+            // Antes también se avisaba a TODOS los clientes (rol 3) y se usaba el id del cliente como id de usuario.
             $clientUsers = collect();
-            if ($property && !empty($property->client_id)) {
-                $clientObj = \App\Models\Client::withoutGlobalScopes()->find($property->client_id);
-                if ($clientObj && !empty($clientObj->email)) {
-                    $uByEmail = User::withoutGlobalScopes()->where('email', $clientObj->email)->first();
-                    if ($uByEmail)
-                        $clientUsers->push($uByEmail);
+            foreach (array_filter([$property->client_id ?? null, $model->client_id ?? null]) as $clienteId) {
+                $clientObj = \App\Models\Client::withoutGlobalScopes()->find($clienteId);
+                if (!$clientObj) continue;
+                $u = $clientObj->user_id ? User::withoutGlobalScopes()->find($clientObj->user_id) : null;
+                if (!$u && !empty($clientObj->email)) {
+                    $u = User::withoutGlobalScopes()->where('email', $clientObj->email)->first();
                 }
-                $uById = User::withoutGlobalScopes()->find($property->client_id);
-                if ($uById)
-                    $clientUsers->push($uById);
-            }
-            if (!empty($model->client_id)) {
-                $clientObj2 = \App\Models\Client::withoutGlobalScopes()->find($model->client_id);
-                if ($clientObj2 && !empty($clientObj2->email)) {
-                    $uByEmail2 = User::withoutGlobalScopes()->where('email', $clientObj2->email)->first();
-                    if ($uByEmail2)
-                        $clientUsers->push($uByEmail2);
-                }
-                $uById2 = User::withoutGlobalScopes()->find($model->client_id);
-                if ($uById2)
-                    $clientUsers->push($uById2);
-            }
-
-            // También notificar a todos los usuarios clientes (role_id = 3)
-            $allClients = User::withoutGlobalScopes()->where('role_id', 3)->get();
-            foreach ($allClients as $cUser) {
-                $clientUsers->push($cUser);
+                if ($u) $clientUsers->push($u);
             }
 
             // Invitados de la propiedad compartida
@@ -2028,18 +2010,12 @@ class ServiceController extends Controller
             }
 
             // Notificar al Cliente si fue aceptada/reprogramada por técnico o admin
+            // Dueño de la propiedad (usuario de su cliente) e invitados. Antes se buscaba properties.user_id,
+            // que no existe, y el dueño nunca recibía el aviso.
             if (isset($model->property_id) && $model->property_id) {
-                $prop = \App\Models\Property::withoutGlobalScopes()->find($model->property_id);
-                if ($prop && $prop->user_id) {
-                    $clientUser = User::withoutGlobalScopes()->find($prop->user_id);
-                    if ($clientUser) {
-                        Notification::send($clientUser, new \App\Notifications\SecondVisitAgreed($model, $request->fecha_confirmada, $request->accion));
-                    }
-                }
-                // Invitados de la propiedad compartida
-                $invitados = \App\Services\AccesoPropiedad::conInvitados(null, $model->property_id);
-                if ($invitados->isNotEmpty()) {
-                    Notification::send($invitados, new \App\Notifications\SecondVisitAgreed($model, $request->fecha_confirmada, $request->accion));
+                $destinatarios = \App\Services\AccesoPropiedad::duenoEInvitados($model->property_id, (int) $request->user()?->id);
+                if ($destinatarios->isNotEmpty()) {
+                    Notification::send($destinatarios, new \App\Notifications\SecondVisitAgreed($model, $request->fecha_confirmada, $request->accion));
                 }
             }
 
@@ -2106,17 +2082,12 @@ class ServiceController extends Controller
                 $property = \App\Models\Property::withoutGlobalScopes()->find($model->property_id);
             }
 
-            if ($property && $property->client_id) {
-                $clientUser = User::withoutGlobalScopes()->where('id', $property->client_id)->first();
-                if ($clientUser) {
-                    Notification::send($clientUser, new \App\Notifications\SecondVisitAdminScheduled($model, $request->fecha_programada, $request->observaciones));
-                }
-            }
-            // Invitados de la propiedad compartida
+            // Dueño de la propiedad (usuario de su cliente) e invitados. Antes se usaba el id del cliente
+            // como si fuera id de usuario, y el aviso podía llegarle a otra persona.
             if ($property) {
-                $invitados = \App\Services\AccesoPropiedad::conInvitados(null, $property->id);
-                if ($invitados->isNotEmpty()) {
-                    Notification::send($invitados, new \App\Notifications\SecondVisitAdminScheduled($model, $request->fecha_programada, $request->observaciones));
+                $destinatarios = \App\Services\AccesoPropiedad::duenoEInvitados($property->id);
+                if ($destinatarios->isNotEmpty()) {
+                    Notification::send($destinatarios, new \App\Notifications\SecondVisitAdminScheduled($model, $request->fecha_programada, $request->observaciones));
                 }
             }
 

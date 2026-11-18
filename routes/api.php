@@ -211,11 +211,16 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico', 'Cancelado_Cliente']);
             if ($authUser && !in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
+                    // Dueño por user_id o correo. Antes también por "nombre parecido" al primer nombre del usuario,
+                    // y un "Jorge" veía los trabajos de cualquier otro cliente llamado Jorge.
                     $q->whereHas('property.client', function ($qc) use ($authUser) {
                         $qc->withoutGlobalScopes()
-                           ->where('user_id', $authUser->id)
-                           ->orWhere('email', $authUser->email)
-                           ->orWhere('name', 'like', "%{$authUser->first_name}%");
+                           ->where(function ($c) use ($authUser) {
+                               $c->where('user_id', $authUser->id);
+                               if (!empty($authUser->email)) {
+                                   $c->orWhere('email', $authUser->email);
+                               }
+                           });
                     });
 
                     if (!empty($authUser->tenant_id)) {
@@ -1168,6 +1173,11 @@ Route::middleware('auth:sanctum')->group(function () {
             'specialty_id.exists' => 'La habilidad elegida ya no existe. Elige otra.',
         ]);
 
+        // Solo se piden trabajos para propiedades propias, compartidas o del tenant (antes no se validaba)
+        if (!\App\Services\AccesoPropiedad::puedeOperarPropiedad($request->user(), $request->property_id)) {
+            return response()->json(['success' => false, 'message' => 'No puedes solicitar trabajos para esta propiedad.'], 403);
+        }
+
         // Elementos del trabajo (opcional): se validan y se suben sus fotos antes de crear la orden
         $elementos = null;
         if (\App\Services\ElementosTrabajo::vienenEnPeticion($request)) {
@@ -1366,7 +1376,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Obtener historial de chat de una Cotización de la Red
     Route::get('/network-quotes/{id}/chat', function ($id) {
         $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['technician', 'workOrder.property.client'])->find($id);
-        if (!$quote) {
+        // Solo el técnico que cotizó y el lado del cliente (dueño, invitados, Root/Admin). Antes cualquiera lo leía.
+        if (!$quote || !\App\Services\AccesoPropiedad::puedeUsarChatRed(auth('sanctum')->user(), $quote)) {
             return response()->json(['message' => 'Cotización no encontrada'], 404);
         }
         return response()->json([
@@ -1390,6 +1401,10 @@ Route::middleware('auth:sanctum')->group(function () {
         $user = auth('sanctum')->user() ?: auth()->user();
         if (!$user) {
             return response()->json(['message' => 'No autorizado'], 401);
+        }
+        // Solo el técnico que cotizó y el lado del cliente (dueño, invitados, Root/Admin)
+        if (!\App\Services\AccesoPropiedad::puedeUsarChatRed($user, $quote)) {
+            return response()->json(['message' => 'Cotización no encontrada'], 404);
         }
 
         // Mis técnicos / Mis clientes: si cliente y técnico están bloqueados (cualquiera de los dos bloqueó), nadie escribe

@@ -820,6 +820,10 @@ class QuoteController extends Controller
                 $netId = (int) str_replace('net_', '', (string) $id);
                 $netQuote = \App\Models\NetworkQuote::withoutGlobalScopes()->with(['workOrder.property.client', 'technician'])->findOrFail($netId);
                 $user = auth('sanctum')->user() ?: auth()->user();
+                // Solo el técnico que cotizó y el lado del cliente (dueño, invitados, Root/Admin)
+                if (!\App\Services\AccesoPropiedad::puedeUsarChatRed($user, $netQuote)) {
+                    return response()->json(['message' => 'Cotización no encontrada'], 404);
+                }
 
                 $senderRole = 'Usuario';
                 if ($user->role_id == 3)

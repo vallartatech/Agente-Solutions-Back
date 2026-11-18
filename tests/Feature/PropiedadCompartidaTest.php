@@ -290,6 +290,41 @@ class PropiedadCompartidaTest extends TestCase
         Notification::assertNothingSentTo($this->extrano);
     }
 
+    public function test_un_extrano_no_lee_ni_escribe_el_chat_de_la_cotizacion(): void
+    {
+        $quoteId = $this->cotizar();
+
+        $this->como($this->extrano);
+        $this->getJson("/api/network-quotes/{$quoteId}/chat")->assertStatus(404);
+        $this->postJson("/api/network-quotes/{$quoteId}/chat", ['message' => 'Hola'])->assertStatus(404);
+
+        // El invitado sí, como dueño
+        $this->como($this->invitado);
+        $this->getJson("/api/network-quotes/{$quoteId}/chat")->assertOk();
+    }
+
+    public function test_un_extrano_no_puede_pedir_trabajos_para_la_propiedad(): void
+    {
+        $this->como($this->extrano);
+        $this->postJson('/api/work-orders/cliente', [
+            'property_id' => $this->propiedad, 'type' => 'Mantenimiento', 'zone' => 'Cocina', 'description' => 'Fuga',
+        ])->assertStatus(403);
+        $this->assertSame(1, DB::table('work_orders')->count());
+    }
+
+    public function test_mis_trabajos_no_incluye_clientes_con_nombre_parecido(): void
+    {
+        // Otro cliente que se llama como el primer nombre del extraño ("U4")
+        $otroCliente = DB::table('clients')->insertGetId(['user_id' => null, 'email' => 'otro@red.mx', 'name' => 'U4 Pérez', 'tenant_id' => 30]);
+        $otraCasa = DB::table('properties')->insertGetId(['tenant_id' => 30, 'property_name' => 'Ajena', 'address' => 'Sur', 'client_id' => $otroCliente]);
+        $ordenAjena = DB::table('work_orders')->insertGetId([
+            'tenant_id' => 30, 'property_id' => $otraCasa, 'type' => 'Pintura', 'status' => 'Por Hacer', 'publish_network' => 1,
+        ]);
+
+        $this->como($this->extrano);
+        $this->assertNotContains($ordenAjena, $this->misTrabajos());
+    }
+
     public function test_el_invitado_no_puede_borrar_la_propiedad(): void
     {
         $this->como($this->invitado);

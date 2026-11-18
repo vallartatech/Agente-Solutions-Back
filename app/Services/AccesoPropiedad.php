@@ -147,6 +147,59 @@ class AccesoPropiedad
             ->values();
     }
 
+    /**
+     * ¿Puede leer o escribir el chat de una cotización de la red? Solo el técnico que cotizó y
+     * el lado del cliente (dueño, invitados, su equipo, Root/Admin) según puedeResponderPorDueno.
+     */
+    public static function puedeUsarChatRed(?User $user, $networkQuote): bool
+    {
+        if (!$user || !$networkQuote) return false;
+        if ((int) $networkQuote->technician_id === (int) $user->id) return true;
+        $orden = \App\Models\WorkOrder::withoutGlobalScopes()->find($networkQuote->work_order_id);
+        return \App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($user, $orden);
+    }
+
+    /**
+     * ¿Puede pedir trabajos para esta propiedad? Root, Admin y técnico interno como antes; los demás solo
+     * si es suya (su perfil de cliente), se la compartieron o es de su tenant (gestor, contratista, equipo).
+     */
+    public static function puedeOperarPropiedad(?User $user, $propertyId): bool
+    {
+        if (!$user || !$propertyId) return false;
+        if (in_array((int) $user->role_id, [0, 1, 2], true)) return true;
+
+        $propiedad = DB::table('properties')->leftJoin('clients', 'clients.id', '=', 'properties.client_id')
+            ->where('properties.id', $propertyId)
+            ->first(['properties.client_id', 'properties.tenant_id', 'clients.tenant_id as client_tenant_id']);
+        if (!$propiedad) return false;
+
+        if ($propiedad->client_id && in_array((int) $propiedad->client_id, self::clienteIds($user), true)) return true;
+        if (self::esInvitado($user, $propertyId)) return true;
+
+        $tenant = (int) ($user->tenant_id ?? 0);
+        return $tenant > 0 && ((int) $propiedad->tenant_id === $tenant || (int) $propiedad->client_tenant_id === $tenant);
+    }
+
+    /** Usuario del cliente dueño de la propiedad (por user_id o, si no tiene, por su correo) */
+    public static function duenoDe($propertyId): ?User
+    {
+        if (!$propertyId) return null;
+        $cliente = DB::table('properties')->join('clients', 'clients.id', '=', 'properties.client_id')
+            ->where('properties.id', $propertyId)->first(['clients.user_id', 'clients.email']);
+        if (!$cliente) return null;
+        if ($cliente->user_id) {
+            $u = User::withoutGlobalScopes()->find($cliente->user_id);
+            if ($u) return $u;
+        }
+        return !empty($cliente->email) ? User::withoutGlobalScopes()->where('email', $cliente->email)->first() : null;
+    }
+
+    /** Dueño e invitados de la propiedad: los destinatarios de los avisos al cliente */
+    public static function duenoEInvitados($propertyId, ?int $excluirUserId = null): \Illuminate\Support\Collection
+    {
+        return self::conInvitados(self::duenoDe($propertyId), $propertyId, $excluirUserId);
+    }
+
     /** Propiedad de una cotización de Solutions (por su servicio u orden) */
     public static function propiedadDeCotizacion($quote): ?int
     {
