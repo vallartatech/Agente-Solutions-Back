@@ -664,31 +664,50 @@ class ServiceController extends Controller
     {
         try {
             $user = $request->user();
-            $query = Service::with(['property.client', 'technician'])
-                ->whereHas('property')
+            // La propiedad y su cliente se cargan sin TenantScope: una propiedad compartida puede ser de otro tenant
+            $query = Service::with([
+                    'property' => fn ($q) => $q->withoutGlobalScopes(),
+                    'property.client' => fn ($q) => $q->withoutGlobalScopes(),
+                    'technician',
+                ])
+                ->whereHas('property', fn ($q) => $q->withoutGlobalScopes())
                 ->orderByDesc('created_at');
+
+            // Propiedades que le compartieron al usuario: las usa como dueño
+            $compartidas = \App\Services\AccesoPropiedad::compartidasCon($user);
 
             if ($user && $user->role_id == 3) {
                 $cliente = DB::table('clients')->where('user_id', $user->id)->first();
 
-                if ($cliente) {
-                    $query->whereHas('property', function ($q) use ($cliente) {
-                        $q->where('client_id', $cliente->id);
-                    });
+                if ($cliente || !empty($compartidas)) {
+                    $query->withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+                        ->where(function ($q) use ($cliente, $compartidas) {
+                            $q->whereIn('property_id', $compartidas);
+                            if ($cliente) {
+                                $q->orWhereHas('property', function ($qp) use ($cliente) {
+                                    $qp->withoutGlobalScopes()->where('client_id', $cliente->id);
+                                });
+                            }
+                        });
                 } else {
                     return response()->json([], 200);
                 }
             } elseif ($user && $user->role_id == 4) {
                 // Autónomo: solo ve servicios de propiedades de su empresa (o asignados a técnicos de su empresa)
-                $query->where(function ($q) use ($user) {
-                    $q->where('tenant_id', $user->tenant_id)
-                        ->orWhereHas('property', function ($qp) use ($user) {
-                            $qp->where('tenant_id', $user->tenant_id);
-                        })
-                        ->orWhereHas('technician', function ($qt) use ($user) {
-                            $qt->where('tenant_id', $user->tenant_id);
-                        });
-                });
+                // y los de propiedades que le compartieron. Sin tenant no se filtra por tenant NULL.
+                $query->withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+                    ->where(function ($q) use ($user, $compartidas) {
+                        $q->whereIn('property_id', $compartidas);
+                        if (!empty($user->tenant_id)) {
+                            $q->orWhere('tenant_id', $user->tenant_id)
+                                ->orWhereHas('property', function ($qp) use ($user) {
+                                    $qp->where('tenant_id', $user->tenant_id);
+                                })
+                                ->orWhereHas('technician', function ($qt) use ($user) {
+                                    $qt->where('tenant_id', $user->tenant_id);
+                                });
+                        }
+                    });
             } elseif ($user && $user->role_id == 1) {
                 // ADMIN (Rol 1): Solo ve levantamientos vinculados a su tenant / administración y sus técnicos
                 $query->where(function ($q) use ($user) {
@@ -784,7 +803,7 @@ class ServiceController extends Controller
                 $clienteUser = User::find($servicio->property->client->user_id);
 
                 if ($clienteUser) {
-                    Notification::send($clienteUser, new \App\Notifications\VisitRescheduled($servicio));
+                    Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, $servicio->property_id), new \App\Notifications\VisitRescheduled($servicio));
                 }
             }
 
@@ -1527,12 +1546,10 @@ class ServiceController extends Controller
                 $propName = $property ? ($property->property_name ?: $property->address) : 'la propiedad';
                 $notif = new \App\Notifications\TechnicianArrivedNotification($user, $item, $propName, $esTecnicoRed && $item instanceof WorkOrder);
 
-                // Red: solo se avisa al dueño de la propiedad, no a Root ni a los Admin
+                // Red: solo se avisa al dueño de la propiedad y a sus invitados, no a Root ni a los Admin
                 if ($esTecnicoRed && $item instanceof WorkOrder) {
-                    $duenoId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $item->id);
-                    $dueno = $duenoId ? User::withoutGlobalScopes()->find($duenoId) : null;
-                    if ($dueno && (int) $dueno->id !== (int) $user->id) {
-                        $dueno->notify($notif);
+                    foreach (\App\Services\AccesoPropiedad::interesadosDeOrden($item->id, (int) $user->id) as $duenoId) {
+                        User::withoutGlobalScopes()->find($duenoId)?->notify($notif);
                     }
                     return response()->json([
                         'success' => true,
@@ -1554,7 +1571,8 @@ class ServiceController extends Controller
                     if ($clientRecord && $clientRecord->user_id) {
                         $clientUser = User::withoutGlobalScopes()->find($clientRecord->user_id);
                         if ($clientUser) {
-                            $clientUser->notify($notif);
+                            // Dueño e invitados de la propiedad compartida
+                            Notification::send(\App\Services\AccesoPropiedad::conInvitados($clientUser, $property->id), $notif);
                         }
                     }
                 }
@@ -1592,9 +1610,10 @@ class ServiceController extends Controller
                 return response()->json(['error' => 'Trabajo no encontrado'], 404);
             }
 
-            // Solo el dueño de la propiedad (o Root/Admin)
+            // Solo el dueño de la propiedad, sus invitados (propiedad compartida) o Root/Admin
             $duenoId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $orden->id);
-            $esDueno = $duenoId && (int) $duenoId === (int) $user->id;
+            $esDueno = ($duenoId && (int) $duenoId === (int) $user->id)
+                || \App\Services\AccesoPropiedad::esInvitado($user, $orden->property_id);
             if (!$esDueno && !in_array((int) $user->role_id, [0, 1], true)) {
                 return response()->json(['error' => 'Solo el dueño de la propiedad puede confirmar la llegada'], 403);
             }
@@ -1921,6 +1940,11 @@ class ServiceController extends Controller
                 $clientUsers->push($cUser);
             }
 
+            // Invitados de la propiedad compartida
+            if ($property) {
+                $clientUsers = $clientUsers->merge(\App\Services\AccesoPropiedad::conInvitados(null, $property->id));
+            }
+
             $clientUsers = $clientUsers->unique('id');
             if ($clientUsers->count() > 0) {
                 Notification::send($clientUsers, new \App\Notifications\SecondVisitRequested($model, $request->fecha_propuesta, $request->motivo, $techName));
@@ -2012,6 +2036,11 @@ class ServiceController extends Controller
                         Notification::send($clientUser, new \App\Notifications\SecondVisitAgreed($model, $request->fecha_confirmada, $request->accion));
                     }
                 }
+                // Invitados de la propiedad compartida
+                $invitados = \App\Services\AccesoPropiedad::conInvitados(null, $model->property_id);
+                if ($invitados->isNotEmpty()) {
+                    Notification::send($invitados, new \App\Notifications\SecondVisitAgreed($model, $request->fecha_confirmada, $request->accion));
+                }
             }
 
             return response()->json([
@@ -2081,6 +2110,13 @@ class ServiceController extends Controller
                 $clientUser = User::withoutGlobalScopes()->where('id', $property->client_id)->first();
                 if ($clientUser) {
                     Notification::send($clientUser, new \App\Notifications\SecondVisitAdminScheduled($model, $request->fecha_programada, $request->observaciones));
+                }
+            }
+            // Invitados de la propiedad compartida
+            if ($property) {
+                $invitados = \App\Services\AccesoPropiedad::conInvitados(null, $property->id);
+                if ($invitados->isNotEmpty()) {
+                    Notification::send($invitados, new \App\Notifications\SecondVisitAdminScheduled($model, $request->fecha_programada, $request->observaciones));
                 }
             }
 

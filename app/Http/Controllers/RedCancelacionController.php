@@ -123,8 +123,8 @@ class RedCancelacionController extends Controller
         self::anotarEnChat($quote, $user, 'Técnico de la Red', '↩️ [COTIZACIÓN RETIRADA]: el técnico retiró su cotización.');
 
         $orden = WorkOrder::withoutGlobalScopes()->find($quote->work_order_id);
-        $duenoId = $orden ? MisClientesController::duenoDeOrden((int) $orden->id) : null;
-        if ($duenoId && $habiaConfirmacion) {
+        // Dueño e invitados de la propiedad
+        foreach (($orden && $habiaConfirmacion ? \App\Services\AccesoPropiedad::interesadosDeOrden($orden->id) : []) as $duenoId) {
             self::avisar((int) $duenoId, 'El técnico ya no está disponible',
                 sprintf('%s retiró su cotización para "%s". Puedes elegir otra cotización.', self::nombre($user), self::titulo($orden)),
                 '/red-autonomos?trabajo=' . $orden->id, 'network_quote_retirada', $orden->id);
@@ -159,8 +159,9 @@ class RedCancelacionController extends Controller
             $quote->confirmacion_pedida_at = null;
             $quote->save();
             self::anotarEnChat($quote, $user, 'Técnico de la Red', '↩️ [NO DISPONIBLE]: el técnico ya no puede tomar este trabajo.');
-            if ($dueno) {
-                self::avisar((int) $dueno->id, 'El técnico no está disponible',
+            // Dueño e invitados de la propiedad
+            foreach (($orden ? \App\Services\AccesoPropiedad::interesadosDeOrden($orden->id) : []) as $avisarId) {
+                self::avisar((int) $avisarId, 'El técnico no está disponible',
                     sprintf('%s ya no puede tomar "%s". Elige otra cotización o espera nuevas.', self::nombre($user), self::titulo($orden)),
                     '/red-autonomos?trabajo=' . $orden->id, 'network_quote_declinada', $orden->id);
             }
@@ -289,6 +290,12 @@ class RedCancelacionController extends Controller
             $duenoId = MisClientesController::duenoDeOrden((int) $workOrder->id);
             $dueno = $duenoId ? User::withoutGlobalScopes()->find($duenoId) : $cliente;
             $dueno?->notify(new \App\Notifications\NetworkQuoteAcceptedClient($quote, $techName, $title));
+
+            // Invitados de la propiedad compartida: el mismo aviso
+            foreach (\App\Services\AccesoPropiedad::invitadosDeOrden($workOrder->id) as $invitadoId) {
+                if ($dueno && (int) $dueno->id === $invitadoId) continue;
+                User::withoutGlobalScopes()->find($invitadoId)?->notify(new \App\Notifications\NetworkQuoteAcceptedClient($quote, $techName, $title));
+            }
         } catch (\Throwable $e) {
             Log::error("Error notificando al cliente: " . $e->getMessage());
         }

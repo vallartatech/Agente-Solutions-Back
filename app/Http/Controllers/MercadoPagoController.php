@@ -169,7 +169,7 @@ class MercadoPagoController extends Controller
 
     public function createPreference(Request $request, $id)
     {
-        $quote = Quote::with(['service.property.client', 'workOrder.property.client'])->findOrFail($id);
+        $quote = \App\Services\AccesoPropiedad::cotizacion($id, null, ['service.property.client', 'workOrder.property.client']);
 
         try {
             $client = new PreferenceClient();
@@ -437,7 +437,7 @@ class MercadoPagoController extends Controller
                             if ($quote->cliente_user_id) {
                                 $clienteUser = User::find($quote->cliente_user_id);
                                 if ($clienteUser) {
-                                    $clienteUser->notify(new MercadoPagoPaymentReceived($quote));
+                                    \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new MercadoPagoPaymentReceived($quote));
                                 }
                             }
                         } elseif ($payment->status === 'in_process') {
@@ -542,7 +542,7 @@ class MercadoPagoController extends Controller
                 if ($cliente && $cliente->user_id) {
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
-                        $clienteUser->notify(new MercadoPagoPaymentReceived($quote));
+                        \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new MercadoPagoPaymentReceived($quote));
                     }
                 }
 

@@ -176,9 +176,9 @@ class QuoteController extends Controller
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
                         if ($request->parent_id) {
-                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\QuoteRecotizadaNotification($quote));
+                            \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new \App\Notifications\QuoteRecotizadaNotification($quote));
                         } else {
-                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteAvailable($quote));
+                            \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new \App\Notifications\NewQuoteAvailable($quote));
                         }
                     }
                 }
@@ -290,9 +290,9 @@ class QuoteController extends Controller
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
                         if ($request->parent_id) {
-                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\QuoteRecotizadaNotification($quote));
+                            \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new \App\Notifications\QuoteRecotizadaNotification($quote));
                         } else {
-                            \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteAvailable($quote));
+                            \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new \App\Notifications\NewQuoteAvailable($quote));
                         }
                     }
                 }
@@ -332,7 +332,9 @@ class QuoteController extends Controller
                     ->pluck('id')
                     ->toArray();
 
-                $quotesQuery = $quotesQuery->where(function ($q) use ($user, $clientIds, $propertyIds) {
+                $compartidas = \App\Services\AccesoPropiedad::compartidasCon($user);
+                // El filtro de abajo ya limita a lo suyo; el TenantScope dejaría fuera las compartidas de otro tenant
+                $quotesQuery = $quotesQuery->withoutGlobalScope(\App\Models\Scopes\TenantScope::class)->where(function ($q) use ($user, $clientIds, $propertyIds, $compartidas) {
                     $q->whereHas('service.property', function ($query) use ($user, $clientIds, $propertyIds) {
                         $query->whereIn('id', $propertyIds)
                               ->orWhereIn('client_id', $clientIds)
@@ -349,20 +351,39 @@ class QuoteController extends Controller
                         $query->whereIn('property_id', $propertyIds);
                     })->orWhereHas('service', function ($query) use ($propertyIds) {
                         $query->whereIn('property_id', $propertyIds);
+                    })->orWhereHas('workOrder', function ($query) use ($compartidas) {
+                        // Propiedades que le compartieron: las usa como dueño
+                        $query->withoutGlobalScopes()->whereIn('property_id', $compartidas);
+                    })->orWhereHas('service', function ($query) use ($compartidas) {
+                        $query->withoutGlobalScopes()->whereIn('property_id', $compartidas);
                     });
                 })->where(function($q) {
                     $q->whereNull('created_by_role')->orWhere('created_by_role', '!=', 'Técnico');
                 });
             } elseif ($user && $user->role_id === 4) {
                 // Autónomo: solo ve cotizaciones de su empresa (o de propiedades de su empresa)
-                $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
-                    $q->where('tenant_id', $user->tenant_id)
-                        ->orWhereHas('service.property', function ($query) use ($user) {
-                            $query->where('tenant_id', $user->tenant_id);
-                        })->orWhereHas('workOrder.property', function ($query) use ($user) {
-                            $query->where('tenant_id', $user->tenant_id);
+                // y las de propiedades que le compartieron (las usa como dueño)
+                $compartidas = \App\Services\AccesoPropiedad::compartidasCon($user);
+                if (empty($user->tenant_id) && empty($compartidas)) {
+                    // Sin tenant ni compartidas: tenant_id NULL devolvería las de todo Agente Solutions
+                    $quotesQuery = $quotesQuery->whereRaw('1 = 0');
+                } else {
+                    $quotesQuery = $quotesQuery->withoutGlobalScope(\App\Models\Scopes\TenantScope::class)->where(function ($q) use ($user, $compartidas) {
+                        if (!empty($user->tenant_id)) {
+                            $q->where('tenant_id', $user->tenant_id)
+                                ->orWhereHas('service.property', function ($query) use ($user) {
+                                    $query->where('tenant_id', $user->tenant_id);
+                                })->orWhereHas('workOrder.property', function ($query) use ($user) {
+                                    $query->where('tenant_id', $user->tenant_id);
+                                });
+                        }
+                        $q->orWhereHas('workOrder', function ($query) use ($compartidas) {
+                            $query->withoutGlobalScopes()->whereIn('property_id', $compartidas);
+                        })->orWhereHas('service', function ($query) use ($compartidas) {
+                            $query->withoutGlobalScopes()->whereIn('property_id', $compartidas);
                         });
-                });
+                    });
+                }
             } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
                 $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
@@ -545,13 +566,23 @@ class QuoteController extends Controller
                     if ($user) {
                         if ($user->role_id === 8 || $user->role_id === 2) {
                             $networkQuotesQuery->where('technician_id', $user->id);
-                        } elseif ($user->role_id === 4) {
-                            $networkQuotesQuery->whereHas('workOrder', function ($q) use ($user) {
-                                $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
-                            });
-                        } elseif ($user->role_id === 3) {
-                            $networkQuotesQuery->whereHas('workOrder.property.client', function ($q) use ($user) {
-                                $q->where('user_id', $user->id)->orWhere('email', $user->email);
+                        } elseif ($user->role_id === 4 || $user->role_id === 3) {
+                            // Las de su empresa (rol 4 con tenant), las de sus propiedades y las de propiedades
+                            // que le compartieron (las usa como dueño). Sin tenant no se filtra por tenant NULL.
+                            $compartidas = \App\Services\AccesoPropiedad::compartidasCon($user);
+                            $networkQuotesQuery->where(function ($w) use ($user, $compartidas) {
+                                if ($user->role_id === 4 && !empty($user->tenant_id)) {
+                                    $w->whereHas('workOrder', function ($q) use ($user) {
+                                        $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
+                                    });
+                                }
+                                $w->orWhereHas('workOrder.property.client', function ($q) use ($user) {
+                                    $q->withoutGlobalScopes()->where(function ($c) use ($user) {
+                                        $c->where('user_id', $user->id)->orWhere('email', $user->email);
+                                    });
+                                })->orWhereHas('workOrder', function ($q) use ($compartidas) {
+                                    $q->withoutGlobalScopes()->whereIn('property_id', $compartidas);
+                                });
                             });
                         }
                     }
@@ -664,7 +695,7 @@ class QuoteController extends Controller
                 'rejection_reason' => 'nullable|string'
             ]);
 
-            $quote = Quote::findOrFail($id);
+            $quote = \App\Services\AccesoPropiedad::cotizacion($id);
             $quote->status = $request->status;
 
             if ($request->status === 'Rechazado' && $request->filled('rejection_reason')) {
@@ -818,10 +849,12 @@ class QuoteController extends Controller
                 $esElTecnico = (int) $netQuote->technician_id === (int) $user->id;
                 if ($esElTecnico) {
                     // Antes usaba el tenant_id como si fuera un usuario: el aviso le llegaba a otra persona
-                    $clientUserId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $netQuote->work_order_id);
-                    $clientUser = $clientUserId ? User::withoutGlobalScopes()->find($clientUserId) : null;
-                    if ($clientUser && (int) $clientUser->id !== (int) $user->id) {
-                        \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, 'Técnico'));
+                    // Dueño e invitados de la propiedad compartida
+                    foreach (\App\Services\AccesoPropiedad::interesadosDeOrden($netQuote->work_order_id, (int) $user->id) as $clientUserId) {
+                        $clientUser = User::withoutGlobalScopes()->find($clientUserId);
+                        if ($clientUser) {
+                            \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, 'Técnico'));
+                        }
                     }
                 } elseif ($netQuote->technician && (int) $netQuote->technician->id !== (int) $user->id) {
                     \Illuminate\Support\Facades\Notification::send($netQuote->technician, new \App\Notifications\NewNetworkQuoteChatMessageNotification($netQuote, $senderNameStr, $senderRole));
@@ -830,7 +863,7 @@ class QuoteController extends Controller
                 return response()->json(['message' => 'Mensaje enviado', 'chat_history' => $history], 200);
             }
 
-            $quote = Quote::findOrFail($id);
+            $quote = \App\Services\AccesoPropiedad::cotizacion($id);
             $user = auth('sanctum')->user() ?: auth()->user();
 
             $newMessage = [
@@ -862,7 +895,7 @@ class QuoteController extends Controller
                 if ($cliente && $cliente->user_id) {
                     $clienteUser = User::find($cliente->user_id);
                     if ($clienteUser) {
-                        \Illuminate\Support\Facades\Notification::send($clienteUser, new \App\Notifications\NewQuoteMessageNotification($quote, $senderNameStr, $roleStr));
+                        \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote), (int) $user->id), new \App\Notifications\NewQuoteMessageNotification($quote, $senderNameStr, $roleStr));
                     }
                 }
             }
@@ -880,7 +913,7 @@ class QuoteController extends Controller
                 'receipt_file' => 'required|file|mimes:jpeg,png,jpg,pdf|max:10240'
             ]);
 
-            $quote = Quote::findOrFail($id);
+            $quote = \App\Services\AccesoPropiedad::cotizacion($id);
 
             // Subir a Cloudinary desde el backend usando la "Opción Nuclear"
             $cloudinary = new \Cloudinary\Cloudinary('cloudinary://942191234587844:VmNYB6w4vj3DdLqI9SZSKVofOi0@dcj5rcpi8');
@@ -940,7 +973,7 @@ class QuoteController extends Controller
             if ($cliente && $cliente->user_id) {
                 $clienteUser = User::find($cliente->user_id);
                 if ($clienteUser) {
-                    $clienteUser->notify(new QuotePaymentValidated($quote));
+                    \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new QuotePaymentValidated($quote));
                 }
             }
 
@@ -1011,7 +1044,7 @@ class QuoteController extends Controller
                 ]);
             }
 
-            $quote = Quote::findOrFail($id);
+            $quote = \App\Services\AccesoPropiedad::cotizacion($id);
             $quote->cash_requested = true;
             $quote->cash_amount_type = $request->cash_amount_type;
             $quote->cash_timing = $request->cash_timing;
@@ -1124,7 +1157,7 @@ class QuoteController extends Controller
                 }
 
                 // Si es Quote estándar
-                $quote = Quote::find($strId);
+                $quote = \App\Services\AccesoPropiedad::cotizacion($strId, null, [], false);
                 if ($quote) {
                     $quote->cash_requested = true;
                     $quote->cash_amount_type = $request->cash_amount_type;
@@ -1233,7 +1266,7 @@ class QuoteController extends Controller
                     $clientUser = User::find($client->user_id);
                     if ($clientUser) {
                         try {
-                            $clientUser->notify(new \App\Notifications\QuotePaymentValidated($nq));
+                            \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clientUser, $nq->workOrder?->property_id), new \App\Notifications\QuotePaymentValidated($nq));
                         } catch (\Throwable $e) {}
                     }
                 }
@@ -1306,7 +1339,7 @@ class QuoteController extends Controller
                 $clienteUser = User::find($clientUserId);
                 if ($clienteUser) {
                     try {
-                        $clienteUser->notify(new \App\Notifications\QuotePaymentValidated($quote));
+                        \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new \App\Notifications\QuotePaymentValidated($quote));
                     } catch (\Throwable $e) {}
                 }
             }
@@ -1359,7 +1392,7 @@ class QuoteController extends Controller
                 $clienteUser = User::find($clientUserId);
                 if ($clienteUser) {
                     try {
-                        $clienteUser->notify(new \App\Notifications\QuotePaymentValidated($quote));
+                        \Illuminate\Support\Facades\Notification::send(\App\Services\AccesoPropiedad::conInvitados($clienteUser, \App\Services\AccesoPropiedad::propiedadDeCotizacion($quote)), new \App\Notifications\QuotePaymentValidated($quote));
                     } catch (\Throwable $e) {}
                 }
             }
@@ -1430,7 +1463,7 @@ class QuoteController extends Controller
     public function solicitarRecotizacion(Request $request, $id)
     {
         try {
-            $quote = Quote::findOrFail($id);
+            $quote = \App\Services\AccesoPropiedad::cotizacion($id);
             $user = auth('sanctum')->user() ?: auth()->user();
 
             $quote->status = 'Pendiente de recotización';

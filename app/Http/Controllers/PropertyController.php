@@ -317,6 +317,10 @@ class PropertyController extends Controller
             }
 
             $property = Property::findOrFail($id);
+            // Propiedad compartida: el invitado la opera como dueño, pero no puede borrar la propiedad
+            if (\App\Services\AccesoPropiedad::esSoloInvitado($user, $property)) {
+                return response()->json(['error' => 'Solo el dueño de la propiedad puede borrar esta propiedad.'], 403);
+            }
 
             // Verificar que no sea un usuario que solo tiene la propiedad compartida
             if ($user->role_id == 3) {
@@ -365,6 +369,10 @@ class PropertyController extends Controller
                 return response()->json(['error' => 'No autorizado.'], 401);
 
             $property = Property::findOrFail($id);
+            // Propiedad compartida: el invitado la opera como dueño, pero no puede editar la propiedad
+            if (\App\Services\AccesoPropiedad::esSoloInvitado($user, $property)) {
+                return response()->json(['error' => 'Solo el dueño de la propiedad puede editar esta propiedad.'], 403);
+            }
 
             // Un cliente solo edita las suyas (no las que le compartieron)
             if ((int) $user->role_id === 3) {
@@ -842,7 +850,7 @@ class PropertyController extends Controller
                         if ($client && $client->user_id) {
                             $userCliente = User::find($client->user_id);
                             if ($userCliente) {
-                                Notification::send($userCliente, new WorkOrderCancelledNotification($workOrder, 'client'));
+                                Notification::send(\App\Services\AccesoPropiedad::conInvitados($userCliente, $workOrder->property_id), new WorkOrderCancelledNotification($workOrder, 'client'));
                                 \Log::info("Notificación de trabajo cancelado enviada al cliente.");
                             }
                         }
@@ -1043,7 +1051,7 @@ class PropertyController extends Controller
                     if ($client && $client->user_id) {
                         $userCliente = User::find($client->user_id);
                         if ($userCliente) {
-                            Notification::send($userCliente, new \App\Notifications\WorkOrderScheduledNotification($workOrder, $tecnicoName, $propertyName));
+                            Notification::send(\App\Services\AccesoPropiedad::conInvitados($userCliente, $workOrder->property_id), new \App\Notifications\WorkOrderScheduledNotification($workOrder, $tecnicoName, $propertyName));
                         }
                     }
                 } catch (\Exception $e) {
@@ -1471,6 +1479,10 @@ class PropertyController extends Controller
             ]);
 
             $property = Property::findOrFail($id);
+            // Propiedad compartida: el invitado la opera como dueño, pero no puede compartir la propiedad
+            if (\App\Services\AccesoPropiedad::esSoloInvitado($user, $property)) {
+                return response()->json(['error' => 'Solo el dueño de la propiedad puede compartir esta propiedad.'], 403);
+            }
 
             // Solo dueño o admin puede compartir
             if ($user->role_id == 3) {
@@ -1548,6 +1560,10 @@ class PropertyController extends Controller
                 return response()->json(['error' => 'No autorizado.'], 401);
 
             $property = Property::findOrFail($id);
+            // Propiedad compartida: el invitado la opera como dueño, pero no puede quitar invitados de la propiedad
+            if (\App\Services\AccesoPropiedad::esSoloInvitado($user, $property)) {
+                return response()->json(['error' => 'Solo el dueño de la propiedad puede quitar invitados de esta propiedad.'], 403);
+            }
 
             // Solo dueño o admin puede revocar
             if ($user->role_id == 3) {

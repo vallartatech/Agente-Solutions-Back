@@ -224,6 +224,12 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                               $qp->withoutGlobalScopes()->where('tenant_id', $authUser->tenant_id);
                           });
                     }
+
+                    // Propiedades que le compartieron: las usa como dueño
+                    $compartidas = \App\Services\AccesoPropiedad::compartidasCon($authUser);
+                    if (!empty($compartidas)) {
+                        $q->orWhereIn('property_id', $compartidas);
+                    }
                 });
             }
         } else {
@@ -448,6 +454,9 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $isMine = false;
             if ($authUser) {
                 if (in_array((int)$authUser->role_id, [0, 1])) {
+                    $isMine = true;
+                } elseif (\App\Services\AccesoPropiedad::esInvitado($authUser, $job->property_id)) {
+                    // Propiedad compartida: el invitado la ve como suya
                     $isMine = true;
                 } elseif (!empty($authUser->tenant_id) && ($job->tenant_id == $authUser->tenant_id || $job->property?->tenant_id == $authUser->tenant_id)) {
                     $isMine = true;
@@ -1224,7 +1233,13 @@ Route::middleware('auth:sanctum')->group(function () {
                 'scheduled_at' => $request->scheduled_at ? date('Y-m-d H:i:s', strtotime($request->scheduled_at)) : null,
                 'publish_network' => $publishNetwork,
                 'tecnico_dirigido_id' => $tecnicoDirigidoId,
-            ] + (\Illuminate\Support\Facades\Schema::hasColumn('work_orders', 'specialty_id')
+            ]
+            // La orden es de la propiedad: toma su tenant (si la crea un invitado de una propiedad compartida,
+            // no debe quedar en el tenant del invitado). Sin tenant en la propiedad, se asigna el del usuario como antes.
+            + (($tenantPropiedad = DB::table('properties')->where('id', $request->property_id)->value('tenant_id'))
+                ? ['tenant_id' => (int) $tenantPropiedad]
+                : [])
+            + (\Illuminate\Support\Facades\Schema::hasColumn('work_orders', 'specialty_id')
                 ? ['specialty_id' => $request->specialty_id ? (int) $request->specialty_id : null]
                 : []));
             if ($elementos) {
@@ -1247,6 +1262,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
             // Notificamos a los admins y al usuario actual para confirmar
             $notifiables = $admins->merge([$user]);
+
+            // Dueño e invitados de la propiedad (por ejemplo, si la solicitud la creó un invitado)
+            $duenoPropiedadId = DB::table('properties')->join('clients', 'clients.id', '=', 'properties.client_id')
+                ->where('properties.id', $workOrder->property_id)->value('clients.user_id');
+            $notifiables = $notifiables->merge(\App\Services\AccesoPropiedad::conInvitados(
+                $duenoPropiedadId ? User::withoutGlobalScopes()->find($duenoPropiedadId) : null,
+                $workOrder->property_id
+            ))->unique('id');
 
             $tecnicoAvisar = $tecnicoId ?: $tecnicoDirigidoId;
             if ($tecnicoAvisar) {
@@ -1404,10 +1427,10 @@ Route::middleware('auth:sanctum')->group(function () {
         if (in_array((int)$user->role_id, [2, 6, 8])) {
             // El técnico envió el mensaje -> notificar al Cliente / Autónomo dueño del reporte
             // Solo el dueño de la orden (no el primer usuario del tenant, que puede ser un Admin)
-            $clientUserId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $quote->work_order_id);
-            $clientUser = $clientUserId ? \App\Models\User::withoutGlobalScopes()->find($clientUserId) : null;
-            if ($clientUser && (int) $clientUser->id !== (int) $user->id) {
-                \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'Técnico'));
+            // ...y a los invitados de la propiedad compartida
+            foreach (\App\Services\AccesoPropiedad::interesadosDeOrden($quote->work_order_id, (int) $user->id) as $clientUserId) {
+                $clientUser = \App\Models\User::withoutGlobalScopes()->find($clientUserId);
+                if ($clientUser) \Illuminate\Support\Facades\Notification::send($clientUser, new \App\Notifications\NewNetworkQuoteChatMessageNotification($quote, $senderNameStr, 'Técnico'));
             }
         } else {
             // El Cliente / Autónomo envió el mensaje -> notificar al Técnico
@@ -1497,12 +1520,12 @@ Route::middleware('auth:sanctum')->group(function () {
         // Notificar al dueño de la orden de trabajo (el Autónomo o Cliente)
         try {
             // Solo el dueño de la orden (no el primer usuario del tenant, que puede ser un Admin)
-            $ownerId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $workOrder->id);
-            $owner = $ownerId ? \App\Models\User::withoutGlobalScopes()->find($ownerId) : null;
-            if ($owner && (int) $owner->id !== (int) $user->id) {
-                $techName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
-                $propName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad';
-                \Illuminate\Support\Facades\Notification::send($owner, new \App\Notifications\NetworkQuoteReceived($quote, $techName, $propName));
+            // ...y a los invitados de la propiedad compartida
+            $techName = trim("{$user->first_name} {$user->last_name}") ?: $user->name;
+            $propName = $workOrder->property ? ($workOrder->property->property_name ?: $workOrder->property->address) : 'Propiedad';
+            foreach (\App\Services\AccesoPropiedad::interesadosDeOrden($workOrder->id, (int) $user->id) as $ownerId) {
+                $owner = \App\Models\User::withoutGlobalScopes()->find($ownerId);
+                if ($owner) \Illuminate\Support\Facades\Notification::send($owner, new \App\Notifications\NetworkQuoteReceived($quote, $techName, $propName));
             }
         } catch (\Throwable $e) {
             \Log::error("Error enviando notificación de cotización: " . $e->getMessage());
@@ -1661,6 +1684,11 @@ Route::middleware('auth:sanctum')->group(function () {
                 if ($clientUsers->isEmpty()) {
                     $duenoId = \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $workOrder->id);
                     $u = $duenoId ? \App\Models\User::withoutGlobalScopes()->find($duenoId) : null;
+                    if ($u) $clientUsers->push($u);
+                }
+                // 4. Invitados de la propiedad compartida
+                foreach (\App\Services\AccesoPropiedad::invitadosDeOrden($workOrder->id) as $invitadoId) {
+                    $u = \App\Models\User::withoutGlobalScopes()->find($invitadoId);
                     if ($u) $clientUsers->push($u);
                 }
 
@@ -1844,6 +1872,11 @@ Route::middleware('auth:sanctum')->group(function () {
                 $duenoId = $clientUserId ?: \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $workOrder->id);
                 $u = $duenoId ? \App\Models\User::withoutGlobalScopes()->find($duenoId) : null;
                 if ($u) $clientUsers->push($u);
+                // ...y los invitados de la propiedad compartida
+                foreach (\App\Services\AccesoPropiedad::invitadosDeOrden($workOrder->id) as $invitadoId) {
+                    $u = \App\Models\User::withoutGlobalScopes()->find($invitadoId);
+                    if ($u) $clientUsers->push($u);
+                }
                 $clientUsers = $clientUsers->unique('id');
 
                 foreach ($clientUsers as $targetClient) {
@@ -1878,6 +1911,11 @@ Route::middleware('auth:sanctum')->group(function () {
                     $q->where('client_user_id', $user->id);
                     if ($user->tenant_id) {
                         $q->orWhere('tenant_id', $user->tenant_id);
+                    }
+                    // Propiedades que le compartieron: también califica al técnico como dueño
+                    $compartidas = \App\Services\AccesoPropiedad::compartidasCon($user);
+                    if (!empty($compartidas)) {
+                        $q->orWhereIn('work_order_id', \Illuminate\Support\Facades\DB::table('work_orders')->whereIn('property_id', $compartidas)->select('id'));
                     }
                 })
                 ->orderBy('cancelled_at', 'desc')
@@ -2069,6 +2107,7 @@ Route::middleware('auth:sanctum')->group(function () {
                         if (in_array($user->role_id, [0, 1])) $isOwner = true;
                         elseif ($user->tenant_id && ($service->tenant_id == $user->tenant_id || $service->property?->tenant_id == $user->tenant_id)) $isOwner = true;
                         elseif ($service->property?->client?->user_id == $user->id || $service->client_id == $user->id) $isOwner = true;
+                        elseif (\App\Services\AccesoPropiedad::esInvitado($user, $service->property_id)) $isOwner = true;
                     }
                     if (!$isOwner && $user) {
                         return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicación porque fue creada por otro usuario.'], 403);
@@ -2090,6 +2129,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 if (in_array($user->role_id, [0, 1])) $isOwner = true;
                 elseif ($user->tenant_id && ($workOrder->tenant_id == $user->tenant_id || $workOrder->property?->tenant_id == $user->tenant_id)) $isOwner = true;
                 elseif ($workOrder->property?->client?->user_id == $user->id || $workOrder->client_id == $user->id) $isOwner = true;
+                // Propiedad compartida: el invitado opera las solicitudes como dueño
+                elseif (\App\Services\AccesoPropiedad::esInvitado($user, $workOrder->property_id)) $isOwner = true;
             }
             if (!$isOwner && $user) {
                 return response()->json(['success' => false, 'message' => 'No puedes eliminar esta publicación porque fue creada por otro usuario.'], 403);
@@ -2130,7 +2171,9 @@ Route::middleware('auth:sanctum')->group(function () {
                     })
                     ->orWhereHas('tecnico', function ($qt) use ($user) {
                         $qt->where('tenant_id', $user->tenant_id);
-                    });
+                    })
+                    // Propiedades que le compartieron: las usa como dueño
+                    ->orWhereIn('property_id', \App\Services\AccesoPropiedad::compartidasCon($user));
             });
         } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
             $query->where(function ($q) use ($user) {
@@ -2181,6 +2224,9 @@ Route::middleware('auth:sanctum')->group(function () {
                     $qs->where('tenant_id', $user->tenant_id);
                 })->orWhereHas('workOrder', function ($qw) use ($user) {
                     $qw->where('tenant_id', $user->tenant_id);
+                })->orWhereHas('workOrder', function ($qw) use ($user) {
+                    // Propiedades que le compartieron: ve sus reportes como dueño
+                    $qw->withoutGlobalScopes()->whereIn('property_id', \App\Services\AccesoPropiedad::compartidasCon($user));
                 });
             });
         } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {

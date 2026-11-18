@@ -48,6 +48,11 @@ class AjusteCotizacionController extends Controller
             return true;
         }
 
+        // Propiedad compartida: el invitado actúa como dueño
+        if (\App\Services\AccesoPropiedad::esInvitado($user, $orden->property_id)) {
+            return true;
+        }
+
         // Equipo del cliente de la red (gestor, contratista): mismo tenant que la orden
         $tenantOrden = \App\Models\ClientTechnicianRelation::tenantDeBloqueo($orden->tenant_id ?: $orden->property?->tenant_id);
         return $tenantOrden
@@ -179,9 +184,8 @@ class AjusteCotizacionController extends Controller
             $ajuste->version, $this->dinero($precioAnterior), $this->dinero($precio), $ajuste->motivo
         ));
 
-        // Avisar al dueño (campanita + push)
-        $duenoId = MisClientesController::duenoDeOrden((int) $orden->id);
-        if ($duenoId) {
+        // Avisar al dueño y a los invitados de la propiedad (campanita + push)
+        foreach (\App\Services\AccesoPropiedad::interesadosDeOrden($orden->id) as $duenoId) {
             $this->avisar(
                 (int) $duenoId,
                 'Ajuste de cotización',
@@ -309,8 +313,7 @@ class AjusteCotizacionController extends Controller
             if ($quote) {
                 $this->anotarEnChat($quote, $user, sprintf('🤝 Continuaré el trabajo con el precio de %s.', $this->dinero($quote->price)));
             }
-            $duenoId = $orden ? MisClientesController::duenoDeOrden((int) $orden->id) : null;
-            if ($duenoId) {
+            foreach (($orden ? \App\Services\AccesoPropiedad::interesadosDeOrden($orden->id) : []) as $duenoId) {
                 $this->avisar((int) $duenoId, 'El técnico continuará el trabajo',
                     sprintf('%s continuará "%s" con el precio de %s.', $this->nombre($user), $this->tituloOrden($orden), $this->dinero($quote?->price ?? $ajuste->precio_anterior)),
                     '/red-autonomos?trabajo=' . $orden->id, 'ajuste_cotizacion_continua', $orden->id);
@@ -339,11 +342,12 @@ class AjusteCotizacionController extends Controller
         }
 
         try {
-            $duenoId = MisClientesController::duenoDeOrden((int) $orden->id);
-            $dueno = $duenoId ? User::withoutGlobalScopes()->find($duenoId) : null;
-            if ($dueno) {
-                // Un solo aviso (campanita + push automático)
-                $dueno->notify(new \App\Notifications\WorkOrderCancelledNotification($orden, 'client'));
+            // Dueño e invitados de la propiedad: un solo aviso cada uno (campanita + push automático)
+            foreach (\App\Services\AccesoPropiedad::interesadosDeOrden($orden->id) as $duenoId) {
+                $dueno = User::withoutGlobalScopes()->find($duenoId);
+                if ($dueno) {
+                    $dueno->notify(new \App\Notifications\WorkOrderCancelledNotification($orden, 'client'));
+                }
             }
         } catch (\Throwable $e) {
             Log::warning('Ajuste de cotización: no se pudo avisar la cancelación: ' . $e->getMessage());
