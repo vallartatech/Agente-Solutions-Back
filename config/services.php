@@ -49,4 +49,8 @@ return [
         // Dominio del frontend: al tocar la notificación se abre aquí (no en el dominio de la API)
         'frontend_url' => env('FRONTEND_URL', 'https://agente-solutions-production.up.railway.app'),
     ],
+'google' => [
+        // OAuth Client ID (tipo "Aplicación web") de Google Cloud; el mismo que VITE_GOOGLE_CLIENT_ID del frontend
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+    ],
 ];

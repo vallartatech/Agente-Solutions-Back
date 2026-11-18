@@ -308,6 +308,67 @@ class AuthController extends Controller
             ], 401);
         }
 
+        return $this->responderAcceso($user);
+    }
+
+    /**
+     * Inicio de sesión con Google: el frontend manda el access_token que dio Google Identity Services.
+     * Se valida con Google que el token sea de nuestra app y que el correo esté verificado.
+     * No crea cuentas: si el correo no está registrado, el usuario debe registrarse primero (hay que elegir rol).
+     */
+    public function loginGoogle(Request $request)
+    {
+        $request->validate([
+            'access_token' => 'required|string|max:4096',
+        ]);
+
+        $clientId = config('services.google.client_id');
+        if (empty($clientId)) {
+            return response()->json(['message' => 'El inicio de sesión con Google no está configurado.'], 503);
+        }
+
+        try {
+            $resp = \Illuminate\Support\Facades\Http::timeout(10)
+                ->get('https://oauth2.googleapis.com/tokeninfo', ['access_token' => $request->access_token]);
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'No se pudo verificar tu cuenta de Google. Intenta de nuevo.'], 502);
+        }
+
+        $info = $resp->json() ?? [];
+        $emailVerificado = filter_var($info['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        // El token debe haberse emitido para nuestro Client ID (evita tokens de otras apps)
+        $esDeNuestraApp = ($info['aud'] ?? null) === $clientId || ($info['azp'] ?? null) === $clientId;
+
+        if (!$resp->ok() || !$esDeNuestraApp || empty($info['email']) || !$emailVerificado) {
+            return response()->json(['message' => 'No se pudo verificar tu cuenta de Google. Intenta de nuevo.'], 401);
+        }
+
+        $email = strtolower(trim($info['email']));
+        $user = User::withoutGlobalScopes()->whereRaw('LOWER(email) = ?', [$email])->first();
+
+        if (!$user || $user->approval_status === \App\Services\CuentaEliminacion::ANONIMIZADA) {
+            return response()->json([
+                'status' => 'not_registered',
+                'email' => $email,
+                'message' => 'No hay una cuenta con ' . $email . '. Regístrate primero y después podrás entrar con Google.',
+            ], 404);
+        }
+
+        // Google ya confirmó que el correo es suyo
+        if (is_null($user->email_verified_at)) {
+            $user->email_verified_at = now();
+            $user->save();
+        }
+
+        return $this->responderAcceso($user);
+    }
+
+    /**
+     * Reglas de acceso comunes a todos los inicios de sesión (contraseña o Google):
+     * estado de la cuenta, suscripciones y emisión del token.
+     */
+    private function responderAcceso(User $user)
+    {
         // Eliminación de cuenta pendiente (30 días) o ya eliminada: sin acceso
         if (in_array($user->approval_status, [\App\Services\CuentaEliminacion::PENDIENTE, 'deleted_by_user'], true)) {
             return response()->json([

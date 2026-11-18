@@ -34,6 +34,7 @@ use App\Http\Controllers\AccesoQrController;
 // ========================================================
 
 Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login/google', [AuthController::class, 'loginGoogle'])->middleware('throttle:20,1');
 
 // Verificación de Correo (rutas públicas)
 Route::get('/email/verify/{id}/{hash}', [AuthController::class, 'verifyEmail'])->name('verification.verify');
