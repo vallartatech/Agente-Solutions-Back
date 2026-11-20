@@ -52,5 +52,12 @@ return [
 'google' => [
         // OAuth Client ID (tipo "Aplicación web") de Google Cloud; el mismo que VITE_GOOGLE_CLIENT_ID del frontend
         'client_id' => env('GOOGLE_CLIENT_ID'),
+        // OAuth Client ID tipo "iOS" (bundle mx.com.agentesolutions.app) que usa la app de iPhone
+        'ios_client_id' => env('GOOGLE_IOS_CLIENT_ID'),
+    ],
+'apple' => [
+        // A quién va dirigido el token de Sign in with Apple: el bundle id de la app de iPhone
+        // (y, si algún día se usa en la web, el Services ID). Separados por coma.
+        'client_ids' => env('APPLE_CLIENT_IDS', 'mx.com.agentesolutions.app'),
     ],
 ];

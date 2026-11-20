@@ -318,26 +318,36 @@ class AuthController extends Controller
      */
     public function loginGoogle(Request $request)
     {
+        // Web: access_token de Google Identity Services. App de iPhone: id_token del SDK nativo de Google.
         $request->validate([
-            'access_token' => 'required|string|max:4096',
+            'access_token' => 'required_without:id_token|nullable|string|max:4096',
+            'id_token' => 'required_without:access_token|nullable|string|max:4096',
         ]);
 
-        $clientId = config('services.google.client_id');
-        if (empty($clientId)) {
+        // Client IDs válidos: el web y el de iOS
+        $clientIds = array_values(array_filter([
+            config('services.google.client_id'),
+            config('services.google.ios_client_id'),
+        ]));
+        if (empty($clientIds)) {
             return response()->json(['message' => 'El inicio de sesión con Google no está configurado.'], 503);
         }
 
+        $consulta = $request->filled('id_token')
+            ? ['id_token' => $request->id_token]
+            : ['access_token' => $request->access_token];
+
         try {
             $resp = \Illuminate\Support\Facades\Http::timeout(10)
-                ->get('https://oauth2.googleapis.com/tokeninfo', ['access_token' => $request->access_token]);
+                ->get('https://oauth2.googleapis.com/tokeninfo', $consulta);
         } catch (\Exception $e) {
             return response()->json(['message' => 'No se pudo verificar tu cuenta de Google. Intenta de nuevo.'], 502);
         }
 
         $info = $resp->json() ?? [];
         $emailVerificado = filter_var($info['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN);
-        // El token debe haberse emitido para nuestro Client ID (evita tokens de otras apps)
-        $esDeNuestraApp = ($info['aud'] ?? null) === $clientId || ($info['azp'] ?? null) === $clientId;
+        // El token debe haberse emitido para alguno de nuestros Client ID (evita tokens de otras apps)
+        $esDeNuestraApp = in_array($info['aud'] ?? null, $clientIds, true) || in_array($info['azp'] ?? null, $clientIds, true);
 
         if (!$resp->ok() || !$esDeNuestraApp || empty($info['email']) || !$emailVerificado) {
             return response()->json(['message' => 'No se pudo verificar tu cuenta de Google. Intenta de nuevo.'], 401);
@@ -355,6 +365,75 @@ class AuthController extends Controller
         }
 
         // Google ya confirmó que el correo es suyo
+        if (is_null($user->email_verified_at)) {
+            $user->email_verified_at = now();
+            $user->save();
+        }
+
+        return $this->responderAcceso($user);
+    }
+
+    /**
+     * Inicio de sesión con Apple (Sign in with Apple, app de iPhone): el frontend manda el identityToken (JWT).
+     * Se valida la firma con las llaves públicas de Apple, el emisor y que vaya dirigido a nuestra app.
+     * Igual que con Google, no crea cuentas: el correo debe estar registrado.
+     */
+    public function loginApple(Request $request)
+    {
+        $request->validate([
+            'id_token' => 'required|string|max:4096',
+        ]);
+
+        $clientIds = array_values(array_filter(array_map('trim', explode(',', (string) config('services.apple.client_ids')))));
+        $error = fn () => response()->json(['message' => 'No se pudo verificar tu cuenta de Apple. Intenta de nuevo.'], 401);
+
+        // Las llaves públicas de Apple cambian poco; se guardan una hora
+        $llaves = \Illuminate\Support\Facades\Cache::get('apple_signin_jwks');
+        if (empty($llaves['keys'])) {
+            try {
+                $resp = \Illuminate\Support\Facades\Http::timeout(10)->get('https://appleid.apple.com/auth/keys');
+                $llaves = $resp->ok() ? $resp->json() : null;
+            } catch (\Exception $e) {
+                $llaves = null;
+            }
+            if (empty($llaves['keys'])) {
+                return response()->json(['message' => 'No se pudo verificar tu cuenta de Apple. Intenta de nuevo.'], 502);
+            }
+            \Illuminate\Support\Facades\Cache::put('apple_signin_jwks', $llaves, 3600);
+        }
+
+        try {
+            $datos = \Firebase\JWT\JWT::decode($request->id_token, \Firebase\JWT\JWK::parseKeySet($llaves, 'RS256'));
+        } catch (\Throwable $e) {
+            // Firma inválida, token vencido o llave rotada: se refrescan las llaves para el siguiente intento
+            \Illuminate\Support\Facades\Cache::forget('apple_signin_jwks');
+            return $error();
+        }
+
+        $aud = (array) ($datos->aud ?? []);
+        if (($datos->iss ?? null) !== 'https://appleid.apple.com' || empty(array_intersect($aud, $clientIds))) {
+            return $error();
+        }
+
+        $email = strtolower(trim((string) ($datos->email ?? '')));
+        if ($email === '') {
+            return $error();
+        }
+
+        // Si eligió "Ocultar mi correo", Apple manda un correo @privaterelay.appleid.com que no tendrá cuenta
+        $user = User::withoutGlobalScopes()->whereRaw('LOWER(email) = ?', [$email])->first();
+        if (!$user || $user->approval_status === \App\Services\CuentaEliminacion::ANONIMIZADA) {
+            $oculto = str_ends_with($email, '@privaterelay.appleid.com');
+            return response()->json([
+                'status' => 'not_registered',
+                'email' => $email,
+                'message' => $oculto
+                    ? 'Elegiste ocultar tu correo, así que no encontramos tu cuenta. Entra con tu correo y contraseña, o regístrate primero.'
+                    : 'No hay una cuenta con ' . $email . '. Regístrate primero y después podrás entrar con Apple.',
+            ], 404);
+        }
+
+        // Apple ya confirmó que el correo es suyo
         if (is_null($user->email_verified_at)) {
             $user->email_verified_at = now();
             $user->save();

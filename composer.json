@@ -8,6 +8,7 @@
     "require": {
         "php": "^8.2",
         "cloudinary-labs/cloudinary-laravel": "^3.0",
+        "firebase/php-jwt": "^7.0",
         "laravel-notification-channels/onesignal": "^2.8",
         "laravel/framework": "^12.0",
         "laravel/sanctum": "^4.0",
