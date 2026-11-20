@@ -512,6 +512,8 @@ class PropertyController extends Controller
                 // Origen y versión: propuesta del técnico, cotización sobre ella, recotización o propia
                 'created_by_role' => $c->created_by_role ?? 'Admin',
                 'parent_id' => $c->parent_id,
+                // Equipo al que corresponde (órdenes con varios equipos)
+                'work_order_component_id' => $c->work_order_component_id,
                 'type' => $c->type,
                 'concept' => $c->concept,
                 'observations' => $c->observations,

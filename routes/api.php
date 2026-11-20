@@ -1059,6 +1059,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/work-orders/{id}/status', [PropertyController::class, 'updateWorkOrderStatus']);
     // Trabajos con varios elementos y ciclos de mantenimiento (Agente Solutions)
     Route::get('/work-orders/{id}/elementos', [\App\Http\Controllers\MaintenanceController::class, 'elementosDeOrden']);
+    // Carrito de cotizaciones por equipo: el admin elige qué equipos contrata el cliente (definitivo al finalizar)
+    Route::get('/work-orders/{id}/carrito', [\App\Http\Controllers\CarritoCotizacionController::class, 'show'])->whereNumber('id');
+    Route::put('/work-orders/{id}/carrito', [\App\Http\Controllers\CarritoCotizacionController::class, 'guardar'])->whereNumber('id');
+    Route::post('/work-orders/{id}/carrito/finalizar', [\App\Http\Controllers\CarritoCotizacionController::class, 'finalizar'])->whereNumber('id');
 
     // --- QR DE ACCESO A LA PROPIEDAD (tipo: work_order | servicio) ---
     // Ver: Root/Admin siempre; Técnico asignado solo tras confirmar llegada. Subir/eliminar: Root/Admin.
@@ -2210,7 +2214,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'service.property.client',
             'workOrder.property.client',
             'workOrder.closer:id,first_name,last_name',
-            'workOrder.elementos:id,work_order_id,label'
+            'workOrder.elementos:id,work_order_id,label,estado'
         ]);
 
         if ($user && in_array((int)$user->role_id, [2, 6, 8])) {

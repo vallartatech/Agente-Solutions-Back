@@ -89,10 +89,100 @@ class MaintenanceController extends Controller
         return Carbon::now(self::ZONA_LOCAL)->toDateString();
     }
 
-    // Elementos de una orden, para la galería de evidencias y el reporte oficial
+    // Elementos de una orden, para la galería de evidencias, el reporte oficial y el detalle del trabajo.
+    // Además de id y label trae la foto, el área y la próxima fecha de mantenimiento (si la tiene);
+    // quien solo lee id y label sigue funcionando igual.
     public function elementosDeOrden($id)
     {
-        return response()->json(WorkOrderComponent::where('work_order_id', (int) $id)->orderBy('id')->get(['id', 'label']));
+        $elementos = WorkOrderComponent::where('work_order_id', (int) $id)
+            ->orderBy('id')
+            ->get(['id', 'label', 'property_component_id', 'maintenance_equipment_id', 'estado']);
+
+        $equipos = MaintenanceEquipment::with(['visits' => fn ($q) => $q->where('status', 'pendiente')->orderBy('fecha_programada')])
+            ->whereIn('id', $elementos->pluck('maintenance_equipment_id')->filter()->unique()->values())
+            ->get()
+            ->keyBy('id');
+
+        // Del levantamiento: el del elemento o, si no tiene, el del equipo en mantenimiento
+        $idDelLevantamiento = fn ($e) => $e->property_component_id ?: optional($equipos->get($e->maintenance_equipment_id))->property_component_id;
+        $componentes = DB::table('property_components as pc')
+            ->join('property_areas as pa', 'pc.property_area_id', '=', 'pa.id')
+            ->whereIn('pc.id', $elementos->map($idDelLevantamiento)->filter()->unique()->values())
+            ->get(['pc.id', 'pc.image_path', 'pa.name as area'])
+            ->keyBy('id');
+
+        // Cotización vigente de cada equipo (carrito de cotizaciones por equipo)
+        $cotizaciones = \App\Models\Quote::withoutGlobalScopes()
+            ->where('work_order_id', (int) $id)
+            ->whereNotNull('work_order_component_id')
+            ->get()
+            ->groupBy('work_order_component_id');
+
+        // Historial de cada equipo: otras órdenes donde estuvo y los mantenimientos registrados
+        $idsEquipos = $elementos->pluck('maintenance_equipment_id')->filter()->unique()->values();
+        $idsComponentes = $elementos->map($idDelLevantamiento)->filter()->unique()->values();
+        $ordenesPrevias = ($idsEquipos->isEmpty() && $idsComponentes->isEmpty()) ? collect() : DB::table('work_order_components as wc')
+            ->join('work_orders as wo', 'wc.work_order_id', '=', 'wo.id')
+            ->where('wc.work_order_id', '!=', (int) $id)
+            ->where(function ($q) use ($idsEquipos, $idsComponentes) {
+                $q->whereIn('wc.maintenance_equipment_id', $idsEquipos)->orWhereIn('wc.property_component_id', $idsComponentes);
+            })
+            ->orderByDesc('wo.created_at')
+            ->get(['wc.maintenance_equipment_id', 'wc.property_component_id', 'wc.estado', 'wo.id', 'wo.type', 'wo.status', 'wo.created_at']);
+        $realizados = $idsEquipos->isEmpty() ? collect() : MaintenanceVisit::whereIn('maintenance_equipment_id', $idsEquipos)
+            ->where('status', 'realizada')
+            ->orderByDesc('fecha_programada')
+            ->get(['maintenance_equipment_id', 'fecha_programada', 'realizada_el', 'work_order_id'])
+            ->groupBy('maintenance_equipment_id');
+
+        return response()->json($elementos->map(function ($e) use ($equipos, $componentes, $idDelLevantamiento, $cotizaciones, $ordenesPrevias, $realizados) {
+            $equipo = $equipos->get($e->maintenance_equipment_id);
+            $idComponente = $idDelLevantamiento($e);
+            $componente = $componentes->get($idComponente);
+            $proxima = $equipo ? $equipo->visits->first() : null;
+            $cotizacion = CarritoCotizacionController::vigente($cotizaciones->get($e->id, collect()));
+
+            $historial = $ordenesPrevias
+                ->filter(fn ($o) => ($e->maintenance_equipment_id && (int) $o->maintenance_equipment_id === (int) $e->maintenance_equipment_id)
+                    || ($idComponente && (int) $o->property_component_id === (int) $idComponente))
+                ->unique('id')
+                ->take(10)
+                ->map(fn ($o) => [
+                    'work_order_id' => $o->id,
+                    'tipo' => $o->type,
+                    'status' => $o->status,
+                    'contratado' => $o->estado !== 'no_aceptado',
+                    'fecha' => $o->created_at ? \Carbon\Carbon::parse($o->created_at)->toIso8601String() : null,
+                ])
+                ->values();
+
+            return [
+                'cotizacion' => $cotizacion ? [
+                    'id' => $cotizacion->id,
+                    'status' => $cotizacion->status,
+                    'total' => $cotizacion->estimated_amount,
+                    'file_path' => $cotizacion->file_path,
+                    'concept' => $cotizacion->concept,
+                ] : null,
+                'historial' => $historial,
+                'mantenimientos_realizados' => $e->maintenance_equipment_id
+                    ? $realizados->get($e->maintenance_equipment_id, collect())->take(10)->map(fn ($v) => [
+                        'fecha' => substr((string) ($v->realizada_el ?: $v->fecha_programada), 0, 10),
+                        'work_order_id' => $v->work_order_id,
+                    ])->values()
+                    : [],
+                'id' => $e->id,
+                'label' => $e->label,
+                // pendiente | aceptado | no_aceptado (carrito de cotizaciones)
+                'estado' => $e->estado ?? 'pendiente',
+                'maintenance_equipment_id' => $e->maintenance_equipment_id,
+                'property_component_id' => $e->property_component_id,
+                'area' => optional($componente)->area,
+                'detalle' => optional($equipo)->detalle,
+                'foto' => optional($equipo)->foto_equipo_url ?: optional($componente)->image_path,
+                'proxima_fecha' => $proxima ? substr((string) $proxima->fecha_programada, 0, 10) : null,
+            ];
+        })->values());
     }
 
     // Propiedades del equipo interno, para el formulario

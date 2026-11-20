@@ -27,7 +27,7 @@ class ElementosTrabajo
         $query = DB::table('property_components as pc')
             ->join('property_areas as pa', 'pc.property_area_id', '=', 'pa.id')
             ->where('pa.property_id', $propertyId)
-            ->select('pc.id', 'pc.category', 'pc.sub_category', 'pc.brand', 'pc.model_or_color', 'pa.name as area')
+            ->select('pc.id', 'pc.category', 'pc.sub_category', 'pc.brand', 'pc.model_or_color', 'pc.image_path', 'pa.name as area')
             ->orderBy('pa.name')
             ->orderBy('pc.sub_category');
         if ($ids !== null) {
@@ -131,7 +131,8 @@ class ElementosTrabajo
             ->get(['work_order_component_id', 'stage'])
             ->groupBy('work_order_component_id');
 
-        return $elementos->filter(function ($elemento) use ($reportes) {
+        // Los equipos que el cliente no contrató no llevan evidencia
+        return $elementos->reject(fn ($elemento) => $elemento->estado === 'no_aceptado')->filter(function ($elemento) use ($reportes) {
             $etapas = ($reportes[$elemento->id] ?? collect())->pluck('stage')->all();
             return array_diff(self::ETAPAS_POR_ELEMENTO, $etapas) !== [];
         })->pluck('label')->values()->all();

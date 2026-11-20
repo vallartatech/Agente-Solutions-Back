@@ -11,6 +11,8 @@ class WorkOrderComponent extends Model
         'property_component_id',
         'maintenance_equipment_id',
         'label',
+        // pendiente | aceptado | no_aceptado (carrito de cotizaciones por equipo)
+        'estado',
     ];
 
     public function workOrder()

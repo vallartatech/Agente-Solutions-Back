@@ -73,6 +73,29 @@ class QuoteController extends Controller
             $quote->service_id = $request->service_id;
             $quote->work_order_id = $request->work_order_id;
             $quote->type = $request->type;
+
+            // Orden con varios equipos: cada cotización es de un equipo. La que se genera
+            // sobre otra (cotización final del admin, recotización) hereda el equipo de la original.
+            if ($quote->work_order_id) {
+                $componenteId = $request->input('work_order_component_id');
+                if (!$componenteId && $request->parent_id) {
+                    $componenteId = optional(Quote::withoutGlobalScopes()->find($request->parent_id))->work_order_component_id;
+                }
+                if ($componenteId) {
+                    $elemento = \App\Models\WorkOrderComponent::where('work_order_id', $quote->work_order_id)->find((int) $componenteId);
+                    if (!$elemento) {
+                        return response()->json(['error' => 'El equipo no pertenece a este trabajo.'], 422);
+                    }
+                    if ($elemento->estado === 'no_aceptado') {
+                        return response()->json(['error' => 'El cliente no contrató este equipo; ya no se puede cotizar.'], 422);
+                    }
+                    $quote->work_order_component_id = $elemento->id;
+                } elseif ($user && (int) $user->role_id === 2
+                    && \App\Models\WorkOrderComponent::where('work_order_id', $quote->work_order_id)->count() >= 2) {
+                    return response()->json(['error' => 'Este trabajo tiene varios equipos: haz una cotización para cada uno.'], 422);
+                }
+            }
+
             if ($request->has('related_service_ids')) {
                 $relatedIds = is_string($request->related_service_ids) ? json_decode($request->related_service_ids, true) : $request->related_service_ids;
                 $quote->related_service_ids = is_array($relatedIds) ? $relatedIds : null;
