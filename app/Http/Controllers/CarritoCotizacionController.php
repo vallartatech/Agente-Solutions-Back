@@ -38,6 +38,25 @@ class CarritoCotizacionController extends Controller
             ->first();
     }
 
+    // Propuesta del técnico (interna). Al recotizarla el admin queda "Recotizada", pero sigue siendo la del técnico.
+    public static function propuestaTecnico($cotizaciones)
+    {
+        return $cotizaciones
+            ->where('created_by_role', 'Técnico')
+            ->reject(fn ($c) => in_array($c->status, ['Rechazado', 'Rechazada'], true))
+            ->sortByDesc('id')
+            ->first();
+    }
+
+    // Cotización para el cliente: la más reciente que generó el admin y que sigue vigente
+    public static function paraCliente($cotizaciones)
+    {
+        return $cotizaciones
+            ->reject(fn ($c) => $c->created_by_role === 'Técnico' || in_array($c->status, self::DESCARTADAS, true))
+            ->sortByDesc('id')
+            ->first();
+    }
+
     private function cotizacion(?Quote $c): ?array
     {
         if (!$c) {
@@ -76,15 +95,14 @@ class CarritoCotizacionController extends Controller
             'finalizado_at' => optional($orden->carrito_finalizado_at ? \Carbon\Carbon::parse($orden->carrito_finalizado_at) : null)->toIso8601String(),
             'elementos' => $elementos->map(function ($e) use ($cotizaciones) {
                 $suyas = $cotizaciones->get($e->id, collect());
-                $vigentes = $suyas->reject(fn ($c) => in_array($c->status, self::DESCARTADAS, true));
                 return [
                     'id' => $e->id,
                     'label' => $e->label,
                     'estado' => $e->estado ?? 'pendiente',
                     'cotizacion' => $this->cotizacion(self::vigente($suyas)),
                     // Propuesta del técnico (interna) y la cotización que el admin generó para el cliente
-                    'cotizacion_tecnico' => $this->cotizacion($vigentes->where('created_by_role', 'Técnico')->sortByDesc('id')->first()),
-                    'cotizacion_cliente' => $this->cotizacion($vigentes->where('created_by_role', '!=', 'Técnico')->sortByDesc('id')->first()),
+                    'cotizacion_tecnico' => $this->cotizacion(self::propuestaTecnico($suyas)),
+                    'cotizacion_cliente' => $this->cotizacion(self::paraCliente($suyas)),
                     'cotizaciones' => $suyas->sortBy('id')->map(fn ($c) => $this->cotizacion($c))->values(),
                 ];
             })->values(),
@@ -134,12 +152,21 @@ class CarritoCotizacionController extends Controller
             if ($aceptados->isEmpty()) {
                 return response()->json(['error' => 'Elige al menos un equipo. Si el cliente no quiere ninguno, cancela el trabajo.'], 422);
             }
-            // Cada equipo debe tener su cotización: la de los no contratados queda como evidencia
-            $sinCotizacion = $elementos->filter(fn ($e) => !self::vigente($cotizaciones->get($e->id, collect())))->pluck('label');
+            // Cada equipo debe tener la propuesta del técnico: la de los no contratados queda como evidencia
+            $sinCotizacion = $elementos->filter(fn ($e) => !self::propuestaTecnico($cotizaciones->get($e->id, collect()))
+                && !self::vigente($cotizaciones->get($e->id, collect())))->pluck('label');
             if ($sinCotizacion->isNotEmpty()) {
                 return response()->json([
                     'error' => 'Falta la cotización de: ' . $sinCotizacion->implode(', ') . '.',
                     'sin_cotizacion' => $sinCotizacion->values(),
+                ], 422);
+            }
+            // Y cada equipo contratado, la cotización para el cliente que generó el admin
+            $sinParaCliente = $elementos->filter(fn ($e) => $aceptados->contains($e->id)
+                && !self::paraCliente($cotizaciones->get($e->id, collect())))->pluck('label');
+            if ($sinParaCliente->isNotEmpty()) {
+                return response()->json([
+                    'error' => 'Falta generar la cotización para el cliente de: ' . $sinParaCliente->implode(', ') . '.',
                 ], 422);
             }
         }

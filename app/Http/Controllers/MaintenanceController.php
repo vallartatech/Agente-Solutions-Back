@@ -92,8 +92,10 @@ class MaintenanceController extends Controller
     // Elementos de una orden, para la galería de evidencias, el reporte oficial y el detalle del trabajo.
     // Además de id y label trae la foto, el área y la próxima fecha de mantenimiento (si la tiene);
     // quien solo lee id y label sigue funcionando igual.
-    public function elementosDeOrden($id)
+    public function elementosDeOrden(Request $request, $id)
     {
+        // Admin y cliente ven la cotización vigente; el técnico solo su propia propuesta (no la recotización del admin)
+        $soloPropuesta = !in_array((int) optional($request->user())->role_id, [0, 1], true);
         $elementos = WorkOrderComponent::where('work_order_id', (int) $id)
             ->orderBy('id')
             ->get(['id', 'label', 'property_component_id', 'maintenance_equipment_id', 'estado']);
@@ -139,12 +141,14 @@ class MaintenanceController extends Controller
             ->get(['maintenance_equipment_id', 'fecha_programada', 'realizada_el', 'work_order_id'])
             ->groupBy('maintenance_equipment_id');
 
-        return response()->json($elementos->map(function ($e) use ($equipos, $componentes, $idDelLevantamiento, $cotizaciones, $ordenesPrevias, $realizados, $carritoFinalizado) {
+        return response()->json($elementos->map(function ($e) use ($equipos, $componentes, $idDelLevantamiento, $cotizaciones, $ordenesPrevias, $realizados, $carritoFinalizado, $soloPropuesta) {
             $equipo = $equipos->get($e->maintenance_equipment_id);
             $idComponente = $idDelLevantamiento($e);
             $componente = $componentes->get($idComponente);
             $proxima = $equipo ? $equipo->visits->first() : null;
-            $cotizacion = CarritoCotizacionController::vigente($cotizaciones->get($e->id, collect()));
+            $cotizacion = $soloPropuesta
+                ? CarritoCotizacionController::propuestaTecnico($cotizaciones->get($e->id, collect()))
+                : CarritoCotizacionController::vigente($cotizaciones->get($e->id, collect()));
 
             $historial = $ordenesPrevias
                 ->filter(fn ($o) => ($e->maintenance_equipment_id && (int) $o->maintenance_equipment_id === (int) $e->maintenance_equipment_id)
