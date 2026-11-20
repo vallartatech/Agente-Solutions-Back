@@ -89,6 +89,14 @@ class QuoteController extends Controller
                     if ($elemento->estado === 'no_aceptado') {
                         return response()->json(['error' => 'El cliente no contrató este equipo; ya no se puede cotizar.'], 422);
                     }
+                    // La cotización para el cliente (la genera el admin) va después de elegir en el carrito
+                    if ($user && in_array((int) $user->role_id, [0, 1], true)
+                        && \App\Models\WorkOrderComponent::where('work_order_id', $quote->work_order_id)->count() >= 2) {
+                        $carritoFinalizado = \Illuminate\Support\Facades\DB::table('work_orders')->where('id', $quote->work_order_id)->value('carrito_finalizado_at');
+                        if (!$carritoFinalizado || $elemento->estado !== 'aceptado') {
+                            return response()->json(['error' => 'Primero elige en el carrito del trabajo qué equipos se contratan y finalízalo; después genera la cotización para el cliente.'], 422);
+                        }
+                    }
                     $quote->work_order_component_id = $elemento->id;
                 } elseif ($user && (int) $user->role_id === 2
                     && \App\Models\WorkOrderComponent::where('work_order_id', $quote->work_order_id)->count() >= 2) {
@@ -494,6 +502,11 @@ class QuoteController extends Controller
                         'work_order_id' => $quote->work_order_id,
                         // Equipo al que corresponde (órdenes con varios equipos: una cotización por equipo)
                         'work_order_component_id' => $quote->work_order_component_id,
+                        // Para la pantalla de Cotizaciones: si el carrito ya se cerró y si este equipo se contrató
+                        'equipo_estado' => $quote->work_order_component_id
+                            ? \App\Models\WorkOrderComponent::whereKey($quote->work_order_component_id)->value('estado')
+                            : null,
+                        'carrito_finalizado' => $quote->work_order_component_id && $wo ? (bool) $wo->carrito_finalizado_at : null,
                         'folio' => (function () use ($quote) {
                             $baseId = $quote->parent_id ?? $quote->id;
                             $suffix = '';

@@ -76,11 +76,15 @@ class CarritoCotizacionController extends Controller
             'finalizado_at' => optional($orden->carrito_finalizado_at ? \Carbon\Carbon::parse($orden->carrito_finalizado_at) : null)->toIso8601String(),
             'elementos' => $elementos->map(function ($e) use ($cotizaciones) {
                 $suyas = $cotizaciones->get($e->id, collect());
+                $vigentes = $suyas->reject(fn ($c) => in_array($c->status, self::DESCARTADAS, true));
                 return [
                     'id' => $e->id,
                     'label' => $e->label,
                     'estado' => $e->estado ?? 'pendiente',
                     'cotizacion' => $this->cotizacion(self::vigente($suyas)),
+                    // Propuesta del técnico (interna) y la cotización que el admin generó para el cliente
+                    'cotizacion_tecnico' => $this->cotizacion($vigentes->where('created_by_role', 'Técnico')->sortByDesc('id')->first()),
+                    'cotizacion_cliente' => $this->cotizacion($vigentes->where('created_by_role', '!=', 'Técnico')->sortByDesc('id')->first()),
                     'cotizaciones' => $suyas->sortBy('id')->map(fn ($c) => $this->cotizacion($c))->values(),
                 ];
             })->values(),
@@ -93,7 +97,8 @@ class CarritoCotizacionController extends Controller
         return $this->aplicar($request, $id, false);
     }
 
-    // Cierra el carrito: lo elegido queda aprobado y lo demás como "No aceptada". Ya no se puede editar.
+    // Cierra el carrito: lo elegido queda contratado (el admin le genera la cotización para el cliente)
+    // y las cotizaciones de lo demás quedan como "No aceptada". Ya no se puede editar.
     public function finalizar(Request $request, $id)
     {
         return $this->aplicar($request, $id, true);
@@ -149,13 +154,9 @@ class CarritoCotizacionController extends Controller
                 }
 
                 $suyas = $cotizaciones->get($elemento->id, collect());
-                if ($contratado) {
-                    // La vigente queda aprobada (si ya estaba aprobada o pagada, se respeta)
-                    $vigente = self::vigente($suyas);
-                    if ($vigente && !in_array($vigente->status, array_merge(['Aprobado'], self::PAGADAS), true)) {
-                        $vigente->update(['status' => 'Aprobado']);
-                    }
-                } else {
+                // Contratado: la propuesta del técnico es interna; con ella el admin genera
+                // la cotización para el cliente, que es la que se aprueba y se paga.
+                if (!$contratado) {
                     // Se conservan como evidencia; no cuentan para el pago
                     $suyas->reject(fn ($c) => in_array($c->status, array_merge(self::DESCARTADAS, self::PAGADAS), true))
                         ->each(fn ($c) => $c->update(['status' => 'No aceptada']));

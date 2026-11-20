@@ -112,6 +112,9 @@ class MaintenanceController extends Controller
                 'pc.serial_number', 'pc.status', 'pc.quantity', 'pc.observations', 'pa.name as area'])
             ->keyBy('id');
 
+        // ¿El admin ya cerró el carrito? (el técnico no empieza hasta saber qué equipos se contrataron)
+        $carritoFinalizado = (bool) DB::table('work_orders')->where('id', (int) $id)->value('carrito_finalizado_at');
+
         // Cotización vigente de cada equipo (carrito de cotizaciones por equipo)
         $cotizaciones = \App\Models\Quote::withoutGlobalScopes()
             ->where('work_order_id', (int) $id)
@@ -136,7 +139,7 @@ class MaintenanceController extends Controller
             ->get(['maintenance_equipment_id', 'fecha_programada', 'realizada_el', 'work_order_id'])
             ->groupBy('maintenance_equipment_id');
 
-        return response()->json($elementos->map(function ($e) use ($equipos, $componentes, $idDelLevantamiento, $cotizaciones, $ordenesPrevias, $realizados) {
+        return response()->json($elementos->map(function ($e) use ($equipos, $componentes, $idDelLevantamiento, $cotizaciones, $ordenesPrevias, $realizados, $carritoFinalizado) {
             $equipo = $equipos->get($e->maintenance_equipment_id);
             $idComponente = $idDelLevantamiento($e);
             $componente = $componentes->get($idComponente);
@@ -166,6 +169,7 @@ class MaintenanceController extends Controller
                     'concept' => $cotizacion->concept,
                 ] : null,
                 'historial' => $historial,
+                'carrito_finalizado' => $carritoFinalizado,
                 // Datos del levantamiento (solo lectura), si el equipo viene de ahí
                 'levantamiento' => $componente ? [
                     'categoria' => $componente->category,
