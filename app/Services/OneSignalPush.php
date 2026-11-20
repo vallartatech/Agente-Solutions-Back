@@ -190,4 +190,86 @@ class OneSignalPush
             return 'error';
         }
     }
+
+    /**
+     * Da de alta el token APNs de la app de iPhone como suscripción push del usuario (external_id).
+     * La app no lleva el SDK de OneSignal: el token llega del plugin de Capacitor y aquí se registra.
+     * "Crear usuario" de OneSignal busca al usuario por el alias y, si ya existe, le agrega la suscripción
+     * (si el token era de otro usuario, pasa a este). Nunca lanza excepción.
+     *
+     * @return array{ok: bool, subscription_id: string|null, error: string|null}
+     */
+    public static function registrarIOS(string $externalId, string $token): array
+    {
+        $result = ['ok' => false, 'subscription_id' => null, 'error' => null];
+
+        $appId = config('services.onesignal.app_id');
+        $apiKey = config('services.onesignal.rest_api_key');
+        if (!$appId || !$apiKey) {
+            $result['error'] = 'OneSignal no está configurado en el servidor.';
+            return $result;
+        }
+
+        try {
+            $response = Http::withHeaders(['Authorization' => 'Key ' . $apiKey])
+                ->acceptJson()
+                ->timeout(10)
+                ->post('https://api.onesignal.com/apps/' . urlencode($appId) . '/users', [
+                    'identity' => ['external_id' => $externalId],
+                    'subscriptions' => [[
+                        'type' => 'iOSPush',
+                        'token' => $token,
+                        'enabled' => true,
+                        'device_os' => 'iOS',
+                    ]],
+                ]);
+
+            if (!$response->successful()) {
+                $result['error'] = 'OneSignal respondió HTTP ' . $response->status();
+                Log::warning('[OneSignal] No se registró el iPhone del usuario ' . $externalId . ': ' . $response->body());
+                return $result;
+            }
+
+            $suscripcion = collect($response->json('subscriptions') ?? [])
+                ->first(fn ($s) => ($s['type'] ?? null) === 'iOSPush' && ($s['token'] ?? null) === $token);
+
+            $result['ok'] = true;
+            $result['subscription_id'] = $suscripcion['id'] ?? null;
+            return $result;
+        } catch (\Throwable $e) {
+            $result['error'] = 'No se pudo contactar a OneSignal: ' . $e->getMessage();
+            return $result;
+        }
+    }
+
+    /**
+     * Borra una suscripción push del usuario (al cerrar sesión en el iPhone), solo si es suya.
+     * Nunca lanza excepción.
+     */
+    public static function bajaSuscripcion(string $externalId, string $subscriptionId): bool
+    {
+        $appId = config('services.onesignal.app_id');
+        $apiKey = config('services.onesignal.rest_api_key');
+        if (!$appId || !$apiKey) {
+            return false;
+        }
+
+        try {
+            $cliente = Http::withHeaders(['Authorization' => 'Key ' . $apiKey])->acceptJson()->timeout(10);
+
+            // Solo se borra si la suscripción pertenece a este usuario
+            $usuario = $cliente->get('https://api.onesignal.com/apps/' . urlencode($appId) . '/users/by/external_id/' . urlencode($externalId));
+            $esSuya = $usuario->successful() && collect($usuario->json('subscriptions') ?? [])
+                ->contains(fn ($s) => ($s['id'] ?? null) === $subscriptionId);
+            if (!$esSuya) {
+                return false;
+            }
+
+            return $cliente->delete('https://api.onesignal.com/apps/' . urlencode($appId) . '/subscriptions/' . urlencode($subscriptionId))
+                ->successful();
+        } catch (\Throwable $e) {
+            Log::warning('[OneSignal] No se pudo dar de baja la suscripción: ' . $e->getMessage());
+            return false;
+        }
+    }
 }

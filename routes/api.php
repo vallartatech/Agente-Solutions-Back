@@ -1140,6 +1140,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
     Route::get('/notifications/all', [NotificationController::class, 'getAll']);
     Route::get('/notifications/push-status', [NotificationController::class, 'pushStatus']);
+    Route::post('/push/ios/registrar', [NotificationController::class, 'registrarPushIOS'])->middleware('throttle:20,1');
+    Route::post('/push/ios/baja', [NotificationController::class, 'bajaPushIOS'])->middleware('throttle:20,1');
 
     ///Cotizaciones
     Route::put('/cotizaciones/{id}/observaciones', [QuoteController::class, 'updateObservations']);
