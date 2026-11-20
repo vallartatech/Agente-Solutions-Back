@@ -492,6 +492,8 @@ class QuoteController extends Controller
                         'property_id' => $quote->property_id ?? $prop?->id ?? null,
                         'service_id' => $quote->service_id,
                         'work_order_id' => $quote->work_order_id,
+                        // Equipo al que corresponde (órdenes con varios equipos: una cotización por equipo)
+                        'work_order_component_id' => $quote->work_order_component_id,
                         'folio' => (function () use ($quote) {
                             $baseId = $quote->parent_id ?? $quote->id;
                             $suffix = '';

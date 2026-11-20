@@ -108,7 +108,8 @@ class MaintenanceController extends Controller
         $componentes = DB::table('property_components as pc')
             ->join('property_areas as pa', 'pc.property_area_id', '=', 'pa.id')
             ->whereIn('pc.id', $elementos->map($idDelLevantamiento)->filter()->unique()->values())
-            ->get(['pc.id', 'pc.image_path', 'pa.name as area'])
+            ->get(['pc.id', 'pc.image_path', 'pc.image_path_secondary', 'pc.category', 'pc.sub_category', 'pc.brand', 'pc.model_or_color',
+                'pc.serial_number', 'pc.status', 'pc.quantity', 'pc.observations', 'pa.name as area'])
             ->keyBy('id');
 
         // Cotización vigente de cada equipo (carrito de cotizaciones por equipo)
@@ -165,6 +166,20 @@ class MaintenanceController extends Controller
                     'concept' => $cotizacion->concept,
                 ] : null,
                 'historial' => $historial,
+                // Datos del levantamiento (solo lectura), si el equipo viene de ahí
+                'levantamiento' => $componente ? [
+                    'categoria' => $componente->category,
+                    'nombre' => $componente->sub_category,
+                    'marca' => $componente->brand,
+                    'modelo' => $componente->model_or_color,
+                    'serie' => $componente->serial_number,
+                    'estado' => $componente->status,
+                    'cantidad' => $componente->quantity,
+                    'observaciones' => $componente->observations,
+                    'foto' => $componente->image_path,
+                    'foto_secundaria' => $componente->image_path_secondary,
+                ] : null,
+                'foto_datos' => optional($equipo)->foto_datos_url,
                 'mantenimientos_realizados' => $e->maintenance_equipment_id
                     ? $realizados->get($e->maintenance_equipment_id, collect())->take(10)->map(fn ($v) => [
                         'fecha' => substr((string) ($v->realizada_el ?: $v->fecha_programada), 0, 10),
