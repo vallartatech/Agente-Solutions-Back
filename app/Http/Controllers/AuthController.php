@@ -47,21 +47,25 @@ class AuthController extends Controller
         $porAdmin = $request->attributes->get('alta_por_admin') === true;
         // Fuera de producción (local/testing) no se valida el reCAPTCHA
         $sinCaptchaLocal = app()->environment(['local', 'testing']);
+        // Registro con Google o Apple: el token sustituye a la contraseña y al reCAPTCHA
+        $conSocial = !$porAdmin && $request->filled('social_proveedor');
 
         // 1. Actualizamos la validación para requerir first_name y last_name
         $request->validate([
+            'social_proveedor' => 'nullable|in:google,apple',
+            'social_token' => 'required_with:social_proveedor|nullable|string|max:4096',
             // Quien se registra solo debe aceptar el aviso de privacidad; las altas desde el panel no
             'acepta_privacidad' => $porAdmin ? 'nullable' : 'accepted',
             'role_id' => $porAdmin ? 'required|integer' : ['required', 'integer', \Illuminate\Validation\Rule::in(self::ROLES_AUTO_REGISTRO)],
             'first_name' => 'required|string|max:191',
             'last_name' => 'required|string|max:191',
             'email' => 'required|string|email|max:191|unique:users',
-            'password' => 'required|string|min:6',
+            'password' => $conSocial ? 'nullable|string|min:6' : 'required|string|min:6',
             'phone_number' => 'nullable|string|max:20|unique:users,phone_number',
             'company_code' => 'nullable|string',
             'tenant_id' => 'nullable|integer',
             'company_name' => 'nullable|string|max:191',
-            'captcha_token' => ($porAdmin || $sinCaptchaLocal) ? 'nullable|string' : 'required|string'
+            'captcha_token' => ($porAdmin || $sinCaptchaLocal || $conSocial) ? 'nullable|string' : 'required|string'
         ], [
             'role_id.in' => 'Tipo de cuenta no válido.',
             'email.unique' => 'Este correo electrónico ya está registrado en otra cuenta.',
@@ -74,8 +78,21 @@ class AuthController extends Controller
         $currentUser = $porAdmin ? $request->user() : null;
         $isDirectCreation = $porAdmin;
 
-        // reCAPTCHA obligatorio en todo registro público (sin tokens de bypass)
-        if (!$porAdmin && !$sinCaptchaLocal) {
+        // Con Google o Apple: el correo de la cuenta es el que ellos confirman
+        if ($conSocial) {
+            $identidad = $this->identidadSocial($request->social_proveedor, $request->social_token);
+            if ($identidad instanceof \Illuminate\Http\JsonResponse) {
+                return $identidad;
+            }
+            if ($identidad['email'] !== strtolower(trim($request->email))) {
+                return response()->json([
+                    'errors' => ['email' => ['El correo no coincide con tu cuenta de ' . ($request->social_proveedor === 'apple' ? 'Apple' : 'Google') . '.']]
+                ], 422);
+            }
+        }
+
+        // reCAPTCHA obligatorio en todo registro público (sin tokens de bypass); Google o Apple ya lo sustituyen
+        if (!$porAdmin && !$sinCaptchaLocal && !$conSocial) {
             $recaptchaResponse = \Illuminate\Support\Facades\Http::asForm()->post('https://www.google.com/recaptcha/api/siteverify', [
                 'secret' => env('RECAPTCHA_SECRET_KEY', '6LccVsstAAAAAIhyLM4y25IaCF2bC8YgzWBonbFR'),
                 'response' => $request->captcha_token,
@@ -128,6 +145,17 @@ class AuthController extends Controller
             }
         }
 
+        // Técnico de cuadrilla que se registra solo: debe traer el código de un contratista,
+        // que después lo aprueba desde su Sala de espera
+        if (!$porAdmin && (int) $request->role_id === 8) {
+            $contratista = $tenantId ? Tenant::find($tenantId) : null;
+            if (!$contratista || $contratista->membership_type !== 'market_contractor') {
+                return response()->json([
+                    'errors' => ['company_code' => ['El código de contratista no existe. Pídeselo a tu contratista.']]
+                ], 422);
+            }
+        }
+
         $isTechnician = ($request->role_id == 2 || $request->role_id == 6 || $request->role_id == 8);
         if ($request->role_id == 2 && empty($tenantId)) {
             $tenantId = 1; // Técnico oficial de Agente Solutions matriz
@@ -153,13 +181,20 @@ class AuthController extends Controller
             'first_name'      => $request->first_name,
             'last_name'       => $request->last_name,
             'email'           => $request->email,
-            'password'        => Hash::make($request->password),
+            // Con Google o Apple no hay contraseña: se pone una al azar (puede crear una con "Olvidé mi contraseña")
+            'password'        => Hash::make($conSocial ? \Illuminate\Support\Str::random(40) : $request->password),
             'role_id'         => $roleToAssign,
             'tenant_id'       => $tenantId,
             'approval_status' => $approvalStatus,
             'phone_number'    => $request->phone_number ?? null,
             'is_active'       => $isActive
         ]);
+
+        // Google o Apple ya confirmaron que el correo es suyo
+        if ($conSocial) {
+            $user->email_verified_at = now();
+            $user->save();
+        }
 
         if ($request->boolean('acepta_privacidad') && \Illuminate\Support\Facades\Schema::hasColumn('users', 'privacy_accepted_at')) {
             \DB::table('users')->where('id', $user->id)->update(['privacy_accepted_at' => now()]);
@@ -312,18 +347,12 @@ class AuthController extends Controller
     }
 
     /**
-     * Inicio de sesión con Google: el frontend manda el access_token que dio Google Identity Services.
-     * Se valida con Google que el token sea de nuestra app y que el correo esté verificado.
-     * No crea cuentas: si el correo no está registrado, el usuario debe registrarse primero (hay que elegir rol).
+     * Valida un token de Google: id_token (SDK nativo del iPhone, empieza con "eyJ") o access_token
+     * (Google Identity Services en la web). Revisa que sea de nuestra app y que el correo esté verificado.
+     * Devuelve ['email', 'first_name', 'last_name'] o una respuesta JSON de error.
      */
-    public function loginGoogle(Request $request)
+    private function identidadGoogle(string $token)
     {
-        // Web: access_token de Google Identity Services. App de iPhone: id_token del SDK nativo de Google.
-        $request->validate([
-            'access_token' => 'required_without:id_token|nullable|string|max:4096',
-            'id_token' => 'required_without:access_token|nullable|string|max:4096',
-        ]);
-
         // Client IDs válidos: el web y el de iOS
         $clientIds = array_values(array_filter([
             config('services.google.client_id'),
@@ -333,13 +362,10 @@ class AuthController extends Controller
             return response()->json(['message' => 'El inicio de sesión con Google no está configurado.'], 503);
         }
 
-        $consulta = $request->filled('id_token')
-            ? ['id_token' => $request->id_token]
-            : ['access_token' => $request->access_token];
-
+        $esIdToken = str_starts_with($token, 'eyJ');
         try {
             $resp = \Illuminate\Support\Facades\Http::timeout(10)
-                ->get('https://oauth2.googleapis.com/tokeninfo', $consulta);
+                ->get('https://oauth2.googleapis.com/tokeninfo', [$esIdToken ? 'id_token' : 'access_token' => $token]);
         } catch (\Exception $e) {
             return response()->json(['message' => 'No se pudo verificar tu cuenta de Google. Intenta de nuevo.'], 502);
         }
@@ -353,37 +379,35 @@ class AuthController extends Controller
             return response()->json(['message' => 'No se pudo verificar tu cuenta de Google. Intenta de nuevo.'], 401);
         }
 
-        $email = strtolower(trim($info['email']));
-        $user = User::withoutGlobalScopes()->whereRaw('LOWER(email) = ?', [$email])->first();
-
-        if (!$user || $user->approval_status === \App\Services\CuentaEliminacion::ANONIMIZADA) {
-            return response()->json([
-                'status' => 'not_registered',
-                'email' => $email,
-                'message' => 'No hay una cuenta con ' . $email . '. Regístrate primero y después podrás entrar con Google.',
-            ], 404);
+        $nombre = $info['given_name'] ?? '';
+        $apellido = $info['family_name'] ?? '';
+        // El access_token no trae el nombre: se pide a Google (solo hace falta para prellenar el registro)
+        if (!$esIdToken && $nombre === '') {
+            try {
+                $perfil = \Illuminate\Support\Facades\Http::timeout(10)->withToken($token)
+                    ->get('https://openidconnect.googleapis.com/v1/userinfo')->json() ?? [];
+                $nombre = $perfil['given_name'] ?? '';
+                $apellido = $perfil['family_name'] ?? '';
+            } catch (\Exception $e) {
+                // Sin nombre no pasa nada: el usuario lo escribe
+            }
         }
 
-        // Google ya confirmó que el correo es suyo
-        if (is_null($user->email_verified_at)) {
-            $user->email_verified_at = now();
-            $user->save();
-        }
-
-        return $this->responderAcceso($user);
+        return [
+            'email' => strtolower(trim($info['email'])),
+            'first_name' => $nombre,
+            'last_name' => $apellido,
+        ];
     }
 
     /**
-     * Inicio de sesión con Apple (Sign in with Apple, app de iPhone): el frontend manda el identityToken (JWT).
-     * Se valida la firma con las llaves públicas de Apple, el emisor y que vaya dirigido a nuestra app.
-     * Igual que con Google, no crea cuentas: el correo debe estar registrado.
+     * Valida el identityToken (JWT) de Sign in with Apple: firma con las llaves públicas de Apple,
+     * emisor y que vaya dirigido a nuestra app. Apple no manda el nombre en el token (el SDK lo da
+     * solo la primera vez), así que first_name y last_name vienen vacíos.
+     * Devuelve ['email', 'first_name', 'last_name'] o una respuesta JSON de error.
      */
-    public function loginApple(Request $request)
+    private function identidadApple(string $token)
     {
-        $request->validate([
-            'id_token' => 'required|string|max:4096',
-        ]);
-
         $clientIds = array_values(array_filter(array_map('trim', explode(',', (string) config('services.apple.client_ids')))));
         $error = fn () => response()->json(['message' => 'No se pudo verificar tu cuenta de Apple. Intenta de nuevo.'], 401);
 
@@ -403,7 +427,7 @@ class AuthController extends Controller
         }
 
         try {
-            $datos = \Firebase\JWT\JWT::decode($request->id_token, \Firebase\JWT\JWK::parseKeySet($llaves, 'RS256'));
+            $datos = \Firebase\JWT\JWT::decode($token, \Firebase\JWT\JWK::parseKeySet($llaves, 'RS256'));
         } catch (\Throwable $e) {
             // Firma inválida, token vencido o llave rotada: se refrescan las llaves para el siguiente intento
             \Illuminate\Support\Facades\Cache::forget('apple_signin_jwks');
@@ -420,26 +444,90 @@ class AuthController extends Controller
             return $error();
         }
 
-        // Si eligió "Ocultar mi correo", Apple manda un correo @privaterelay.appleid.com que no tendrá cuenta
+        return ['email' => $email, 'first_name' => '', 'last_name' => ''];
+    }
+
+    /** Valida el token del proveedor indicado ('google' o 'apple'). */
+    private function identidadSocial(string $proveedor, string $token)
+    {
+        return $proveedor === 'apple' ? $this->identidadApple($token) : $this->identidadGoogle($token);
+    }
+
+    /** Busca la cuenta de un correo (las cuentas anonimizadas por eliminación no cuentan). */
+    private function cuentaPorCorreo(string $email): ?User
+    {
         $user = User::withoutGlobalScopes()->whereRaw('LOWER(email) = ?', [$email])->first();
-        if (!$user || $user->approval_status === \App\Services\CuentaEliminacion::ANONIMIZADA) {
-            $oculto = str_ends_with($email, '@privaterelay.appleid.com');
-            return response()->json([
-                'status' => 'not_registered',
-                'email' => $email,
-                'message' => $oculto
-                    ? 'Elegiste ocultar tu correo, así que no encontramos tu cuenta. Entra con tu correo y contraseña, o regístrate primero.'
-                    : 'No hay una cuenta con ' . $email . '. Regístrate primero y después podrás entrar con Apple.',
-            ], 404);
+        return ($user && $user->approval_status !== \App\Services\CuentaEliminacion::ANONIMIZADA) ? $user : null;
+    }
+
+    /**
+     * Inicio de sesión con Google o Apple. No crea cuentas: si el correo no está registrado responde
+     * 404 not_registered con el correo y el nombre, para que el frontend ofrezca registrarse con ellos.
+     */
+    private function loginSocial(string $proveedor, string $token)
+    {
+        $identidad = $this->identidadSocial($proveedor, $token);
+        if ($identidad instanceof \Illuminate\Http\JsonResponse) {
+            return $identidad;
         }
 
-        // Apple ya confirmó que el correo es suyo
+        $user = $this->cuentaPorCorreo($identidad['email']);
+        if (!$user) {
+            return response()->json(array_merge($identidad, [
+                'status' => 'not_registered',
+                'message' => 'No hay una cuenta con ' . $identidad['email'] . '. Puedes crearla ahora.',
+            ]), 404);
+        }
+
+        // Google o Apple ya confirmaron que el correo es suyo
         if (is_null($user->email_verified_at)) {
             $user->email_verified_at = now();
             $user->save();
         }
 
         return $this->responderAcceso($user);
+    }
+
+    /** Inicio de sesión con Google: access_token (web) o id_token (app de iPhone). */
+    public function loginGoogle(Request $request)
+    {
+        $request->validate([
+            'access_token' => 'required_without:id_token|nullable|string|max:4096',
+            'id_token' => 'required_without:access_token|nullable|string|max:4096',
+        ]);
+
+        return $this->loginSocial('google', (string) ($request->id_token ?: $request->access_token));
+    }
+
+    /** Inicio de sesión con Apple (app de iPhone): identityToken. */
+    public function loginApple(Request $request)
+    {
+        $request->validate([
+            'id_token' => 'required|string|max:4096',
+        ]);
+
+        return $this->loginSocial('apple', (string) $request->id_token);
+    }
+
+    /**
+     * Antes de registrarse con Google o Apple: valida el token y devuelve el correo y el nombre para
+     * prellenar el formulario. Si el correo ya tiene cuenta lo avisa (registrado = true).
+     */
+    public function identidadRegistroSocial(Request $request)
+    {
+        $request->validate([
+            'proveedor' => 'required|in:google,apple',
+            'token' => 'required|string|max:4096',
+        ]);
+
+        $identidad = $this->identidadSocial($request->proveedor, $request->token);
+        if ($identidad instanceof \Illuminate\Http\JsonResponse) {
+            return $identidad;
+        }
+
+        return response()->json(array_merge($identidad, [
+            'registrado' => (bool) $this->cuentaPorCorreo($identidad['email']),
+        ]));
     }
 
     /**
