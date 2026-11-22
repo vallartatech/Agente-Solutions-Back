@@ -31,7 +31,7 @@ class NewNetworkQuoteChatMessageNotification extends Notification
             ? ($this->networkQuote->workOrder->type . ($this->networkQuote->workOrder->equipment ? ' - ' . $this->networkQuote->workOrder->equipment : '')) 
             : 'Trabajo en Red';
         
-        $isTech = in_array((int)$notifiable->role_id, [2, 6, 8]);
+        $isTech = \App\Services\RolesRed::esCualquierTecnico($notifiable->role_id);
         $targetUrl = $isTech ? '/mercado-trabajos' : '/red-autonomos';
 
         return [

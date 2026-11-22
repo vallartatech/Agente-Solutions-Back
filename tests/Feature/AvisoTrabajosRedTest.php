@@ -18,6 +18,7 @@ class AvisoTrabajosRedTest extends TestCase
     private User $cliente;
     private User $hvac1;
     private User $plomero;
+    private User $deCuadrilla;
     private User $sinAprobar;
     private User $bloqueado;
     private int $idHvac;
@@ -41,7 +42,9 @@ class AvisoTrabajosRedTest extends TestCase
 
         $this->cliente = $this->usuario(4);
         $this->hvac1 = $this->usuario(6, [$this->idHvac]);
-        $this->plomero = $this->usuario(8, [$idPlomeria]);
+        // Técnico de la red que cotiza (el de cuadrilla, rol 8, ya no ve la red ni recibe estos avisos)
+        $this->plomero = $this->usuario(9, [$idPlomeria]);
+        $this->deCuadrilla = $this->usuario(8, [$idPlomeria, $this->idHvac]);
         $this->sinAprobar = $this->usuario(6, [$this->idHvac], false);
         $this->bloqueado = $this->usuario(6, [$this->idHvac]);
 
@@ -123,7 +126,7 @@ class AvisoTrabajosRedTest extends TestCase
         foreach ($especialidades as $e) {
             DB::table('technician_specialties')->insert(['user_id' => $id, 'specialty_id' => $e]);
         }
-        if (in_array($rol, [6, 8], true)) {
+        if (in_array($rol, [6, 7, 8, 9], true)) {
             DB::table('technician_profiles')->insert(['user_id' => $id, 'obligatorio' => true, 'aprobado_at' => $aprobado ? now() : null]);
         }
         return User::withoutGlobalScopes()->find($id);
@@ -191,6 +194,13 @@ class AvisoTrabajosRedTest extends TestCase
         $this->publicar($this->idHvac, ['tecnico_dirigido_id' => $this->hvac1->id]);
         $this->publicar($this->idHvac, ['tecnico_id' => $this->hvac1->id, 'status' => 'Asignado']);
         $this->assertSame([], $this->avisosDe($this->hvac1));
+    }
+
+    public function test_el_tecnico_de_cuadrilla_no_recibe_avisos_de_la_red(): void
+    {
+        $this->publicar(null);
+        $this->publicar($this->idHvac);
+        $this->assertSame([], $this->avisosDe($this->deCuadrilla));
     }
 
     public function test_texto_con_varias_habilidades(): void

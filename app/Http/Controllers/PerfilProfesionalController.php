@@ -533,12 +533,17 @@ class PerfilProfesionalController extends Controller
     {
         $cursos = TechnicianCourse::where('user_id', $tecnico->id)->orderByDesc('anio')->get();
         $experiencias = TechnicianExperience::where('user_id', $tecnico->id)->orderByDesc('desde_anio')->get();
+        // Técnico de cuadrilla (8): al cliente le cobra su contratista, así que no se muestra cómo cobra
+        $sinCobro = \App\Services\RolesRed::sinCobro($tecnico->role_id);
 
         $data = [
             'user_id' => $tecnico->id,
             'nombre' => trim("{$tecnico->first_name} {$tecnico->last_name}"),
             'foto' => $tecnico->profile_picture,
-            'rol' => (int) $tecnico->role_id === 8 ? 'Técnico de cuadrilla' : 'Técnico independiente',
+            'rol' => match ((int) $tecnico->role_id) {
+                7 => 'Contratista', 8 => 'Técnico de cuadrilla', 9 => 'Técnico de cuadrilla y de la red', default => 'Técnico independiente',
+            },
+            'sin_cobro' => $sinCobro,
             'miembro_desde' => optional($tecnico->created_at)->toDateString(),
             'edad' => PerfilProfesional::edad($tecnico->birth_date ?? null),
             'calificacion' => $tecnico->total_reviews_count ? round((float) $tecnico->rating_stars_avg, 1) : null,
@@ -552,10 +557,10 @@ class PerfilProfesionalController extends Controller
                 'identidad_verificada' => (bool) $perfil->identidad_verificada_at,
                 'estudios_verificados' => (bool) $perfil->estudios_verificados_at,
             ],
-            'emite_factura' => $perfil->emite_factura,
-            'acepta_efectivo' => $perfil->acepta_efectivo,
-            'tiene_terminal' => $perfil->tiene_terminal,
-            'acepta_transferencia' => PerfilProfesional::clabeValida($perfil->clabe),
+            'emite_factura' => $sinCobro ? null : $perfil->emite_factura,
+            'acepta_efectivo' => $sinCobro ? null : $perfil->acepta_efectivo,
+            'tiene_terminal' => $sinCobro ? null : $perfil->tiene_terminal,
+            'acepta_transferencia' => $sinCobro ? null : PerfilProfesional::clabeValida($perfil->clabe),
             'anios_experiencia' => $perfil->anios_experiencia,
             'nivel_estudios' => $perfil->nivel_estudios,
             'nivel_estudios_texto' => PerfilProfesional::NIVELES_ESTUDIOS[$perfil->nivel_estudios] ?? null,

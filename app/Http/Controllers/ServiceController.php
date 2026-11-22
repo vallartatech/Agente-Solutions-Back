@@ -1508,7 +1508,7 @@ class ServiceController extends Controller
 
             // Red (técnicos 6, 7, 8): la hora de llegada se registra una sola vez; si ya llegó,
             // se conserva la primera y no se vuelve a notificar. Agente Solutions conserva su flujo.
-            $esTecnicoRed = $user && in_array((int) $user->role_id, [6, 7, 8]);
+            $esTecnicoRed = $user && \App\Services\RolesRed::esTecnico($user->role_id);
             $yaHabiaLlegado = $esTecnicoRed && !empty($item->arrived_at);
             if (!$yaHabiaLlegado) {
                 $item->arrived_at = $now->format('Y-m-d H:i:s');

@@ -30,6 +30,8 @@ class CuadrillaSeguridadTest extends TestCase
             $this->fail('Estas pruebas solo corren en SQLite en memoria.');
         }
 
+        // Sin tabla de perfiles: el candado del perfil profesional no aplica en estas pruebas
+        \Closure::bind(fn () => \App\Services\PerfilProfesional::$tablaLista = null, null, \App\Services\PerfilProfesional::class)();
         Notification::fake();
         Schema::create('users', function (Blueprint $t) {
             $t->id();
@@ -264,7 +266,8 @@ class CuadrillaSeguridadTest extends TestCase
 
     public function test_no_se_quita_a_un_tecnico_con_trabajos_en_curso(): void
     {
-        $orden = DB::table('work_orders')->insertGetId(['tenant_id' => $this->tenantOtro, 'status' => 'En Progreso']);
+        // Trabajo del contratista al que mandó a su técnico
+        $orden = DB::table('work_orders')->insertGetId(['tenant_id' => $this->tenantOtro, 'tecnico_id' => $this->contratista->id, 'status' => 'En Progreso']);
         DB::table('work_order_technician')->insert(['work_order_id' => $orden, 'technician_id' => $this->tecnico->id]);
         Sanctum::actingAs($this->contratista);
 
@@ -305,14 +308,15 @@ class CuadrillaSeguridadTest extends TestCase
         $this->assertSame(1, (int) $otro->fresh()->is_active);
     }
 
-    public function test_el_tecnico_quitado_ve_el_aviso_al_iniciar_sesion(): void
+    public function test_el_tecnico_quitado_entra_solo_a_su_pantalla_sin_cuadrilla(): void
     {
         DB::table('users')->where('id', $this->tecnico->id)->update([
             'password' => bcrypt('secreto1'), 'approval_status' => Cuadrilla::SIN_CUADRILLA, 'is_active' => 0,
         ]);
 
         $this->postJson('/api/login', ['email' => 'tec@red.mx', 'password' => 'secreto1'])
-            ->assertForbidden()
-            ->assertJsonPath('status', Cuadrilla::SIN_CUADRILLA);
+            ->assertOk()
+            ->assertJsonPath('status', Cuadrilla::SIN_CUADRILLA)
+            ->assertJsonPath('sin_cuadrilla', true);
     }
 }

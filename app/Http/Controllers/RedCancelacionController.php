@@ -62,6 +62,8 @@ class RedCancelacionController extends Controller
                 $quote->status = 'rejected';
                 $quote->save();
             }
+            // Los técnicos de cuadrilla que iban también se enteran
+            \App\Services\Cuadrilla::avisarEquipo($orden, 'Trabajo cancelado', 'El cliente canceló "' . \App\Services\Cuadrilla::nombreTrabajo($orden) . '". Ya no tienes que ir.', [(int) $tecnicoId]);
             DB::table('work_order_technician')->where('work_order_id', $orden->id)->delete();
 
             // El técnico califica a este cliente (obligatorio, como en los trabajos terminados)
@@ -265,6 +267,8 @@ class RedCancelacionController extends Controller
         }
 
         try {
+            // Equipo nuevo: quien ganó la cotización (si es contratista, después elige a quién de su cuadrilla manda)
+            DB::table('work_order_technician')->where('work_order_id', $workOrder->id)->delete();
             DB::table('work_order_technician')->insertOrIgnore([
                 'work_order_id' => $workOrder->id,
                 'technician_id' => $quote->technician_id,

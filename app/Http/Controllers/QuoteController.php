@@ -413,6 +413,22 @@ class QuoteController extends Controller
                         });
                     });
                 }
+            } elseif ($user && \App\Services\RolesRed::esTecnico($user->role_id) && empty($user->tenant_id)) {
+                // Técnico de la red sin empresa: el TenantScope no lo filtra (veía todas las cotizaciones internas).
+                // Solo las de los trabajos donde él es el técnico.
+                $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
+                    $q->whereHas('service', function ($s) use ($user) {
+                        $s->withoutGlobalScopes()->where(function ($w) use ($user) {
+                            $w->where('assigned_to', $user->id)
+                              ->orWhereHas('technicians', fn ($t) => $t->where('users.id', $user->id));
+                        });
+                    })->orWhereHas('workOrder', function ($o) use ($user) {
+                        $o->withoutGlobalScopes()->where(function ($w) use ($user) {
+                            $w->where('tecnico_id', $user->id)
+                              ->orWhereHas('technicians', fn ($t) => $t->where('users.id', $user->id));
+                        });
+                    });
+                });
             } elseif ($user && $user->role_id !== 0 && $user->tenant_id) {
                 $quotesQuery = $quotesQuery->where(function ($q) use ($user) {
                     $q->where('tenant_id', $user->tenant_id)
@@ -600,14 +616,16 @@ class QuoteController extends Controller
                         ]);
 
                     if ($user) {
-                        if ($user->role_id === 8 || $user->role_id === 2) {
+                        // Cada técnico ve solo sus cotizaciones (antes el 6 y el 7 veían las de todos)
+                        if (\App\Services\RolesRed::esCualquierTecnico($user->role_id)) {
                             $networkQuotesQuery->where('technician_id', $user->id);
-                        } elseif ($user->role_id === 4 || $user->role_id === 3) {
+                        } elseif (in_array((int) $user->role_id, [3, 4, 5], true)) {
                             // Las de su empresa (rol 4 con tenant), las de sus propiedades y las de propiedades
                             // que le compartieron (las usa como dueño). Sin tenant no se filtra por tenant NULL.
                             $compartidas = \App\Services\AccesoPropiedad::compartidasCon($user);
                             $networkQuotesQuery->where(function ($w) use ($user, $compartidas) {
-                                if ($user->role_id === 4 && !empty($user->tenant_id)) {
+                                // Cliente particular (4) y gestor (5): las órdenes de su empresa (antes el 5 veía las de todos)
+                                if (in_array((int) $user->role_id, [4, 5], true) && !empty($user->tenant_id)) {
                                     $w->whereHas('workOrder', function ($q) use ($user) {
                                         $q->withoutGlobalScopes()->where('tenant_id', $user->tenant_id);
                                     });
@@ -866,7 +884,7 @@ class QuoteController extends Controller
                     $senderRole = 'Cliente';
                 elseif ($user->role_id == 4)
                     $senderRole = 'Autónomo';
-                elseif (in_array((int) $user->role_id, [2, 6, 8], true))
+                elseif (\App\Services\RolesRed::esCualquierTecnico($user->role_id))
                     $senderRole = 'Técnico de la Red';
                 elseif (in_array($user->role_id, [0, 1]))
                     $senderRole = 'Admin';

@@ -185,9 +185,10 @@ class UserController extends Controller
 
         $realId = str_replace('u_', '', $id);
 
-        // Permitir todos los roles asignables del sistema (1=Admin, 2=Tecnico, 3=Cliente, 4=Aut.Empresarial, 5=Aut.Personal, 6=Contratista, 7=Admin Propiedades, 8=Tecnico Red)
+        // Roles asignables: 1 Admin, 2 Técnico Agente, 3 Cliente, 4 Cliente particular, 5 Gestor inmobiliario,
+        // 6 Técnico independiente, 7 Contratista, 8 Técnico de cuadrilla, 9 Técnico de cuadrilla con acceso a la red
         $request->validate([
-            'role_id' => 'required|numeric|in:0,1,2,3,4,5,6,7,8'
+            'role_id' => 'required|numeric|in:0,1,2,3,4,5,6,7,8,9'
         ]);
 
         // SEGURIDAD: Nadie puede ser ascendido a ROOT desde la interfaz
@@ -243,6 +244,29 @@ class UserController extends Controller
         }
         if ($deOtraEmpresa($user->tenant_id)) {
             return response()->json(['success' => false, 'message' => 'No puedes cambiar el rol de usuarios de otra empresa.'], 403);
+        }
+
+        // Cuadrilla (mientras los cobros estén en pausa, Root hace estos cambios a mano):
+        // - 9: un técnico de cuadrilla que pagó el acceso a la red; sigue con su contratista.
+        // - 6: el técnico de cuadrilla que se vuelve independiente sale de su cuadrilla.
+        $rolAnterior = (int) $user->role_id;
+        $rolNuevo = (int) $request->role_id;
+        $contratista = \App\Services\Cuadrilla::contratistaDe($user);
+        if ($rolNuevo === \App\Services\Cuadrilla::ROL_CUADRILLA_CON_RED
+            && (!\App\Services\Cuadrilla::esRolMiembro($rolAnterior) || !$contratista || \App\Services\Cuadrilla::estaSinCuadrilla($user))) {
+            return response()->json(['success' => false, 'message' => 'El rol 9 es para técnicos que están en la cuadrilla de un contratista.'], 422);
+        }
+        if ($rolNuevo === \App\Services\Cuadrilla::ROL_INDEPENDIENTE && \App\Services\Cuadrilla::esRolMiembro($rolAnterior)) {
+            $sigueEnCuadrilla = $contratista && !\App\Services\Cuadrilla::estaSinCuadrilla($user);
+            if ($sigueEnCuadrilla && ($enCurso = \App\Services\Cuadrilla::trabajosEnCurso($user, $contratista->id)) > 0) {
+                return response()->json(['success' => false, 'message' => "Tiene {$enCurso} trabajo(s) en curso con su contratista. Que los termine o los reasigne antes."], 422);
+            }
+            \App\Services\Cuadrilla::hacerIndependiente($user);
+            if ($sigueEnCuadrilla) {
+                \App\Services\Cuadrilla::avisar((int) $contratista->id, 'Cambio en tu cuadrilla',
+                    trim("{$user->first_name} {$user->last_name}") . ' dejó tu cuadrilla: ahora trabaja como técnico independiente.', '/mi-cuadrilla', 'cuadrilla_salida', 0);
+            }
+            return response()->json(['success' => true, 'message' => 'Ahora es técnico independiente. Conserva su perfil y sus calificaciones.', 'user' => User::withoutGlobalScopes()->find($user->id)], 200);
         }
 
         // A PRUEBA DE BALAS: Asegurar que el rol exista en la tabla roles
@@ -326,8 +350,9 @@ class UserController extends Controller
                     ->whereNull('tenant_id')
                     ->update(['tenant_id' => $tenant->id]);
             }
-        } elseif ((int)$request->role_id === 2 || (int)$request->role_id === 8) {
+        } elseif (((int)$request->role_id === 2 || (int)$request->role_id === 8) && !\App\Services\Cuadrilla::esRolMiembro($rolAnterior)) {
             // Técnico: si es externo de Agente Solutions, tiene 1 año gratis, luego $99/mes
+            // (un 9 que regresa a 8 conserva su suscripción)
             $tenantObj = $user->tenant_id ? Tenant::find($user->tenant_id) : null;
             $isAgenteSolutionsTech = ($user->tenant_id == 1 || ($tenantObj && ($tenantObj->code === 'AUT_01' || stripos($tenantObj->name, 'Agente Solutions') !== false)));
 
@@ -343,6 +368,24 @@ class UserController extends Controller
         }
 
         $user->save();
+
+        if ($rolNuevo !== $rolAnterior
+            && (\App\Services\RolesRed::esTecnico($rolNuevo) || \App\Services\RolesRed::esTecnico($rolAnterior))) {
+            // Que vuelva a iniciar sesión para ver las opciones de su nuevo rol
+            $user->tokens()->delete();
+        }
+        $nombre = trim("{$user->first_name} {$user->last_name}");
+        if ($rolNuevo === \App\Services\Cuadrilla::ROL_CUADRILLA_CON_RED && $rolAnterior === \App\Services\Cuadrilla::ROL_CUADRILLA) {
+            // El contratista no autoriza nada: solo se entera
+            \App\Services\Cuadrilla::avisar((int) $contratista->id, 'Cambio en tu cuadrilla',
+                "{$nombre} ya tiene acceso a la red: sigue en tu cuadrilla y además puede tomar trabajos por su cuenta.", '/mi-cuadrilla', 'cuadrilla_con_red', 0);
+            \App\Services\Cuadrilla::avisar((int) $user->id, '🌐 Ya tienes acceso a la red',
+                'Además de los trabajos de tu contratista, ya puedes ver el Mercado y cotizar por tu cuenta. Antes completa tus datos de cobro en tu perfil.', '/mi-perfil', 'cuadrilla_con_red', 0);
+        }
+        if ($rolNuevo === \App\Services\Cuadrilla::ROL_CUADRILLA && $rolAnterior === \App\Services\Cuadrilla::ROL_CUADRILLA_CON_RED) {
+            \App\Services\Cuadrilla::avisar((int) $user->id, 'Tu acceso a la red terminó',
+                'Sigues en tu cuadrilla y recibes los trabajos de tu contratista. Para volver a la red, renueva tu acceso.', '/mercado-trabajos', 'cuadrilla_sin_red', 0);
+        }
 
         return response()->json([
             'success' => true,
@@ -377,17 +420,17 @@ class UserController extends Controller
                     }
                 })->where('role_id', '!=', 0);
             } elseif ($currentUser && in_array($currentUser->role_id, [3, 4, 5])) {
-                // CLIENTE (de la Red / Particular / Autónomo): Ve técnicos propios, técnicos de la red (8), técnicos Agente (2) y contratistas (6)
+                // CLIENTE (de la Red / Particular / Autónomo): ve técnicos propios y todos los técnicos (2, 6, 7 y 8)
                 $usersQuery->where(function($q) use ($currentUser) {
                     $q->where('id', $currentUser->id)
                       ->orWhere(function($sub) use ($currentUser) {
                           if (!empty($currentUser->tenant_id)) {
-                              $sub->where('tenant_id', $currentUser->tenant_id)->whereIn('role_id', [2, 6, 8]);
+                              $sub->where('tenant_id', $currentUser->tenant_id)->whereIn('role_id', \App\Services\RolesRed::TODOS_LOS_TECNICOS);
                           } else {
-                              $sub->whereIn('role_id', [2, 6, 8]);
+                              $sub->whereIn('role_id', \App\Services\RolesRed::TODOS_LOS_TECNICOS);
                           }
                       })
-                      ->orWhereIn('role_id', [2, 6, 8]);
+                      ->orWhereIn('role_id', \App\Services\RolesRed::TODOS_LOS_TECNICOS);
                 })->where('role_id', '!=', 0);
             } elseif (\App\Services\Cuadrilla::esContratista($currentUser)) {
                 // CONTRATISTA (Rol 7): él y su cuadrilla (incluye a quienes quitó, para su historial)
@@ -417,7 +460,7 @@ class UserController extends Controller
 
                 $myReview = null;
                 $jobsCount = 0;
-                if ($currentUser && in_array((int)$u->role_id, [2, 6, 8])) {
+                if ($currentUser && \App\Services\RolesRed::esCualquierTecnico($u->role_id)) {
                     try {
                         $reviewDb = \App\Models\TechnicianReview::where('technician_id', $u->id)
                             ->where('client_id', $currentUser->id)

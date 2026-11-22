@@ -20,9 +20,12 @@ class TenantController extends Controller
      */
     public function listTenants()
     {
-        $tenants = Tenant::where('status', 'active')
-            ->select('id', 'name', 'code', 'logo_url', 'phone', 'email', 'owner_user_id', 'membership_type', 'max_properties', 'extra_properties_count', 'max_clients', 'subscription_status', 'subscription_expires_at', 'subscription_amount', 'billing_cycle')
-            ->get();
+        $columnas = ['id', 'name', 'code', 'logo_url', 'phone', 'email', 'owner_user_id', 'membership_type', 'max_properties', 'extra_properties_count', 'max_clients', 'subscription_status', 'subscription_expires_at', 'subscription_amount', 'billing_cycle'];
+        // Cupo de la cuadrilla (contratistas): Root lo edita desde Gestión de autónomos
+        if (\Illuminate\Support\Facades\Schema::hasColumn('tenants', 'max_cuadrilla')) {
+            $columnas[] = 'max_cuadrilla';
+        }
+        $tenants = Tenant::where('status', 'active')->select($columnas)->get();
 
         return response()->json([
             'success' => true,
@@ -355,10 +358,26 @@ class TenantController extends Controller
             $query->where('tenant_id', $user->tenant_id);
         }
 
+        $columnas = ['id', 'first_name', 'last_name', 'email', 'phone_number', 'created_at', 'tenant_id', 'role_id', 'approval_status', 'is_active'];
         $technicians = $query->with(['tenant:id,name,code', 'specialties'])
-            ->select('id', 'first_name', 'last_name', 'email', 'phone_number', 'created_at', 'tenant_id', 'role_id', 'approval_status', 'is_active')
+            ->select($columnas)
             ->orderBy('created_at', 'desc')
             ->get();
+
+        // Técnicos que ya tienen cuenta (independientes o sin cuadrilla) y pidieron unirse con el código
+        if ($esContratista) {
+            $conSolicitud = \App\Services\Cuadrilla::usuariosConSolicitud((int) $user->tenant_id);
+            if (!empty($conSolicitud)) {
+                $miTenant = Tenant::select('id', 'name', 'code')->find($user->tenant_id);
+                $yaTienenCuenta = User::withoutGlobalScopes()->whereIn('id', $conSolicitud)
+                    ->with('specialties')->select($columnas)->get()
+                    ->each(function ($u) use ($miTenant) {
+                        $u->setAttribute('solicitud_cuadrilla', true);
+                        $u->setRelation('tenant', $miTenant);
+                    });
+                $technicians = $technicians->concat($yaTienenCuenta)->values();
+            }
+        }
 
         $respuesta = ['success' => true, 'pending_technicians' => $technicians];
         if ($esContratista) {
@@ -369,33 +388,42 @@ class TenantController extends Controller
 
     /**
      * Revisa que quien responde en la Sala de espera pueda hacerlo con este técnico.
-     * Devuelve [técnico, null] o [null, respuesta de error].
+     * Devuelve [técnico, solicitud de cuadrilla o null, respuesta de error o null].
+     * La solicitud existe cuando el técnico ya tenía cuenta y pidió unirse con el código.
      */
     private function tecnicoDeMiSala($userId): array
     {
         $currentUser = auth()->user();
         if (!$currentUser || !in_array((int) $currentUser->role_id, self::ROLES_SALA_ESPERA, true)) {
-            return [null, response()->json(['error' => 'No tienes permisos sobre este técnico'], 403)];
+            return [null, null, response()->json(['error' => 'No tienes permisos sobre este técnico'], 403)];
         }
 
         $technician = User::withoutGlobalScopes()->find($userId);
         if (!$technician) {
-            return [null, response()->json(['error' => 'Técnico no encontrado'], 404)];
+            return [null, null, response()->json(['error' => 'Técnico no encontrado'], 404)];
+        }
+
+        $esRoot = (int) $currentUser->role_id === 0;
+        if ($technician->approval_status !== 'pending' && ($esRoot || \App\Services\Cuadrilla::esContratista($currentUser))) {
+            $solicitud = \App\Services\Cuadrilla::solicitudPendiente((int) $technician->id, $esRoot ? null : (int) $currentUser->tenant_id);
+            if ($solicitud) {
+                return [$technician, $solicitud, null];
+            }
         }
 
         // Mismo tenant del autónomo, o Root
-        if ((int) $currentUser->role_id !== 0
+        if (!$esRoot
             && (empty($currentUser->tenant_id) || (int) $technician->tenant_id !== (int) $currentUser->tenant_id)) {
-            return [null, response()->json(['error' => 'No tienes permisos sobre este técnico'], 403)];
+            return [null, null, response()->json(['error' => 'No tienes permisos sobre este técnico'], 403)];
         }
         if (\App\Services\Cuadrilla::esContratista($currentUser) && !\App\Services\Cuadrilla::esRolMiembro($technician->role_id)) {
-            return [null, response()->json(['error' => 'Solo puedes responder solicitudes de técnicos de cuadrilla.'], 403)];
+            return [null, null, response()->json(['error' => 'Solo puedes responder solicitudes de técnicos de cuadrilla.'], 403)];
         }
         if ($technician->approval_status !== 'pending') {
-            return [null, response()->json(['error' => 'Esta solicitud ya fue respondida.'], 422)];
+            return [null, null, response()->json(['error' => 'Esta solicitud ya fue respondida.'], 422)];
         }
 
-        return [$technician, null];
+        return [$technician, null, null];
     }
 
     /**
@@ -403,16 +431,26 @@ class TenantController extends Controller
      */
     public function approveTechnician(Request $request, $userId)
     {
-        [$technician, $error] = $this->tecnicoDeMiSala($userId);
+        [$technician, $solicitud, $error] = $this->tecnicoDeMiSala($userId);
         if ($error) {
             return $error;
         }
 
         // La cuadrilla tiene cupo (Root puede aprobar de todos modos)
+        $tenantDestino = $solicitud ? (int) $solicitud->tenant_id : $technician->tenant_id;
         if ((int) auth()->user()->role_id !== 0
-            && \App\Services\Cuadrilla::esRolMiembro($technician->role_id)
-            && \App\Services\Cuadrilla::estaLlena($technician->tenant_id)) {
-            return response()->json(['error' => \App\Services\Cuadrilla::mensajeLlena($technician->tenant_id)], 422);
+            && ($solicitud || \App\Services\Cuadrilla::esRolMiembro($technician->role_id))
+            && \App\Services\Cuadrilla::estaLlena($tenantDestino)) {
+            return response()->json(['error' => \App\Services\Cuadrilla::mensajeLlena($tenantDestino)], 422);
+        }
+
+        if ($solicitud) {
+            \App\Services\Cuadrilla::aceptarSolicitud($solicitud);
+            return response()->json([
+                'success' => true,
+                'message' => 'Técnico agregado a tu cuadrilla. Conserva su perfil y sus calificaciones.',
+                'technician' => User::withoutGlobalScopes()->find($technician->id),
+            ]);
         }
 
         $technician->update([
@@ -428,17 +466,21 @@ class TenantController extends Controller
     }
 
     /**
-     * Rechazar una solicitud de la Sala de espera. No borra la cuenta: queda sin acceso
-     * y desligada de la empresa (nunca trabajó en ella).
+     * Rechazar una solicitud de la Sala de espera. No borra la cuenta: un registro nuevo queda sin acceso
+     * y desligado de la empresa (nunca trabajó en ella); quien ya tenía cuenta se queda como estaba.
      */
     public function rejectTechnician(Request $request, $userId)
     {
-        [$technician, $error] = $this->tecnicoDeMiSala($userId);
+        [$technician, $solicitud, $error] = $this->tecnicoDeMiSala($userId);
         if ($error) {
             return $error;
         }
 
-        \App\Services\Cuadrilla::rechazar($technician);
+        if ($solicitud) {
+            \App\Services\Cuadrilla::rechazarSolicitud($solicitud);
+        } else {
+            \App\Services\Cuadrilla::rechazar($technician);
+        }
 
         return response()->json([
             'success' => true,

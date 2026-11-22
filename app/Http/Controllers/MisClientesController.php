@@ -15,7 +15,8 @@ use Illuminate\Support\Facades\DB;
  */
 class MisClientesController extends Controller
 {
-    private const ROLES_TECNICO = [2, 6, 8];
+    // El técnico de cuadrilla (8) no tiene clientes propios: los de sus trabajos son de su contratista
+    private const ROLES_TECNICO = \App\Services\RolesRed::TECNICOS_CON_CLIENTES;
 
     // Usuario dueño de una orden: el ligado al cliente de la propiedad o, si no, el del tenant
     public static function duenoDeOrden(int $workOrderId): ?int

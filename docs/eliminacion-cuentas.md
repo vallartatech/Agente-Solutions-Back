@@ -101,7 +101,7 @@ excepción si alguien intenta `->delete()`.
    - Variable del servicio Cron: `CRON_TOKEN=${{Agente-Solutions-Back.CRON_TOKEN}}` (referencia).
    - Start Command:
      ```
-     sh -c "curl -fsS -X POST -H \"X-Cron-Token: $CRON_TOKEN\" https://agentesolutionsback-production.up.railway.app/api/interno/cuentas/purgar"
+     sh -c "curl -fsS -X POST -H \"X-Cron-Token: $CRON_TOKEN\" https://agente-solutions-back-production.up.railway.app/api/interno/cuentas/purgar"
      ```
    - Prueba en seco: agrega `?dry_run=1` al final de la URL y córrelo una vez a mano (debe responder 200).
    Alternativa sin Railway Cron: cron-job.org con la misma petición.

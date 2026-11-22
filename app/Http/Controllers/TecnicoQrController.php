@@ -38,7 +38,7 @@ class TecnicoQrController extends Controller
     private static function tecnicoPorCodigo(string $codigo): ?User
     {
         $tecnico = User::withoutGlobalScopes()->where('qr_codigo', $codigo)->first();
-        return PerfilProfesional::esTecnicoRed($tecnico) ? $tecnico : null;
+        return ($tecnico && \App\Services\RolesRed::cotiza($tecnico->role_id)) ? $tecnico : null;
     }
 
     // Perfil público (sin contacto, RFC, CLABE, edad ni documentos) + código del QR
@@ -72,8 +72,9 @@ class TecnicoQrController extends Controller
     public function miQr(Request $request)
     {
         $user = $request->user();
-        if (!PerfilProfesional::esTecnicoRed($user)) {
-            return response()->json(['message' => 'Solo los técnicos de la red tienen código QR.'], 403);
+        if (!$user || !\App\Services\RolesRed::cotiza($user->role_id)) {
+            // El técnico de cuadrilla (8) no tiene QR: no lo contratan directo, trabaja para su contratista
+            return response()->json(['message' => 'Solo los técnicos que cotizan en la red tienen código QR.'], 403);
         }
         return response()->json(['success' => true, 'codigo' => self::codigoDe($user)]);
     }
@@ -131,7 +132,7 @@ class TecnicoQrController extends Controller
             return response()->json(['message' => 'Solo disponible para clientes particulares.'], 403);
         }
         $tecnico = User::withoutGlobalScopes()->find((int) $tecnicoId);
-        if (!PerfilProfesional::esTecnicoRed($tecnico)) {
+        if (!$tecnico || !\App\Services\RolesRed::cotiza($tecnico->role_id)) {
             return response()->json(['message' => 'Técnico no encontrado.'], 404);
         }
 

@@ -53,6 +53,8 @@ class AccesoQrRedController extends Controller
     public static function esTecnicoDelTrabajo(User $user, WorkOrder $orden): bool
     {
         if ((int) $orden->tecnico_id === (int) $user->id) return true;
+        // Técnico de cuadrilla que su contratista mandó a este trabajo
+        if (\App\Services\Cuadrilla::esDelEquipo($user, (int) $orden->id)) return true;
         return NetworkQuote::withoutGlobalScopes()
             ->where('work_order_id', $orden->id)->where('technician_id', $user->id)->where('status', 'accepted')
             ->exists();

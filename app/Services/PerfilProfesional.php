@@ -7,16 +7,20 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Reglas del perfil profesional de los técnicos de la red (roles 6 y 8).
+ * Reglas del perfil profesional de los técnicos de la red (roles 6, 7 y 8; ver RolesRed).
  *
  * - Un técnico nuevo (perfil obligatorio) no puede usar su cuenta hasta que Admin/Root lo apruebe.
  *   Después de la primera aprobación ya no se bloquea, aunque vuelva a revisión por un cambio.
  * - Los técnicos que ya existían (obligatorio = false) nunca se bloquean.
+ * - El contratista (7) lo llena completo, con datos de cobro, igual que el técnico independiente (6).
  */
 class PerfilProfesional
 {
-    public const ROLES_RED = [6, 8];
+    public const ROLES_RED = RolesRed::TECNICOS;
     public const ROLES_REVISORES = [0, 1];
+
+    /** Letras mínimas de la presentación (se bajó de 20 a 10 para no dejar fuera a nadie). */
+    public const PRESENTACION_MIN = 10;
 
     public const NIVELES_ESTUDIOS = [
         'sin_estudios' => 'Sin estudios formales',
@@ -133,10 +137,41 @@ class PerfilProfesional
         }
     }
 
+    /**
+     * Lo que le falta para poder enviarlo a revisión: [clave => texto].
+     * El técnico de cuadrilla (8) no llena cobro (le paga su contratista) y para él son opcionales
+     * el comprobante de domicilio y la presentación.
+     */
     public static function faltantes(TechnicianProfile $perfil, User $user): array
     {
+        $sinCobro = RolesRed::sinCobro($user->role_id);
         $f = [];
-        if (!$perfil->consentimiento_datos_at) $f['consentimiento_datos'] = 'Consentimiento para datos bancarios y de identificación';
+        if (!$perfil->consentimiento_datos_at) {
+            $f['consentimiento_datos'] = $sinCobro ? 'Consentimiento para tus datos de identificación' : 'Consentimiento para datos bancarios y de identificación';
+        }
+        if (!$sinCobro) {
+            $f += self::faltantesCobro($perfil);
+        }
+        if ($user->specialties()->count() === 0) $f['especialidades'] = 'Al menos una habilidad';
+        if ($perfil->anios_experiencia === null) $f['anios_experiencia'] = 'Años de experiencia';
+        if (!array_key_exists((string) $perfil->nivel_estudios, self::NIVELES_ESTUDIOS)) $f['nivel_estudios'] = 'Nivel de estudios';
+        if (!$sinCobro && mb_strlen(trim((string) $perfil->presentacion)) < self::PRESENTACION_MIN) $f['presentacion'] = 'Presentación (mínimo ' . self::PRESENTACION_MIN . ' letras)';
+        if (!preg_match('#^https?://#i', (string) $user->profile_picture)) $f['foto'] = 'Foto de perfil';
+        if (!self::fechaNacimientoValida($user->birth_date ?? null)) $f['fecha_nacimiento'] = 'Fecha de nacimiento';
+        if (!$perfil->ine_frente_path) $f['ine_frente'] = 'INE (frente)';
+        if (!$perfil->ine_reverso_path) $f['ine_reverso'] = 'INE (reverso)';
+        if (!$sinCobro && !$perfil->comprobante_domicilio_path) $f['comprobante_domicilio'] = 'Comprobante de domicilio';
+        if (!$perfil->antecedentes_penales_path) $f['antecedentes_penales'] = 'Antecedentes no penales';
+        return $f;
+    }
+
+    /** Datos para que le paguen: los pide a quien cobra por su cuenta (6, 7 y 9). */
+    public static function faltantesCobro(?TechnicianProfile $perfil): array
+    {
+        if (!$perfil) {
+            return ['banco' => 'Banco', 'titular_cuenta' => 'Titular de la cuenta', 'clabe' => 'CLABE interbancaria'];
+        }
+        $f = [];
         if ($perfil->emite_factura === null) $f['emite_factura'] = '¿Emites factura?';
         if ($perfil->emite_factura) {
             if (!self::rfcValido($perfil->rfc)) $f['rfc'] = 'RFC';
@@ -147,16 +182,6 @@ class PerfilProfesional
         if (!self::clabeValida($perfil->clabe)) $f['clabe'] = 'CLABE interbancaria';
         if ($perfil->acepta_efectivo === null) $f['acepta_efectivo'] = '¿Aceptas efectivo?';
         if ($perfil->tiene_terminal === null) $f['tiene_terminal'] = '¿Tienes terminal para tarjeta?';
-        if ($user->specialties()->count() === 0) $f['especialidades'] = 'Al menos una habilidad';
-        if ($perfil->anios_experiencia === null) $f['anios_experiencia'] = 'Años de experiencia';
-        if (!array_key_exists((string) $perfil->nivel_estudios, self::NIVELES_ESTUDIOS)) $f['nivel_estudios'] = 'Nivel de estudios';
-        if (mb_strlen(trim((string) $perfil->presentacion)) < 20) $f['presentacion'] = 'Presentación (mínimo 20 caracteres)';
-        if (!preg_match('#^https?://#i', (string) $user->profile_picture)) $f['foto'] = 'Foto de perfil';
-        if (!self::fechaNacimientoValida($user->birth_date ?? null)) $f['fecha_nacimiento'] = 'Fecha de nacimiento';
-        if (!$perfil->ine_frente_path) $f['ine_frente'] = 'INE (frente)';
-        if (!$perfil->ine_reverso_path) $f['ine_reverso'] = 'INE (reverso)';
-        if (!$perfil->comprobante_domicilio_path) $f['comprobante_domicilio'] = 'Comprobante de domicilio';
-        if (!$perfil->antecedentes_penales_path) $f['antecedentes_penales'] = 'Antecedentes no penales';
         return $f;
     }
 

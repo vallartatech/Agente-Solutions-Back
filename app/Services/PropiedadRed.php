@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\DB;
 class PropiedadRed
 {
     /** Roles de la Red (mismo listado que ROLES_RED en el frontend). */
-    public const ROLES_RED = [4, 5, 6, 7, 8];
+    public const ROLES_RED = [4, 5, 6, 7, 8, 9];
 
     /**
      * La propiedad es de la Red si el dueño de su empresa (tenant) o el usuario de su cliente

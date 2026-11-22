@@ -286,9 +286,34 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     if ($authUser) $q->orWhere('tecnico_dirigido_id', $authUser->id);
                 });
             }
+
+            // Técnico de cuadrilla (8): no ve la red, solo recibe lo que le asigna su contratista
+            if ($authUser && \App\Services\RolesRed::esTecnico($authUser->role_id) && !\App\Services\RolesRed::cotiza($authUser->role_id)) {
+                $query->whereRaw('1 = 0');
+            }
+            // Técnico 9: no compite con su contratista; no ve los trabajos que su contratista ya cotizó
+            if ($authUser && (int) $authUser->role_id === \App\Services\Cuadrilla::ROL_CUADRILLA_CON_RED
+                && ($jefe = \App\Services\Cuadrilla::contratistaDe($authUser))) {
+                $query->whereDoesntHave('networkQuotes', fn ($nq) => $nq->where('technician_id', $jefe->id));
+            }
         }
 
         $jobs = $query->orderBy('created_at', 'desc')->get();
+
+        // Contratista: los trabajos que ya cotizó alguien de su cuadrilla por su cuenta (técnicos 9)
+        $cotizadosPorMiCuadrilla = [];
+        if ($authUser && \App\Services\Cuadrilla::esContratista($authUser) && !$request->boolean('only_mine') && $jobs->isNotEmpty()) {
+            $cotizadosPorMiCuadrilla = \Illuminate\Support\Facades\DB::table('network_quotes')
+                ->join('users', 'users.id', '=', 'network_quotes.technician_id')
+                ->whereIn('network_quotes.work_order_id', $jobs->pluck('id'))
+                ->where('users.tenant_id', $authUser->tenant_id)
+                ->where('users.id', '!=', $authUser->id)
+                ->whereIn('users.role_id', \App\Services\Cuadrilla::ROLES_MIEMBRO)
+                ->get(['network_quotes.work_order_id', 'users.first_name', 'users.last_name'])
+                ->groupBy('work_order_id')
+                ->map(fn ($filas) => $filas->map(fn ($f) => trim("{$f->first_name} {$f->last_name}"))->unique()->values()->all())
+                ->all();
+        }
 
         // El técnico abrió el mercado: los trabajos que llevaba sin avisar ya los vio
         if (!$request->boolean('only_mine')) {
@@ -301,8 +326,10 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             ->get(['id', 'first_name', 'last_name'])
             ->mapWithKeys(fn ($u) => [$u->id => trim("{$u->first_name} {$u->last_name}") ?: $u->name]);
 
-        $jobs->transform(function ($job) use ($authUser, $nombresDirigidos, $request) {
+        $jobs->transform(function ($job) use ($authUser, $nombresDirigidos, $request, $cotizadosPorMiCuadrilla) {
             $job->dirigida_a_mi = $authUser && $job->tecnico_dirigido_id && (int) $job->tecnico_dirigido_id === (int) $authUser->id;
+            // Para el contratista: quién de su cuadrilla ya cotizó este trabajo
+            $job->cotizado_por_cuadrilla = $cotizadosPorMiCuadrilla[$job->id] ?? [];
             $job->tecnico_dirigido_nombre = $job->tecnico_dirigido_id ? ($nombresDirigidos[$job->tecnico_dirigido_id] ?? 'Tu técnico') : null;
 
             $ownerName = '';
@@ -367,7 +394,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             $job->owner_user_id = $ownerUserId;
             $job->owner_tenant_id = $ownerTenantId;
             // ★ trato / ⏱ pago del cliente: exclusivo de los técnicos (el cliente no ve su calificación)
-            $job->owner_rating = ($authUser && in_array((int) $authUser->role_id, [0, 1, 2, 6, 8], true) && !$request->boolean('only_mine'))
+            $job->owner_rating = ($authUser && in_array((int) $authUser->role_id, array_merge([0, 1], \App\Services\RolesRed::TODOS_LOS_TECNICOS), true) && !$request->boolean('only_mine'))
                 ? \App\Services\CalificacionCliente::resumen($ownerUserId)
                 : null;
 
@@ -478,8 +505,10 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
             // 🔒 Privacidad: antes de que acepten su cotización, el técnico (o un visitante sin sesión) no recibe
             // la dirección exacta, las coordenadas ni los datos del cliente; solo la zona aproximada calculada arriba.
             // Se usa la regla estricta de dueño (no $isMine, que compara nombres) y aplica también con only_mine.
+            // Se decide antes de ocultar nada: revisar al dueño vuelve a cargar la propiedad
+            $esDuenoDelTrabajo = $authUser && \App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($authUser, $job);
             $veDetalle = $authUser && (
-                \App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($authUser, $job)
+                $esDuenoDelTrabajo
                 || \App\Http\Controllers\AccesoQrRedController::esTecnicoDelTrabajo($authUser, $job)
             );
             if (!$veDetalle) {
@@ -492,6 +521,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 $job->owner_user_id = null;
                 $job->owner_tenant_id = null;
                 $job->is_mine = false;
+            }
+
+            // Cliente: quién va a ir a su casa (el contratista y/o los técnicos de su cuadrilla)
+            if ($esDuenoDelTrabajo) {
+                $job->equipo_en_sitio = \App\Services\Cuadrilla::equipoVisible($job);
             }
 
             return $job;
@@ -515,12 +549,20 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                           $nq->where('technician_id', $authUser->id)
                              ->where('status', 'accepted');
                       });
+                    // Trabajos de su contratista a los que lo asignaron (técnicos de cuadrilla)
+                    if (\Illuminate\Support\Facades\Schema::hasTable('work_order_technician')) {
+                        $q->orWhereIn('id', \Illuminate\Support\Facades\DB::table('work_order_technician')->where('technician_id', $authUser->id)->select('work_order_id'));
+                    }
                 })
                 ->whereIn('status', ['Asignado', 'En Progreso', 'Terminado', 'Finalizado', 'Listo', 'Completado', 'Aprobado', 'Entregado'])
                 ->orderBy('updated_at', 'desc');
 
             $rawAccepted = $acceptedQuery->get();
             $acceptedJobs = $rawAccepted->map(function ($order) use ($authUser) {
+                // Si va por su contratista (cuadrilla): no ve el precio ni los datos de contacto del cliente;
+                // el contratista es quien cobra y quien habla con el cliente
+                $vistaEquipo = \App\Services\Cuadrilla::vistaDelTecnico($order, $authUser);
+                $esCuadrilla = $vistaEquipo['es_cuadrilla'];
                 $rawLat = 21.0181;
                 $rawLng = -89.6242;
                 if ($order->property && !empty($order->property->coordinates)) {
@@ -552,6 +594,7 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
                 $jobReview = \Illuminate\Support\Facades\DB::table('technician_reviews')
                     ->where('work_order_id', $order->id)
+                    ->where('technician_id', $authUser->id)
                     ->first();
 
                 return [
@@ -584,17 +627,17 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'property_name' => $order->property ? ($order->property->nombre_propiedad ?: $order->property->address) : '',
                     'client_name' => $clientName,
                     // Usuario dueño del trabajo: agrupa "Mis clientes" y sirve para marcarlo favorito o bloquearlo
-                    'client_user_id' => \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $order->id),
-                    'client_phone' => $clientPhone,
-                    'client_email' => $clientEmail,
-                    'agreed_price' => $acceptedQuote ? (float)$acceptedQuote->price : 0,
+                    'client_user_id' => $esCuadrilla ? null : \App\Http\Controllers\MisClientesController::duenoDeOrden((int) $order->id),
+                    'client_phone' => $esCuadrilla ? '' : $clientPhone,
+                    'client_email' => $esCuadrilla ? '' : $clientEmail,
+                    'agreed_price' => ($acceptedQuote && !$esCuadrilla) ? (float)$acceptedQuote->price : 0,
                     // Ajustes de cotización: precio con el que se aceptó al inicio y si hay uno en curso
-                    'precio_original' => $acceptedQuote
+                    'precio_original' => ($acceptedQuote && !$esCuadrilla)
                         ? (float) ($ajustesDeLaCotizacion->first()?->precio_anterior ?? $acceptedQuote->price)
                         : 0,
-                    'ajuste_pendiente' => $ajustesDeLaCotizacion->contains('status', 'pending'),
-                    'ajuste_por_decidir' => $ajustesDeLaCotizacion->contains(fn ($a) => $a->status === 'rejected' && !$a->decision_tecnico),
-                    'myQuote' => $acceptedQuote,
+                    'ajuste_pendiente' => !$esCuadrilla && $ajustesDeLaCotizacion->contains('status', 'pending'),
+                    'ajuste_por_decidir' => !$esCuadrilla && $ajustesDeLaCotizacion->contains(fn ($a) => $a->status === 'rejected' && !$a->decision_tecnico),
+                    'myQuote' => $esCuadrilla ? null : $acceptedQuote,
                     'review' => $jobReview ? [
                         'rating_stars' => (float)$jobReview->rating_stars,
                         'rating_time' => (float)$jobReview->rating_time,
@@ -603,6 +646,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     ] : null,
                     'created_at' => $order->created_at->toIso8601String(),
                     'updated_at' => $order->updated_at->toIso8601String(),
+                    // Cuadrilla: si va por su contratista, con quién va y si (el contratista) puede asignar a su equipo
+                    'es_cuadrilla' => $esCuadrilla,
+                    'contratista' => $vistaEquipo['contratista'],
+                    'equipo' => $vistaEquipo['equipo'],
+                    'puede_asignar_cuadrilla' => $vistaEquipo['puede_asignar_cuadrilla'],
                 ];
             });
         }
@@ -739,8 +787,18 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tenants/pending-technicians', [TenantController::class, 'pendingTechnicians']);
     Route::post('/tenants/approve-technician/{userId}', [TenantController::class, 'approveTechnician']);
     Route::post('/tenants/reject-technician/{userId}', [TenantController::class, 'rejectTechnician'])->whereNumber('userId');
+    // "Mi cuadrilla" del contratista: equipo, cupo, código y pendientes
+    Route::get('/cuadrilla', [\App\Http\Controllers\CuadrillaController::class, 'index']);
     // El contratista saca a un técnico de su cuadrilla (se desactiva; su historial se conserva)
     Route::post('/cuadrilla/{userId}/quitar', [\App\Http\Controllers\CuadrillaController::class, 'quitar']);
+    // Quién va a cada trabajo: el contratista elige entre él y su cuadrilla
+    Route::get('/mercado-trabajos/{id}/cuadrilla', [\App\Http\Controllers\CuadrillaController::class, 'equipoDeTrabajo'])->whereNumber('id');
+    Route::post('/mercado-trabajos/{id}/cuadrilla', [\App\Http\Controllers\CuadrillaController::class, 'asignarEquipo'])->whereNumber('id');
+    // Técnico con cuenta: unirse a una cuadrilla con código, su estado y lo que le pide a Root
+    Route::post('/cuadrilla/unirme', [\App\Http\Controllers\CuadrillaController::class, 'unirme'])->middleware('throttle:10,1');
+    Route::get('/cuadrilla/mi-estado', [\App\Http\Controllers\CuadrillaController::class, 'miEstado']);
+    Route::post('/cuadrilla/solicitar-independiente', [\App\Http\Controllers\CuadrillaController::class, 'solicitarIndependiente'])->middleware('throttle:3,60');
+    Route::post('/cuadrilla/solicitar-red', [\App\Http\Controllers\CuadrillaController::class, 'solicitarRed'])->middleware('throttle:3,60');
 
     // --- PERFIL PROFESIONAL DE TÉCNICOS DE LA RED (roles 6 y 8) ---
     // Técnico: completar su perfil (lo único que puede usar hasta que Admin/Root lo apruebe)
@@ -1206,6 +1264,11 @@ Route::middleware('auth:sanctum')->group(function () {
             if (!$solicitante || !\App\Http\Controllers\MisTecnicosController::esFavorito((int) $solicitante->id, $tecnicoDirigidoId)) {
                 return response()->json(['success' => false, 'message' => 'Solo puedes enviar solicitudes directas a tus técnicos favoritos.'], 422);
             }
+            // El técnico de cuadrilla (8) no recibe solicitudes directas: trabaja para su contratista
+            $dirigido = \App\Models\User::withoutGlobalScopes()->find($tecnicoDirigidoId);
+            if (!$dirigido || !\App\Services\RolesRed::cotiza($dirigido->role_id)) {
+                return response()->json(['success' => false, 'message' => 'Este técnico trabaja en la cuadrilla de un contratista y no recibe solicitudes directas. Publica tu solicitud en la red.'], 422);
+            }
         }
 
         // 2. Procesar las imágenes con Cloudinary
@@ -1420,16 +1483,17 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Mis técnicos / Mis clientes: si cliente y técnico están bloqueados (cualquiera de los dos bloqueó), nadie escribe
         if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$quote->work_order_id, (int)$quote->technician_id)) {
-            $esTecnico = in_array((int)$user->role_id, [2, 6, 8]);
+            $esTecnico = \App\Services\RolesRed::esCualquierTecnico($user->role_id);
             return response()->json([
                 'message' => $esTecnico ? 'Este cliente ya no recibe mensajes tuyos.' : 'Este técnico ya no recibe mensajes tuyos.'
             ], 403);
         }
 
         $senderRole = 'Usuario';
-        if (in_array((int)$user->role_id, [3, 4, 5, 7]))
+        // El contratista (7) escribe del lado del técnico: es quien cotizó
+        if (in_array((int)$user->role_id, [3, 4, 5]))
             $senderRole = 'Cliente';
-        elseif (in_array((int)$user->role_id, [2, 6, 8]))
+        elseif (\App\Services\RolesRed::esCualquierTecnico($user->role_id))
             $senderRole = 'Técnico de la Red';
         elseif (in_array((int)$user->role_id, [0, 1]))
             $senderRole = 'Admin';
@@ -1450,7 +1514,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $senderNameStr = $user->name ?: ($user->first_name . ' ' . $user->last_name);
 
         // Disparar Notificaciones
-        if (in_array((int)$user->role_id, [2, 6, 8])) {
+        if (\App\Services\RolesRed::esCualquierTecnico($user->role_id)) {
             // El técnico envió el mensaje -> notificar al Cliente / Autónomo dueño del reporte
             // Solo el dueño de la orden (no el primer usuario del tenant, que puede ser un Admin)
             // ...y a los invitados de la propiedad compartida
@@ -1482,6 +1546,28 @@ Route::middleware('auth:sanctum')->group(function () {
         if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)
             || \App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
             return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+        }
+
+        // Técnico de cuadrilla (8): no cotiza; su contratista le asigna los trabajos
+        if (\App\Services\RolesRed::esTecnico($user->role_id) && !\App\Services\RolesRed::cotiza($user->role_id)) {
+            return response()->json(['success' => false, 'message' => 'Los técnicos de cuadrilla reciben sus trabajos de su contratista. Para cotizar por tu cuenta necesitas acceso a la red.'], 403);
+        }
+        if ((int) $user->role_id === \App\Services\Cuadrilla::ROL_CUADRILLA_CON_RED) {
+            // Técnico 9: no compite con su contratista y, para cobrar por su cuenta, necesita sus datos de cobro
+            $jefe = \App\Services\Cuadrilla::contratistaDe($user);
+            if ($jefe && \App\Models\NetworkQuote::withoutGlobalScopes()->where('work_order_id', $workOrder->id)->where('technician_id', $jefe->id)->exists()) {
+                return response()->json(['success' => false, 'message' => 'Tu contratista ya cotizó este trabajo.'], 403);
+            }
+            $faltaCobro = \App\Services\PerfilProfesional::tablaLista()
+                ? \App\Services\PerfilProfesional::faltantesCobro(\App\Services\PerfilProfesional::perfilDe($user))
+                : [];
+            if (!empty($faltaCobro)) {
+                return response()->json([
+                    'success' => false,
+                    'reason' => 'perfil_cobro_pendiente',
+                    'message' => 'Para cotizar por tu cuenta, primero completa tus datos de cobro en tu perfil profesional: ' . implode(', ', $faltaCobro) . '.',
+                ], 403);
+            }
         }
 
         // Calificar al cliente de los trabajos terminados es obligatorio antes de seguir cotizando
@@ -1574,6 +1660,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client'])->findOrFail($id);
 
+            // Técnico de cuadrilla (8): el cliente habla con su contratista, no con él
+            if (\App\Services\RolesRed::esTecnico($user->role_id) && !\App\Services\RolesRed::cotiza($user->role_id)) {
+                return response()->json(['success' => false, 'message' => 'Los técnicos de cuadrilla no chatean con los clientes: de eso se encarga tu contratista.'], 403);
+            }
             if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)) {
                 return response()->json(['success' => false, 'message' => 'Este cliente ya no recibe mensajes tuyos.'], 403);
             }
@@ -1808,6 +1898,13 @@ Route::middleware('auth:sanctum')->group(function () {
                         \Log::warning("No se pudo notificar respuesta de horario: " . $ne->getMessage());
                     }
                 }
+
+                // Visita confirmada: los técnicos de cuadrilla que van también se enteran de la fecha
+                if ($isConfirmed && $workOrder) {
+                    $fecha = $workOrder->scheduled_at ? \Carbon\Carbon::parse($workOrder->scheduled_at)->format('d/m/Y H:i') : null;
+                    \App\Services\Cuadrilla::avisarEquipo($workOrder, '📅 Visita confirmada',
+                        'El cliente confirmó la visita de "' . \App\Services\Cuadrilla::nombreTrabajo($workOrder) . '"' . ($fecha ? " para el {$fecha}." : '.'));
+                }
             }
 
             return response()->json([
@@ -1836,6 +1933,17 @@ Route::middleware('auth:sanctum')->group(function () {
             }
 
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
+
+            // Solo el técnico titular (o Root/Admin) cancela; antes cualquiera con sesión podía cancelar cualquier trabajo
+            if (!in_array((int) $user->role_id, [0, 1], true) && !\App\Services\Cuadrilla::esTitular($user, $workOrder)) {
+                $mensaje = \App\Services\Cuadrilla::esDelEquipo($user, (int) $workOrder->id)
+                    ? 'Este trabajo es de tu contratista: pídele que lo cancele o que mande a otro técnico.'
+                    : 'Solo el técnico asignado puede cancelar este trabajo.';
+                return response()->json(['success' => false, 'message' => $mensaje], 403);
+            }
+            // Su cuadrilla ya no va: se le avisa y se libera el trabajo
+            \App\Services\Cuadrilla::avisarEquipo($workOrder, 'Trabajo cancelado', 'Tu contratista canceló "' . \App\Services\Cuadrilla::nombreTrabajo($workOrder) . '". Ya no tienes que ir.', [(int) $user->id]);
+            \Illuminate\Support\Facades\DB::table('work_order_technician')->where('work_order_id', $workOrder->id)->delete();
 
             $clientUserId = $workOrder->property?->client?->user_id;
             if (!$clientUserId && $workOrder->property?->client?->email) {
@@ -2224,7 +2332,13 @@ Route::middleware('auth:sanctum')->group(function () {
             'workOrder.elementos:id,work_order_id,label,estado'
         ]);
 
-        if ($user && in_array((int)$user->role_id, [2, 6, 8])) {
+        if ($user && \App\Services\Cuadrilla::esContratista($user)) {
+            // Contratista: sus reportes y los de su cuadrilla en SUS trabajos (no los trabajos propios de un técnico 9)
+            $query->where(function ($q) use ($user) {
+                $q->where('technician_id', $user->id)
+                  ->orWhereHas('workOrder', fn ($qw) => $qw->withoutGlobalScopes()->where('tecnico_id', $user->id));
+            });
+        } elseif ($user && \App\Services\RolesRed::esCualquierTecnico($user->role_id)) {
             $query->where(function ($q) use ($user) {
                 $q->where('technician_id', $user->id)
                   ->orWhere('user_id', $user->id)

@@ -30,7 +30,8 @@ class AuthController extends Controller
         $esContratista = (int) $admin->role_id === \App\Services\Cuadrilla::ROL_CONTRATISTA;
         $permitidos = match (true) {
             (int) $admin->role_id === 0 => [1, 2, 3, 4, 5, 6, 7, 8],
-            $esContratista => \App\Services\Cuadrilla::ROLES_MIEMBRO,
+            // El 9 no se da de alta: es un 8 que pagó el acceso a la red (lo cambia Root)
+            $esContratista => [\App\Services\Cuadrilla::ROL_CUADRILLA],
             default => self::ROLES_ALTA_ADMIN,
         };
         if (!in_array((int) $request->input('role_id'), $permitidos, true)) {
@@ -190,7 +191,7 @@ class AuthController extends Controller
         $roleToAssign = (int) $request->role_id;
 
         // Asegurar que el rol exista en la tabla roles
-        foreach ([0, 1, 2, 3, 4, 5, 6, 7, 8] as $rId) {
+        foreach ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9] as $rId) {
             \DB::table('roles')->insertOrIgnore(['id' => $rId, 'created_at' => now(), 'updated_at' => now()]);
         }
 
@@ -584,20 +585,23 @@ class AuthController extends Controller
             ], 403);
         }
 
-        // Técnico que salió de una cuadrilla (lo quitaron o no aceptaron su solicitud)
-        if ($user->approval_status === \App\Services\Cuadrilla::SIN_CUADRILLA) {
+        // Técnico que salió de una cuadrilla (lo quitaron o no aceptaron su registro): entra solo a la pantalla
+        // "Sin cuadrilla", donde se une a otra con un código o pide volverse independiente.
+        // El middleware EnsureConCuadrilla le cierra todo lo demás.
+        if (\App\Services\Cuadrilla::estaSinCuadrilla($user)) {
+            $token = $user->createToken('AgenteToken')->plainTextToken;
+            $user->load(['tenant', 'specialties']);
             return response()->json([
-                'status' => \App\Services\Cuadrilla::SIN_CUADRILLA,
-                'user_id' => $user->id,
-                'error' => 'Ya no perteneces a la cuadrilla de tu contratista. Pronto podrás unirte a otra cuadrilla o trabajar como técnico independiente.'
-            ], 403);
-        }
-        if ($user->approval_status === \App\Services\Cuadrilla::RECHAZADO) {
-            return response()->json([
-                'status' => \App\Services\Cuadrilla::RECHAZADO,
-                'user_id' => $user->id,
-                'error' => 'El contratista no aceptó tu solicitud para unirte a su cuadrilla. Pronto podrás unirte a otra o trabajar como técnico independiente.'
-            ], 403);
+                'success' => true,
+                'status' => $user->approval_status,
+                'sin_cuadrilla' => true,
+                'message' => $user->approval_status === \App\Services\Cuadrilla::RECHAZADO
+                    ? 'El contratista no aceptó tu solicitud. Puedes unirte a otra cuadrilla o pedir trabajar como independiente.'
+                    : 'Ya no perteneces a la cuadrilla de tu contratista. Puedes unirte a otra o pedir trabajar como independiente.',
+                'user' => $user,
+                'token' => $token,
+                'perfil_profesional' => null,
+            ], 200);
         }
 
         if ($user->approval_status === 'pending_link') {

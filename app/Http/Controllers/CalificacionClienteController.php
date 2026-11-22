@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Schema;
  */
 class CalificacionClienteController extends Controller
 {
-    private const ROLES_TECNICO_RED = [6, 7, 8];
+    private const ROLES_TECNICO_RED = \App\Services\RolesRed::TECNICOS;
 
     public function pendientes(Request $request)
     {

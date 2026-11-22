@@ -28,7 +28,8 @@ class AvisoTrabajosRed
 {
     public const LOTE = 3;
     public const VENTANA_MIN = 30;
-    private const ROLES_TECNICO = [6, 8];
+    // El técnico de cuadrilla (8) no ve la red: no recibe avisos de trabajos nuevos
+    private const ROLES_TECNICO = RolesRed::QUE_COTIZAN;
 
     private static ?bool $tablaLista = null;
 

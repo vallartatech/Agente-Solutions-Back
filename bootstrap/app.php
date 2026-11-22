@@ -20,6 +20,8 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
         // Técnicos nuevos de la red: solo "completar perfil" hasta que Admin/Root los apruebe
         $middleware->appendToGroup('api', \App\Http\Middleware\EnsureTecnicoValidado::class);
+        // Técnico que quedó sin cuadrilla: solo "unirme a otra cuadrilla" o "pedir ser independiente"
+        $middleware->appendToGroup('api', \App\Http\Middleware\EnsureConCuadrilla::class);
     })
     ->withExceptions(function (Exceptions $exceptions) {
 

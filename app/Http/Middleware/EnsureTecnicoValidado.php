@@ -9,7 +9,7 @@ use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Candado del perfil profesional (como al solicitar una tarjeta de crédito):
- * un técnico nuevo de la red (roles 6 y 8) solo puede usar las rutas para completar
+ * un técnico nuevo de la red (roles 6, 7 y 8) solo puede usar las rutas para completar
  * su perfil hasta que Admin/Root lo apruebe. Va en todo el grupo "api".
  */
 class EnsureTecnicoValidado
@@ -24,6 +24,10 @@ class EnsureTecnicoValidado
         'login',
         'notifications/*',
         'tenants/my-membership-status',
+        // Sin cuadrilla: unirse a otra o pedir ser independiente (ver EnsureConCuadrilla)
+        'cuadrilla/unirme',
+        'cuadrilla/mi-estado',
+        'cuadrilla/solicitar-independiente',
         // Google Play: eliminar la cuenta debe ser posible siempre, aun con el perfil sin aprobar
         'users/delete-my-account',
         'usuarios/delete-my-account',

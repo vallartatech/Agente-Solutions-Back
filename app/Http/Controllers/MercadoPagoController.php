@@ -48,7 +48,7 @@ class MercadoPagoController extends Controller
                         "pending" => $frontendUrl . "/activacion-cuenta?status=pending&type=extra_property"
                     ],
                     "auto_return" => "approved", "external_reference" => $extRef,
-                    "notification_url" => env('APP_URL', 'https://agentesolutionsback-production.up.railway.app') . "/api/mercadopago/webhook"
+                    "notification_url" => env('APP_URL', 'https://agente-solutions-back-production.up.railway.app') . "/api/mercadopago/webhook"
                 ]);
                 return response()->json(['id' => $preference->id, 'init_point' => $preference->init_point, 'sandbox_init_point' => $preference->sandbox_init_point, 'amount' => $amount, 'quantity' => $quantity, 'type' => 'Propiedad Extra']);
             } catch (\Exception $e) {
@@ -78,7 +78,7 @@ class MercadoPagoController extends Controller
                         "pending" => $frontendUrl . "/activacion-cuenta?status=pending&type=technician"
                     ],
                     "auto_return" => "approved", "external_reference" => $extRef,
-                    "notification_url" => env('APP_URL', 'https://agentesolutionsback-production.up.railway.app') . "/api/mercadopago/webhook",
+                    "notification_url" => env('APP_URL', 'https://agente-solutions-back-production.up.railway.app') . "/api/mercadopago/webhook",
                     "payer" => ["email" => $techUser->email, "name" => trim($techUser->first_name . ' ' . $techUser->last_name)]
                 ]);
                 return response()->json(['id' => $preference->id, 'init_point' => $preference->init_point, 'sandbox_init_point' => $preference->sandbox_init_point, 'amount' => $amount, 'type' => 'Técnico Externo']);
@@ -139,7 +139,7 @@ class MercadoPagoController extends Controller
                 ],
                 "auto_return"        => "approved",
                 "external_reference" => $extRef,
-                "notification_url"   => env('APP_URL', 'https://agentesolutionsback-production.up.railway.app') . "/api/mercadopago/webhook"
+                "notification_url"   => env('APP_URL', 'https://agente-solutions-back-production.up.railway.app') . "/api/mercadopago/webhook"
             ];
 
             if ($owner && $owner->email) {
@@ -250,7 +250,7 @@ class MercadoPagoController extends Controller
                 ],
                 "auto_return"        => "approved",
                 "external_reference" => $quote->id . '|' . $stage, // Include stage so webhook knows which payment it is
-                "notification_url"   => env('APP_URL', 'https://agentesolutionsback-production.up.railway.app') . "/api/mercadopago/webhook"
+                "notification_url"   => env('APP_URL', 'https://agente-solutions-back-production.up.railway.app') . "/api/mercadopago/webhook"
             ];
 
             if ($request->user() && $request->user()->email) {
