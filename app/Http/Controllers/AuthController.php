@@ -27,9 +27,26 @@ class AuthController extends Controller
         if (!$admin || !in_array((int) $admin->role_id, self::ROLES_QUE_DAN_ALTA, true)) {
             return response()->json(['message' => 'No tienes permiso para dar de alta usuarios.'], 403);
         }
-        $permitidos = (int) $admin->role_id === 0 ? [1, 2, 3, 4, 5, 6, 7, 8] : self::ROLES_ALTA_ADMIN;
+        $esContratista = (int) $admin->role_id === \App\Services\Cuadrilla::ROL_CONTRATISTA;
+        $permitidos = match (true) {
+            (int) $admin->role_id === 0 => [1, 2, 3, 4, 5, 6, 7, 8],
+            $esContratista => \App\Services\Cuadrilla::ROLES_MIEMBRO,
+            default => self::ROLES_ALTA_ADMIN,
+        };
         if (!in_array((int) $request->input('role_id'), $permitidos, true)) {
-            return response()->json(['message' => 'No puedes crear usuarios con ese rol.'], 403);
+            return response()->json([
+                'message' => $esContratista ? 'Solo puedes agregar técnicos a tu cuadrilla.' : 'No puedes crear usuarios con ese rol.',
+            ], 403);
+        }
+
+        // El contratista agrega técnicos a su propia cuadrilla, mientras tenga cupo
+        if ($esContratista) {
+            if (empty($admin->tenant_id)) {
+                return response()->json(['message' => 'Tu cuenta de contratista no tiene una empresa ligada. Contacta a soporte.'], 422);
+            }
+            if (\App\Services\Cuadrilla::estaLlena($admin->tenant_id)) {
+                return response()->json(['message' => \App\Services\Cuadrilla::mensajeLlena($admin->tenant_id)], 422);
+            }
         }
 
         // Un admin de empresa solo da de alta dentro de su propia empresa
@@ -564,6 +581,22 @@ class AuthController extends Controller
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'error' => 'Tu perfil está en espera de ser revisado y autorizado por el Administrador de tu empresa.'
+            ], 403);
+        }
+
+        // Técnico que salió de una cuadrilla (lo quitaron o no aceptaron su solicitud)
+        if ($user->approval_status === \App\Services\Cuadrilla::SIN_CUADRILLA) {
+            return response()->json([
+                'status' => \App\Services\Cuadrilla::SIN_CUADRILLA,
+                'user_id' => $user->id,
+                'error' => 'Ya no perteneces a la cuadrilla de tu contratista. Pronto podrás unirte a otra cuadrilla o trabajar como técnico independiente.'
+            ], 403);
+        }
+        if ($user->approval_status === \App\Services\Cuadrilla::RECHAZADO) {
+            return response()->json([
+                'status' => \App\Services\Cuadrilla::RECHAZADO,
+                'user_id' => $user->id,
+                'error' => 'El contratista no aceptó tu solicitud para unirte a su cuadrilla. Pronto podrás unirte a otra o trabajar como técnico independiente.'
             ], 403);
         }
 

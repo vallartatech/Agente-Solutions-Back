@@ -738,6 +738,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/tenants/transfer-portfolio', [TenantController::class, 'transferPortfolio']);
     Route::get('/tenants/pending-technicians', [TenantController::class, 'pendingTechnicians']);
     Route::post('/tenants/approve-technician/{userId}', [TenantController::class, 'approveTechnician']);
+    Route::post('/tenants/reject-technician/{userId}', [TenantController::class, 'rejectTechnician'])->whereNumber('userId');
+    // El contratista saca a un técnico de su cuadrilla (se desactiva; su historial se conserva)
+    Route::post('/cuadrilla/{userId}/quitar', [\App\Http\Controllers\CuadrillaController::class, 'quitar']);
 
     // --- PERFIL PROFESIONAL DE TÉCNICOS DE LA RED (roles 6 y 8) ---
     // Técnico: completar su perfil (lo único que puede usar hasta que Admin/Root lo apruebe)

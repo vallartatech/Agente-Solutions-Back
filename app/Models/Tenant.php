@@ -27,6 +27,7 @@ class Tenant extends Model
         'subscription_expires_at',
         'subscription_amount',
         'subscription_mp_payment_id',
+        'max_cuadrilla',
     ];
 
     public function canAddProperty(): bool

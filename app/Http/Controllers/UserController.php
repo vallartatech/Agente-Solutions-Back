@@ -174,6 +174,15 @@ class UserController extends Controller
     // =========================================================================
     public function updateRole(Request $request, $id)
     {
+        // Solo Root o un Admin cambian roles; el Admin, solo dentro de su empresa
+        $actual = auth('sanctum')->user();
+        if (!$actual || !in_array((int) $actual->role_id, [0, 1], true)) {
+            return response()->json(['success' => false, 'message' => 'Solo Root o un Administrador pueden cambiar roles.'], 403);
+        }
+        $esRoot = (int) $actual->role_id === 0;
+        $deOtraEmpresa = fn ($tenantId) => !$esRoot
+            && (empty($actual->tenant_id) || (int) $tenantId !== (int) $actual->tenant_id);
+
         $realId = str_replace('u_', '', $id);
 
         // Permitir todos los roles asignables del sistema (1=Admin, 2=Tecnico, 3=Cliente, 4=Aut.Empresarial, 5=Aut.Personal, 6=Contratista, 7=Admin Propiedades, 8=Tecnico Red)
@@ -190,6 +199,9 @@ class UserController extends Controller
         if (str_starts_with($id, 'c_')) {
             $realClientId = str_replace('c_', '', $id);
             $clientObj = DB::table('clients')->where('id', $realClientId)->first();
+            if ($clientObj && $deOtraEmpresa($clientObj->tenant_id)) {
+                return response()->json(['success' => false, 'message' => 'No puedes cambiar el rol de usuarios de otra empresa.'], 403);
+            }
             if ($clientObj && $clientObj->user_id) {
                 $user = User::withoutGlobalScopes()->find($clientObj->user_id);
             } elseif ($clientObj && $clientObj->email) {
@@ -228,6 +240,9 @@ class UserController extends Controller
         // SEGURIDAD: Nunca quitarle el rol de ROOT a un usuario Root
         if ((int)$user->role_id === 0) {
             return response()->json(['success' => false, 'message' => 'Por seguridad, la cuenta ROOT MASTER está protegida y su rol no puede ser modificado.'], 403);
+        }
+        if ($deOtraEmpresa($user->tenant_id)) {
+            return response()->json(['success' => false, 'message' => 'No puedes cambiar el rol de usuarios de otra empresa.'], 403);
         }
 
         // A PRUEBA DE BALAS: Asegurar que el rol exista en la tabla roles
@@ -374,6 +389,9 @@ class UserController extends Controller
                       })
                       ->orWhereIn('role_id', [2, 6, 8]);
                 })->where('role_id', '!=', 0);
+            } elseif (\App\Services\Cuadrilla::esContratista($currentUser)) {
+                // CONTRATISTA (Rol 7): él y su cuadrilla (incluye a quienes quitó, para su historial)
+                $usersQuery->where('tenant_id', $currentUser->tenant_id)->where('role_id', '!=', 0);
             } elseif ($currentUser && !empty($currentUser->tenant_id)) {
                 // Usuario con Tenant (Autónomo, Gestor, etc.):
                 $usersQuery->where(function($q) use ($currentUser) {
@@ -512,7 +530,11 @@ class UserController extends Controller
     public function eliminarUsuario(Request $request, $id)
     {
         $actual = auth('sanctum')->user();
-        if (!$actual || !in_array((int) $actual->role_id, [0, 1, 4, 5, 7], true)) {
+        // El contratista no borra cuentas: "Quitar" saca al técnico de su cuadrilla y conserva su historial
+        if ($actual && \App\Services\Cuadrilla::esContratista($actual)) {
+            return response()->json(['error' => 'Para sacar a un técnico de tu cuadrilla usa "Quitar"; así se conserva el historial de sus trabajos.'], 403);
+        }
+        if (!$actual || !in_array((int) $actual->role_id, [0, 1, 4, 5], true)) {
             return response()->json(['error' => 'Acceso Denegado.'], 403);
         }
         $esRoot = (int) $actual->role_id === 0;
@@ -615,6 +637,17 @@ class UserController extends Controller
 
     public function toggleBloqueo($id)
     {
+        // Bloquean Root, Admin y los dueños de empresa de la red, cada uno dentro de su empresa;
+        // el contratista, solo a los técnicos de su cuadrilla
+        $actual = auth('sanctum')->user();
+        if (!$actual || !in_array((int) $actual->role_id, [0, 1, 4, 5, 7], true)) {
+            return response()->json(['error' => 'Acceso Denegado.'], 403);
+        }
+        $esRoot = (int) $actual->role_id === 0;
+        $esContratista = \App\Services\Cuadrilla::esContratista($actual);
+        $deOtraEmpresa = fn ($tenantId) => !$esRoot
+            && (empty($actual->tenant_id) || (int) $tenantId !== (int) $actual->tenant_id);
+
         try {
             if (str_starts_with($id, 'c_')) {
                 $realId = str_replace('c_', '', $id);
@@ -622,6 +655,9 @@ class UserController extends Controller
 
                 if (!$cliente) {
                     return response()->json(['error' => 'Cliente no encontrado'], 404);
+                }
+                if ($esContratista || $deOtraEmpresa($cliente->tenant_id)) {
+                    return response()->json(['error' => 'Acceso Denegado.'], 403);
                 }
 
                 $nuevoEstado = $cliente->is_active ? 0 : 1;
@@ -632,14 +668,28 @@ class UserController extends Controller
             }
 
             $realId = str_replace('u_', '', $id);
-            $usuario = \App\Models\User::find($realId);
+            $usuario = \App\Models\User::withoutGlobalScopes()->find($realId);
 
             if (!$usuario) {
                 return response()->json(['error' => 'Usuario no encontrado'], 404);
             }
 
-            if ($usuario->role_id === 0) {
+            if ((int) $usuario->role_id === 0) {
                 return response()->json(['error' => 'Acceso Denegado.'], 403);
+            }
+            if ((int) $usuario->id === (int) $actual->id) {
+                return response()->json(['error' => 'No puedes bloquear tu propia cuenta.'], 422);
+            }
+            if ($deOtraEmpresa($usuario->tenant_id)
+                || ($esContratista && !\App\Services\Cuadrilla::esDeSuCuadrilla($actual, $usuario))) {
+                return response()->json(['error' => 'Acceso Denegado.'], 403);
+            }
+            // Fuera de la cuadrilla se vuelve a activar uniéndose a otra, no desbloqueando
+            if ($usuario->approval_status === \App\Services\Cuadrilla::SIN_CUADRILLA && !$esRoot) {
+                return response()->json(['error' => 'Este técnico ya no está en tu cuadrilla.'], 422);
+            }
+            if (!$usuario->is_active && $esContratista && \App\Services\Cuadrilla::estaLlena($actual->tenant_id)) {
+                return response()->json(['error' => \App\Services\Cuadrilla::mensajeLlena($actual->tenant_id)], 422);
             }
 
             $usuario->is_active = !$usuario->is_active;

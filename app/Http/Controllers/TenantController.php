@@ -253,18 +253,28 @@ class TenantController extends Controller
             $subAmount = 935.00;
         }
 
-        $tenant->update([
+        $cambios = [
             'membership_type' => $membershipType,
             'subscription_amount' => $subAmount,
             'max_properties' => $maxProperties,
             'extra_properties_count' => $extraProperties,
             'max_clients' => $maxClients,
             'subscription_expires_at' => $expiresAt
-        ]);
+        ];
+        // Cupo de la cuadrilla de un contratista (Root lo amplía a mano mientras los cobros estén en pausa)
+        if ($request->filled('max_cuadrilla') && \Illuminate\Support\Facades\Schema::hasColumn('tenants', 'max_cuadrilla')) {
+            $request->validate(['max_cuadrilla' => 'integer|min:0|max:500']);
+            $cambios['max_cuadrilla'] = (int) $request->max_cuadrilla;
+        }
+        $tenant->update($cambios);
 
+        // Solo los autónomos (4/5) cambian de rol con el plan; a un contratista u otro rol no se le toca
         if ($tenant->owner_user_id) {
-            $roleId = ($membershipType === 'autonomo_personal') ? 5 : 4;
-            User::withoutGlobalScopes()->where('id', $tenant->owner_user_id)->update(['role_id' => $roleId]);
+            $dueno = User::withoutGlobalScopes()->find($tenant->owner_user_id);
+            if ($dueno && in_array((int) $dueno->role_id, [4, 5], true)) {
+                $roleId = ($membershipType === 'autonomo_personal') ? 5 : 4;
+                User::withoutGlobalScopes()->where('id', $dueno->id)->update(['role_id' => $roleId]);
+            }
         }
 
         return response()->json([
@@ -322,15 +332,26 @@ class TenantController extends Controller
     /**
      * Listar técnicos en espera de autorización en la empresa del usuario logueado.
      */
+    /** Roles que administran una Sala de espera. */
+    private const ROLES_SALA_ESPERA = [0, 1, 4, 5, 7];
+
     public function pendingTechnicians()
     {
         $user = auth()->user();
-        
+        if (!$user || !in_array((int) $user->role_id, self::ROLES_SALA_ESPERA, true)) {
+            return response()->json(['error' => 'No tienes acceso a la Sala de espera.'], 403);
+        }
+        $esContratista = \App\Services\Cuadrilla::esContratista($user);
+
         $query = User::withoutGlobalScopes()
-            ->whereIn('role_id', [2, 6, 7, 8])
+            // El contratista solo ve a quienes piden entrar a su cuadrilla
+            ->whereIn('role_id', $esContratista ? \App\Services\Cuadrilla::ROLES_MIEMBRO : [2, 6, 7, 8])
             ->where('approval_status', 'pending');
 
-        if ($user->role_id !== 0) {
+        if ((int) $user->role_id !== 0) {
+            if (empty($user->tenant_id)) {
+                return response()->json(['success' => true, 'pending_technicians' => []]);
+            }
             $query->where('tenant_id', $user->tenant_id);
         }
 
@@ -339,10 +360,42 @@ class TenantController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
-        return response()->json([
-            'success' => true,
-            'pending_technicians' => $technicians
-        ]);
+        $respuesta = ['success' => true, 'pending_technicians' => $technicians];
+        if ($esContratista) {
+            $respuesta['cupo'] = \App\Services\Cuadrilla::cupo($user->tenant_id);
+        }
+        return response()->json($respuesta);
+    }
+
+    /**
+     * Revisa que quien responde en la Sala de espera pueda hacerlo con este técnico.
+     * Devuelve [técnico, null] o [null, respuesta de error].
+     */
+    private function tecnicoDeMiSala($userId): array
+    {
+        $currentUser = auth()->user();
+        if (!$currentUser || !in_array((int) $currentUser->role_id, self::ROLES_SALA_ESPERA, true)) {
+            return [null, response()->json(['error' => 'No tienes permisos sobre este técnico'], 403)];
+        }
+
+        $technician = User::withoutGlobalScopes()->find($userId);
+        if (!$technician) {
+            return [null, response()->json(['error' => 'Técnico no encontrado'], 404)];
+        }
+
+        // Mismo tenant del autónomo, o Root
+        if ((int) $currentUser->role_id !== 0
+            && (empty($currentUser->tenant_id) || (int) $technician->tenant_id !== (int) $currentUser->tenant_id)) {
+            return [null, response()->json(['error' => 'No tienes permisos sobre este técnico'], 403)];
+        }
+        if (\App\Services\Cuadrilla::esContratista($currentUser) && !\App\Services\Cuadrilla::esRolMiembro($technician->role_id)) {
+            return [null, response()->json(['error' => 'Solo puedes responder solicitudes de técnicos de cuadrilla.'], 403)];
+        }
+        if ($technician->approval_status !== 'pending') {
+            return [null, response()->json(['error' => 'Esta solicitud ya fue respondida.'], 422)];
+        }
+
+        return [$technician, null];
     }
 
     /**
@@ -350,13 +403,16 @@ class TenantController extends Controller
      */
     public function approveTechnician(Request $request, $userId)
     {
-        $currentUser = auth()->user();
-        
-        $technician = User::withoutGlobalScopes()->findOrFail($userId);
+        [$technician, $error] = $this->tecnicoDeMiSala($userId);
+        if ($error) {
+            return $error;
+        }
 
-        // Verificar que el técnico pertenezca al mismo tenant del autónomo o que sea Root
-        if ($currentUser->role_id !== 0 && $technician->tenant_id !== $currentUser->tenant_id) {
-            return response()->json(['error' => 'No tienes permisos sobre este técnico'], 403);
+        // La cuadrilla tiene cupo (Root puede aprobar de todos modos)
+        if ((int) auth()->user()->role_id !== 0
+            && \App\Services\Cuadrilla::esRolMiembro($technician->role_id)
+            && \App\Services\Cuadrilla::estaLlena($technician->tenant_id)) {
+            return response()->json(['error' => \App\Services\Cuadrilla::mensajeLlena($technician->tenant_id)], 422);
         }
 
         $technician->update([
@@ -368,6 +424,25 @@ class TenantController extends Controller
             'success' => true,
             'message' => 'Usuario autorizado y dado de alta exitosamente.',
             'technician' => $technician
+        ]);
+    }
+
+    /**
+     * Rechazar una solicitud de la Sala de espera. No borra la cuenta: queda sin acceso
+     * y desligada de la empresa (nunca trabajó en ella).
+     */
+    public function rejectTechnician(Request $request, $userId)
+    {
+        [$technician, $error] = $this->tecnicoDeMiSala($userId);
+        if ($error) {
+            return $error;
+        }
+
+        \App\Services\Cuadrilla::rechazar($technician);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Solicitud rechazada.',
         ]);
     }
 }
