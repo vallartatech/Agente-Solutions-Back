@@ -56,6 +56,8 @@ Route::post('/mercadopago/subscription/{tenantId}', [MercadoPagoController::clas
 // Lista pública de empresas autónomas para registro y login
 Route::get('/tenants/public-list', [TenantController::class, 'listTenants']);
 Route::get('/specialties', [SpecialtyController::class, 'index']);
+// Registro del técnico de cuadrilla: verificar el código del contratista (escrito o leído del QR)
+Route::get('/cuadrilla/verificar-codigo', [\App\Http\Controllers\CuadrillaController::class, 'verificarCodigo'])->middleware('throttle:30,1');
 
 // Calificaciones de Técnicos (Dual-Factor: Relojes ⏱️ y Estrellas ⭐)
 Route::post('/technician-reviews', function (\Illuminate\Http\Request $request) {

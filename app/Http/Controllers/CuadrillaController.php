@@ -80,6 +80,32 @@ class CuadrillaController extends Controller
         ]);
     }
 
+    /**
+     * Público: el formulario de registro del técnico de cuadrilla verifica el código (escrito o del QR)
+     * antes de enviarlo. Solo dice de qué cuadrilla es y si tiene lugar; nada de su equipo.
+     */
+    public function verificarCodigo(Request $request)
+    {
+        $codigo = trim((string) $request->query('codigo', ''));
+        $tenant = ($codigo !== '' && mb_strlen($codigo) <= 64) ? Cuadrilla::cuadrillaPorCodigo($codigo) : null;
+        if (!$tenant) {
+            return response()->json([
+                'valido' => false,
+                'error' => 'Ese código no es de ninguna cuadrilla. Revísalo o pídeselo de nuevo a tu contratista.',
+            ], 404);
+        }
+
+        $dueno = User::withoutGlobalScopes()->find($tenant->owner_user_id);
+        return response()->json([
+            'valido' => true,
+            'codigo' => $tenant->code,
+            'cuadrilla' => $tenant->name,
+            'contratista' => trim("{$dueno->first_name} {$dueno->last_name}"),
+            // Puede registrarse igual, pero su contratista necesita lugar para aprobarlo
+            'llena' => Cuadrilla::estaLlena((int) $tenant->id),
+        ]);
+    }
+
     /** El contratista saca a un técnico: el 8 queda sin cuadrilla y el 9 pasa a independiente. */
     public function quitar($userId)
     {

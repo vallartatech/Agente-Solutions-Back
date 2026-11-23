@@ -165,13 +165,15 @@ class AuthController extends Controller
 
         // Técnico de cuadrilla que se registra solo: debe traer el código de un contratista,
         // que después lo aprueba desde su Sala de espera
+        // (la misma búsqueda que la verificación en vivo del formulario: /cuadrilla/verificar-codigo)
         if (!$porAdmin && (int) $request->role_id === 8) {
-            $contratista = $tenantId ? Tenant::find($tenantId) : null;
-            if (!$contratista || $contratista->membership_type !== 'market_contractor') {
+            $contratista = \App\Services\Cuadrilla::cuadrillaPorCodigo((string) $request->company_code);
+            if (!$contratista) {
                 return response()->json([
                     'errors' => ['company_code' => ['El código de contratista no existe. Pídeselo a tu contratista.']]
                 ], 422);
             }
+            $tenantId = $contratista->id;
         }
 
         $isTechnician = ($request->role_id == 2 || $request->role_id == 6 || $request->role_id == 8);
