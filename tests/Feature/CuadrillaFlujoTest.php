@@ -338,6 +338,9 @@ class CuadrillaFlujoTest extends TestCase
         $this->assertNull($job['myQuote']);
         $this->assertSame('Jefe Prueba', $job['contratista']['nombre']);
         $this->assertFalse($job['puede_asignar_cuadrilla']);
+        // Quién va viaja aparte del equipo afectado: si chocan, el tablero pinta la lista y se queda en blanco
+        $this->assertArrayNotHasKey('equipo', $job);
+        $this->assertSame([$this->ana->id], collect($job['equipo_cuadrilla'])->pluck('id')->all());
         $this->assertTrue(AccesoQrRedController::esTecnicoDelTrabajo($this->ana, WorkOrder::withoutGlobalScopes()->find($orden)));
 
         // El contratista sí ve el precio y puede cambiar a quién manda

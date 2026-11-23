@@ -646,10 +646,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     ] : null,
                     'created_at' => $order->created_at->toIso8601String(),
                     'updated_at' => $order->updated_at->toIso8601String(),
-                    // Cuadrilla: si va por su contratista, con quién va y si (el contratista) puede asignar a su equipo
+                    // Cuadrilla: si va por su contratista, con quién va y si (el contratista) puede asignar a su equipo.
+                    // No se llama "equipo": en el tablero ese campo es el equipo afectado (texto)
                     'es_cuadrilla' => $esCuadrilla,
                     'contratista' => $vistaEquipo['contratista'],
-                    'equipo' => $vistaEquipo['equipo'],
+                    'equipo_cuadrilla' => $vistaEquipo['equipo'],
                     'puede_asignar_cuadrilla' => $vistaEquipo['puede_asignar_cuadrilla'],
                 ];
             });
