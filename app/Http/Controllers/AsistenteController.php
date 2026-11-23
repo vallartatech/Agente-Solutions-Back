@@ -27,6 +27,25 @@ class AsistenteController extends Controller
     private const MAX_MENSAJES = 20;
     private const MAX_LETRAS = 1000;
 
+    // Botones que la IA puede señalar con [[señalar:id]]. El frontend los ilumina con
+    // data-ayuda="<id>" (src/components/Shared/senalarBoton.js): agregar en los dos lados.
+    private const BOTONES = [
+        'solicitar-servicio' => 'Botón SOLICITAR SERVICIO de Inicio (en celular: "+ SERVICIO" junto a PERFIL DE LA PROPIEDAD)',
+        'agregar-propiedad' => 'Botón para registrar una propiedad nueva (en Inicio)',
+        'editar-propiedad' => 'Botón EDITAR de la propiedad (en Inicio)',
+        'info-propiedad' => 'Flecha para ver la información de la propiedad: dirección, CURP, GPS (en Inicio)',
+        'tablero-control' => 'Tablero de Control con SOS, POR HACER, PROCESO y LISTOS (en Inicio)',
+        'menu-mercado' => 'Botón Mercado / Red del menú',
+        'menu-propiedades' => 'Botón Detalles de propiedad del menú',
+        'menu-perfil' => 'Botón del perfil (ahí están Mi Perfil, Mis técnicos y Cerrar Sesión)',
+        'calendario' => 'Botón del Calendario (citas)',
+        'publicar-problema' => 'Botón Publicar problema de Mercado / Red (otra forma de solicitar un servicio)',
+        'pestana-en-red' => 'Pestaña En red de Mercado / Red (solicitudes esperando cotizaciones)',
+        'pestana-aceptados' => 'Pestaña Aceptados de Mercado / Red (trabajos con técnico asignado)',
+        'ver-ofertas' => 'Botón Ver ofertas / Coordinar de una publicación en Mercado / Red (ahí se aceptan cotizaciones, se chatea y se confirma la llegada)',
+        'agregar-favorito' => 'Botón Agregar a favoritos de un técnico en Mis técnicos',
+    ];
+
     // Ruta del frontend → nombre que la guía usa para esa pantalla
     private const PANTALLAS = [
         '/vistamarket' => 'Inicio',
@@ -151,6 +170,11 @@ class AsistenteController extends Controller
     private function instrucciones(): string
     {
         $guia = file_get_contents(resource_path(self::GUIA));
+        $botones = implode("\n", array_map(
+            fn ($id, $desc) => "- {$id}: {$desc}",
+            array_keys(self::BOTONES),
+            self::BOTONES,
+        ));
 
         return <<<TXT
 Eres el asistente de ayuda de la app Agente Market. Hablas con un cliente particular que
@@ -167,6 +191,18 @@ Reglas:
 - Si pregunta por pagos, cobros, precios del plan o problemas con su cuenta, mándalo a soporte.
 - Si pregunta algo que no tiene que ver con la app, dile amablemente que solo ayudas con la app.
 - Usa la pantalla donde está el usuario (te la indica el sistema) para orientar tu respuesta.
+
+Botón "Muéstrame":
+- La app puede llevar al usuario a la pantalla correcta e iluminar un botón. Para eso, escribe
+  al final de tu respuesta, en su propia línea, la etiqueta [[señalar:ID]] con uno de los ID
+  de la lista de abajo. La app la convierte en un botón "Muéstrame"; el usuario no ve la etiqueta.
+- Úsala cuando tu respuesta diga que hay que tocar uno de esos botones: señala el primer botón
+  que debe tocar. Máximo una etiqueta por respuesta (dos solo si de verdad hacen falta).
+- Usa solo los ID de la lista, escritos exactamente igual. Si ninguno aplica, no pongas etiqueta.
+- No menciones la etiqueta ni digas "te señalo"; basta con explicar los pasos.
+
+ID de botones que se pueden señalar:
+{$botones}
 
 <guia>
 {$guia}

@@ -22,7 +22,8 @@ cotización (precio), el cliente elige una y el técnico hace el trabajo.
 - **Tablero de Control**: cuatro contadores de los servicios de esa propiedad:
   **SOS** (urgentes), **POR HACER**, **PROCESO** y **LISTOS**. Solo informan; no se tocan.
 - Botón naranja **SOLICITAR SERVICIO**: para pedir un trabajo nuevo. Está desactivado hasta
-  que registre su primera propiedad.
+  que registre su primera propiedad. En el celular, el botón está arriba, como **+ SERVICIO**
+  junto a **PERFIL DE LA PROPIEDAD**.
 
 ## Paso 1: Registrar la primera propiedad
 
@@ -57,11 +58,15 @@ Para cambiar el nombre, la foto o los datos después, use **EDITAR** en la tarje
      primero debe tener técnicos en favoritos (ver "Mis técnicos").
 6. Toque **PUBLICAR EN LA RED** (o **ENVIAR A MI TÉCNICO**).
 
+También se puede pedir un servicio desde **Mercado / Red** con el botón **Publicar problema**;
+abre la misma ventana.
+
 ## Paso 3: Recibir y elegir cotizaciones
 
-- Entre a **Mercado / Red**. Ahí está **Mis Publicaciones** con cada solicitud y su estado:
+- Entre a **Mercado / Red**. Ahí están sus publicaciones en dos pestañas: **En red**
+  (esperando cotizaciones) y **Aceptados** (ya tienen técnico). Cada una muestra su estado:
   Sin ofertas, Con ofertas / Asignado, Programado, etc. También hay un mapa.
-- Toque **Ver ofertas** (o "Ver Detalle y Coordinación") para abrir el detalle. Ahí aparecen
+- Toque **Ver ofertas** (o **Coordinar**, si ya aceptó a un técnico) para abrir el detalle. Ahí aparecen
   las cotizaciones de los técnicos con su precio y su perfil (especialidades y reseñas).
 - Con cada técnico puede **chatear** antes de decidir.
 - **Aceptar** una cotización le asigna el trabajo a ese técnico de inmediato.
