@@ -6,9 +6,10 @@ cotización (precio), el cliente elige una y el técnico hace el trabajo.
 
 ## Menú principal
 
-- En el celular, la barra de abajo tiene: **Inicio** (la casita), **Detalles de propiedad**
-  y **Mercado / Red** (el globo).
-- En computadora, el mismo menú está arriba: INICIO, DETALLES DE PROPIEDAD y MERCADO.
+- En el celular, la barra de abajo tiene: **Inicio** (la casita), **Propiedades**,
+  **Tablero** (el tablero global de todas sus propiedades) y **Mercado** (el globo).
+- En computadora, el menú está arriba: INICIO, PROPIEDADES y MERCADO. El **Tablero global**
+  se abre con su botón en Inicio, debajo de la ficha de la propiedad.
 - Arriba a la derecha están el **Calendario** (citas), la **campana** de notificaciones y
   el **perfil**. En el menú del perfil están **Mi Perfil**, **Mis técnicos** y **Cerrar Sesión**.
 
@@ -48,28 +49,30 @@ Para cambiar el nombre, la foto o los datos después, use **EDITAR** en la tarje
    - Describa con detalle qué ocurre y agregue fotos si puede: ayudan a que el técnico cotice mejor.
    - Con **+ Añadir** puede juntar varios problemas en una sola solicitud ("Se enviarán juntos").
 3. Elija cuándo lo necesita: **Urgente (Hoy)** o **Programar** (fecha y hora preferida).
-4. **Acceso a la propiedad** (opcional): si hay caseta, código o QR para entrar, puede dejarlo
-   aquí. El técnico solo lo verá cuando marque que llegó. Si no deja nada, el técnico entrará
-   directamente.
-5. Elija a quién enviarlo:
-   - **A LA RED**: la solicitud les llega a todos los técnicos de la red y varios pueden
+4. Elija a quién enviarlo:
+   - **AL MERCADO**: la solicitud les llega a todos los técnicos del Mercado y varios pueden
      mandarle cotización. Es la opción recomendada si es nuevo.
    - **A MIS TÉCNICOS**: solo la ve el técnico favorito que elija. Para usar esta opción
      primero debe tener técnicos en favoritos (ver "Mis técnicos").
-6. Toque **PUBLICAR EN LA RED** (o **ENVIAR A MI TÉCNICO**).
+5. Toque **PUBLICAR EN EL MERCADO** (o **ENVIAR A MI TÉCNICO**).
 
-También se puede pedir un servicio desde **Mercado / Red** con el botón **Publicar problema**;
+También se puede pedir un servicio desde **Mercado** con el botón **Publicar problema**;
 abre la misma ventana.
 
 ## Paso 3: Recibir y elegir cotizaciones
 
-- Entre a **Mercado / Red**. Ahí están sus publicaciones en dos pestañas: **En red**
+- Entre a **Mercado**. Ahí están sus publicaciones en dos pestañas: **En Mercado**
   (esperando cotizaciones) y **Aceptados** (ya tienen técnico). Cada una muestra su estado:
   Sin ofertas, Con ofertas / Asignado, Programado, etc. También hay un mapa.
 - Toque **Ver ofertas** (o **Coordinar**, si ya aceptó a un técnico) para abrir el detalle. Ahí aparecen
   las cotizaciones de los técnicos con su precio y su perfil (especialidades y reseñas).
 - Con cada técnico puede **chatear** antes de decidir.
 - **Aceptar** una cotización le asigna el trabajo a ese técnico de inmediato.
+- Al aceptarla, la app pregunta si la propiedad tiene **QR o código de acceso** (caseta o
+  portón). Puede agregarlo en ese momento o después en el detalle del trabajo, en **Acceso a
+  la propiedad**. Si la caseta pide un nombre, la app le dice a nombre de quién generar el QR
+  (el técnico asignado o su cuadrilla). El técnico solo lo verá cuando marque que llegó, vence
+  en máximo 7 días y se borra si el servicio se cancela.
 - **Rechazar** avisa al técnico para que pueda mejorar su oferta.
 - Si todavía no hay cotizaciones, espere: la app le notificará cuando llegue una.
 - Si ya no necesita el servicio, puede **Eliminar mi publicación** antes de aceptar a alguien.
@@ -89,7 +92,7 @@ abre la misma ventana.
 
 - Puede cancelar antes de que el trabajo comience. Se le pide el motivo (por ejemplo "Ya se
   resolvió el problema" o "Cambié de fecha") y se le envía al técnico.
-- Después puede **reenviar la solicitud a la red** para buscar otro técnico o **cancelar por
+- Después puede **reenviar la solicitud al Mercado** para buscar otro técnico o **cancelar por
   completo**, y entonces la solicitud se cierra y queda en su historial.
 
 ## Mis técnicos
@@ -99,10 +102,15 @@ abre la misma ventana.
 - Puede **bloquear** a un técnico para que ya no le atienda.
 - También puede agregar a un técnico escaneando su **código QR**.
 
-## Detalles de propiedad
+## Propiedades
 
-- Desde el menú **Detalles de propiedad** ve sus propiedades y, de cada una, sus reportes,
+- Desde el menú **Propiedades** ve sus propiedades y, de cada una, sus reportes,
   cotizaciones y levantamientos (inspecciones de la propiedad).
+
+## Tablero global
+
+- En el celular está en la barra de abajo (**Tablero**); en computadora, en el botón
+  **Tablero global** de Inicio. Muestra juntas todas sus propiedades, sus trabajos y fechas.
 
 ## Lo que esta guía no cubre
 
