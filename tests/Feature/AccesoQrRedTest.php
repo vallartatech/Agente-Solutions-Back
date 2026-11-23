@@ -146,6 +146,18 @@ class AccesoQrRedTest extends TestCase
         $this->assertNotNull($guardado->valid_until);
     }
 
+    public function test_sin_tecnico_asignado_no_se_puede_agregar(): void
+    {
+        // Aún sin cotización aceptada: el QR puede requerir el nombre de quien entra
+        DB::table('work_orders')->where('id', $this->orden)->update(['tecnico_id' => null, 'status' => 'Pendiente']);
+
+        $this->subir()->assertStatus(422);
+        $this->assertSame(0, DB::table('access_qrs')->count());
+
+        Sanctum::actingAs($this->cliente);
+        $this->getJson("/api/red/trabajos/{$this->orden}/acceso")->assertOk()->assertJsonPath('puede_editar', false);
+    }
+
     public function test_solo_codigo_sin_imagen(): void
     {
         $this->subir(['imagen' => null])->assertOk()

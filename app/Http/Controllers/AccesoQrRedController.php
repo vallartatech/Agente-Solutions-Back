@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Log;
  *
  * - El dueño del trabajo (cliente de la red, o Root/Admin) sube hasta 2 accesos: imagen del QR,
  *   código de texto (PIN, caseta) o ambos. La vigencia es obligatoria y de máximo 7 días.
+ * - Solo con un técnico asignado (cotización aceptada): en algunas propiedades el QR se genera
+ *   con el nombre de quien entra.
  * - El técnico asignado ve que hay acceso, pero el detalle (imagen y código) solo cuando marca "Llegué".
  * - Se borra solo al vencer o cuando el trabajo termina o se cancela (App\Services\AccesoQr).
  * Lo interno (Agente Solutions) sigue en AccesoQrController.
@@ -58,6 +60,14 @@ class AccesoQrRedController extends Controller
         return NetworkQuote::withoutGlobalScopes()
             ->where('work_order_id', $orden->id)->where('technician_id', $user->id)->where('status', 'accepted')
             ->exists();
+    }
+
+    /** Técnico asignado al trabajo (por la orden o por la cotización aceptada), o null. */
+    private static function tecnicoAsignadoId(WorkOrder $orden): ?int
+    {
+        $id = $orden->tecnico_id ?: NetworkQuote::withoutGlobalScopes()
+            ->where('work_order_id', $orden->id)->where('status', 'accepted')->value('technician_id');
+        return $id ? (int) $id : null;
     }
 
     // El técnico ya marcó "Llegué al lugar"
@@ -112,7 +122,7 @@ class AccesoQrRedController extends Controller
 
         return response()->json([
             'accesos' => $qrs->map(fn ($q) => $this->formato($q, $orden, $conDetalle))->values(),
-            'puede_editar' => $esDueno && !$cerrado,
+            'puede_editar' => $esDueno && !$cerrado && self::tecnicoAsignadoId($orden) !== null,
             'puede_ver' => $conDetalle,
             // Para el técnico: hay acceso, pero lo verá al marcar "Llegué"
             'disponible_al_llegar' => !$esDueno && !$conDetalle && $qrs->isNotEmpty(),
@@ -177,6 +187,10 @@ class AccesoQrRedController extends Controller
         if (AccesoQr::alcanceCerrado($orden)) {
             return response()->json(['message' => 'El trabajo ya terminó o se canceló; no se puede agregar un acceso.'], 422);
         }
+        $tecnicoId = self::tecnicoAsignadoId($orden);
+        if (!$tecnicoId) {
+            return response()->json(['message' => 'Podrás agregar el acceso cuando aceptes la cotización de un técnico.'], 422);
+        }
 
         $archivo = $request->file('imagen');
         $alcance = AccesoQr::alcance($orden);
@@ -199,10 +213,8 @@ class AccesoQrRedController extends Controller
         AccesoQr::log($alcance + ['property_id' => $orden->property_id], $existente ? 'reemplazado' : 'subido', $slot, (int) $user->id, 'Red', $orden->tenant_id);
 
         // Avisar al técnico asignado: lo verá al llegar
-        $tecnicoId = $orden->tecnico_id ?: NetworkQuote::withoutGlobalScopes()
-            ->where('work_order_id', $orden->id)->where('status', 'accepted')->value('technician_id');
         if ($tecnicoId) {
-            $this->avisar((int) $tecnicoId, '🔑 Acceso a la propiedad',
+            $this->avisar($tecnicoId, '🔑 Acceso a la propiedad',
                 sprintf('El cliente agregó el acceso para "%s" (folio #%d). Lo verás al marcar que llegaste.', trim($orden->type . ($orden->equipment ? ' - ' . $orden->equipment : '')), $orden->id),
                 '/mercado-trabajos?trabajo=' . $orden->id, $orden->id);
         }
