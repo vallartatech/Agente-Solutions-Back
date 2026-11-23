@@ -49,6 +49,14 @@ return [
         // Dominio del frontend: al tocar la notificación se abre aquí (no en el dominio de la API)
         'frontend_url' => env('FRONTEND_URL', 'https://agente-solutions-production.up.railway.app'),
     ],
+'anthropic' => [
+        // Asistente de ayuda con IA (Claude). Sin key, el asistente responde "no configurado".
+        'key' => env('ANTHROPIC_API_KEY'),
+        // claude-haiku-5-5 cuesta mucho menos y alcanza para preguntas de ayuda
+        'modelo' => env('ASISTENTE_MODELO', 'claude-opus-5-5'),
+        // Preguntas por usuario al día
+        'limite_diario' => (int) env('ASISTENTE_LIMITE_DIARIO', 40),
+    ],
 'google' => [
         // OAuth Client ID (tipo "Aplicación web") de Google Cloud; el mismo que VITE_GOOGLE_CLIENT_ID del frontend
         'client_id' => env('GOOGLE_CLIENT_ID'),

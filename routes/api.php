@@ -2391,5 +2391,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/property-managers/my-manager', [PropertyManagerController::class, 'getMyManager']);
     Route::get('/property-managers/my-status', [PropertyManagerController::class, 'getMyStatus']);
     Route::post('/property-managers/assign-properties', [PropertyManagerController::class, 'assignProperties']);
+
+    // Asistente de ayuda con IA para clientes (además del límite diario del controlador)
+    Route::post('/asistente/ayuda', [\App\Http\Controllers\AsistenteController::class, 'ayuda'])->middleware('throttle:10,1');
 });
 
