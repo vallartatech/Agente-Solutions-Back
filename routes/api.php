@@ -821,6 +821,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tecnicos/resumenes', [\App\Http\Controllers\PerfilProfesionalController::class, 'resumenes']);
     Route::get('/tecnicos/{userId}/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'publico']);
     // Calificación de clientes de la red (★ trato, ⏱ pago)
+    // Agente Market: trabajos terminados que el cliente aún no califica (estrellas: calidad; relojes: puntualidad)
+    Route::get('/red/calificaciones-tecnico/pendientes', function (\Illuminate\Http\Request $request) {
+        return response()->json(['success' => true, 'data' => \App\Services\TrabajoFinalizadoRed::pendientesDeCalificar($request->user())]);
+    });
     Route::get('/tecnico/calificaciones-cliente/pendientes', [\App\Http\Controllers\CalificacionClienteController::class, 'pendientes']);
     Route::post('/tecnico/calificaciones-cliente/{workOrderId}', [\App\Http\Controllers\CalificacionClienteController::class, 'guardar']);
     // Admin/Root: validar
@@ -1685,7 +1689,8 @@ Route::middleware('auth:sanctum')->group(function () {
                     'work_order_id' => $workOrder->id,
                     'technician_id' => $user->id,
                     'price' => 0,
-                    'message' => 'Chat iniciado por el técnico',
+                    // Sin texto: el mensaje es la propuesta del técnico y la escribe al cotizar
+                    'message' => null,
                     'status' => 'pending',
                     'chat_history' => []
                 ]);

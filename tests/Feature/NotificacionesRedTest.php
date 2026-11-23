@@ -231,6 +231,39 @@ class NotificacionesRedTest extends TestCase
         $this->nadieMas();
     }
 
+    public function test_trabajo_finalizado_avisa_al_cliente_y_al_tecnico_con_el_reporte(): void
+    {
+        $this->cotizarYAceptar();
+        Notification::fake();
+
+        Sanctum::actingAs($this->tecnico);
+        // Sin elementos: la orden se termina con sus evidencias de siempre
+        Schema::create('work_order_components', function (Blueprint $t) {
+            $t->id();
+            $t->unsignedBigInteger('work_order_id');
+        });
+        $this->putJson("/api/work-orders/{$this->orden}/status", ['status' => 'Listo'])->assertOk();
+
+        Notification::assertSentTo($this->cliente, \App\Notifications\MovimientoNotificacion::class,
+            fn ($n) => ($n->toArray($this->cliente)['url'] ?? null) === "/reportes-globales?trabajo={$this->orden}");
+        Notification::assertSentTo($this->tecnico, \App\Notifications\MovimientoNotificacion::class,
+            fn ($n) => ($n->toArray($this->tecnico)['url'] ?? null) === "/galeria-reportes/work_order-{$this->orden}");
+        $this->nadieMas();
+
+        // El cliente lo tiene pendiente de calificar hasta que califica al técnico
+        Sanctum::actingAs($this->cliente);
+        $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.work_order_id', $this->orden)
+            ->assertJsonPath('data.0.tecnico.id', $this->tecnico->id);
+
+        DB::table('technician_reviews')->insert([
+            'technician_id' => $this->tecnico->id, 'client_id' => $this->cliente->id, 'work_order_id' => $this->orden,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()->assertJsonCount(0, 'data');
+    }
+
     public function test_programar_visita_solo_avisa_al_cliente(): void
     {
         $this->cotizarYAceptar();

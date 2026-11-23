@@ -879,7 +879,8 @@ class PropertyController extends Controller
 
             // Si el técnico lo manda a aprobación (o lo marca "Listo" otro rol), notificamos al Admin
             $esAdmin = $user && in_array((int) $user->role_id, [0, 1]);
-            if (in_array($nuevoEstado, ['Por Aprobar', 'Listo']) && !in_array($oldStatus, ['Por Aprobar', 'Listo']) && !$esAdmin) {
+            // En Agente Market no: ahí el aviso va solo al cliente y al técnico (TrabajoFinalizadoRed)
+            if (in_array($nuevoEstado, ['Por Aprobar', 'Listo']) && !in_array($oldStatus, ['Por Aprobar', 'Listo']) && !$esAdmin && !$workOrder->publish_network) {
                 try {
                     $technicianName = $user ? ($user->first_name . ' ' . $user->last_name) : 'Un técnico';
 
@@ -895,6 +896,11 @@ class PropertyController extends Controller
                 } catch (\Exception $e) {
                     \Log::error("Error enviando notificación de trabajo finalizado: " . $e->getMessage());
                 }
+            }
+
+            // Agente Market: aviso "Trabajo finalizado" al cliente y al técnico (abre el reporte)
+            if ($nuevoEstado === 'Listo' && !in_array($oldStatus, ['Por Aprobar', 'Listo'], true)) {
+                \App\Services\TrabajoFinalizadoRed::avisar($workOrder);
             }
 
             // Un admin lo da por finalizado: avisamos a los técnicos asignados
