@@ -832,6 +832,20 @@ Route::middleware('auth:sanctum')->group(function () {
             'horas_auto' => \App\Services\TrabajoFinalizadoRed::HORAS_AUTO,
         ]);
     });
+    // Cláusula del Mercado (la app solo conecta, sin comisiones; pagos y problemas son entre cliente y técnico).
+    // Técnicos y clientes de la red (roles 4-9) la aceptan una vez; los demás no la necesitan.
+    Route::get('/mercado/terminos', function (\Illuminate\Http\Request $request) {
+        $user = $request->user();
+        $aplica = in_array((int) $user->role_id, [4, 5, 6, 7, 8, 9], true);
+        $fecha = \Illuminate\Support\Facades\DB::table('users')->where('id', $user->id)->value('terminos_mercado_at');
+        return response()->json(['aplica' => $aplica, 'aceptado' => !$aplica || (bool) $fecha, 'aceptado_at' => $fecha]);
+    });
+    Route::post('/mercado/terminos', function (\Illuminate\Http\Request $request) {
+        $request->validate(['acepto' => 'accepted'], ['acepto.accepted' => 'Debes marcar la casilla para continuar.']);
+        \Illuminate\Support\Facades\DB::table('users')->where('id', $request->user()->id)
+            ->whereNull('terminos_mercado_at')->update(['terminos_mercado_at' => now()]);
+        return response()->json(['success' => true, 'aceptado' => true]);
+    });
     // El cliente confirma que el reporte está correcto; responde con el trabajo para calificar al técnico
     Route::post('/red/trabajos/{workOrderId}/confirmar-reporte', function (\Illuminate\Http\Request $request, $workOrderId) {
         $orden = \App\Models\WorkOrder::withoutGlobalScopes()->find((int) $workOrderId);

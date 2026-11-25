@@ -24,6 +24,8 @@ class EnsureTecnicoValidado
         'login',
         'notifications/*',
         'tenants/my-membership-status',
+        // Aceptar la cláusula del Mercado (intermediario, sin comisiones) antes de todo
+        'mercado/terminos',
         // Sin cuadrilla: unirse a otra o pedir ser independiente (ver EnsureConCuadrilla)
         'cuadrilla/unirme',
         'cuadrilla/mi-estado',

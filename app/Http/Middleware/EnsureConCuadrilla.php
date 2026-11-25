@@ -18,6 +18,8 @@ class EnsureConCuadrilla
         'cuadrilla/unirme',
         'cuadrilla/mi-estado',
         'cuadrilla/solicitar-independiente',
+        // Aceptar la cláusula del Mercado (intermediario, sin comisiones) antes de todo
+        'mercado/terminos',
         'logout',
         'login',
         'notifications',
