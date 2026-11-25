@@ -280,6 +280,8 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
             // Mis técnicos: el cliente que bloqueó al técnico ya no le aparece en la red
             \App\Http\Controllers\MisTecnicosController::excluirBloqueados($query, $authUser?->id);
+            // Trabajos que le quitaron por no llegar: ya no los ve
+            \App\Services\HorarioMercado::excluirNoLlegados($query, $authUser?->id);
 
             // Solicitud dirigida a un técnico favorito: solo la ve ese técnico (y Root/Admin)
             if (!$authUser || !in_array((int) $authUser->role_id, [0, 1], true)) {
@@ -530,6 +532,15 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                 $job->equipo_en_sitio = \App\Services\Cuadrilla::equipoVisible($job);
             }
 
+            // Horario en la cotización: vencida aunque el Cron todavía no haya pasado
+            if (\App\Services\HorarioMercado::esFlujoNuevo($job)) {
+                foreach ($job->networkQuotes as $q) {
+                    $vence = \App\Services\HorarioMercado::venceEn($q);
+                    $q->setAttribute('vencida', \App\Services\HorarioMercado::estaVencida($q));
+                    $q->setAttribute('vence_en', $vence ? $vence->format('Y-m-d H:i:s') : null);
+                }
+            }
+
             return $job;
         });
 
@@ -616,6 +627,13 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
                     'arrival_status' => $order->arrival_status,
                     // El dueño confirmó la llegada: el técnico ya puede comenzar
                     'arrival_confirmed_at' => $order->arrival_confirmed_at ? \Carbon\Carbon::parse($order->arrival_confirmed_at)->format('Y-m-d H:i:s') : null,
+                    // Horario en la cotización (flujo nuevo): "Comenzar ruta" registrado y la re-programación única
+                    'flujo_horario' => (bool) ($order->flujo_horario ?? false),
+                    'ruta_iniciada_at' => $order->ruta_iniciada_at ?? null,
+                    'reprogramacion_propuesta' => $order->reprogramacion_propuesta ?? null,
+                    'reprogramacion_usada' => (bool) ($order->reprogramacion_usada ?? false),
+                    'fecha_deseada' => $order->fecha_deseada ?? null,
+                    'hora_deseada' => $order->hora_deseada ?? null,
                     'evidence_path' => $order->evidence_path,
                     'evidence_path_2' => $order->evidence_path_2,
                     'property' => $order->property,
@@ -691,6 +709,16 @@ Route::post('/interno/cuentas/purgar', function (\Illuminate\Http\Request $reque
     return response(\Illuminate\Support\Facades\Artisan::output(), $codigo === 0 ? 200 : 500)
         ->header('Content-Type', 'text/plain; charset=utf-8');
 })->middleware('throttle:5,1');
+
+// Agente Market: tareas del horario en la cotización (vencimientos, recordatorios, tardanza, "nadie cotizó").
+// Cada minuto (o cada 5) desde un Cron externo con X-Cron-Token = CRON_TOKEN. También corre con schedule:run.
+Route::post('/interno/mercado/tareas', function (\Illuminate\Http\Request $request) {
+    $esperado = (string) config('services.cron.token', '');
+    if ($esperado === '' || !hash_equals($esperado, (string) $request->header('X-Cron-Token'))) {
+        abort(404);
+    }
+    return response()->json(\App\Services\HorarioMercado::tareas());
+})->middleware('throttle:20,1');
 
 // Registro Público (Exclusivo para Clientes)
 Route::post('/registro-cliente', function (\Illuminate\Http\Request $request) {
@@ -1108,6 +1136,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/network-quotes/{id}/retirar', [\App\Http\Controllers\RedCancelacionController::class, 'retirarCotizacion'])->whereNumber('id');
     Route::post('/network-quotes/{id}/confirmar', [\App\Http\Controllers\RedCancelacionController::class, 'confirmarDisponibilidad'])->whereNumber('id');
     Route::post('/network-quotes/{id}/cancelar-confirmacion', [\App\Http\Controllers\RedCancelacionController::class, 'cancelarSolicitudConfirmacion'])->whereNumber('id');
+    // Red: horario en la cotización (en camino, el técnico no llegó, nadie cotizó a tiempo)
+    Route::post('/mercado-trabajos/{id}/en-camino', [\App\Http\Controllers\HorarioMercadoController::class, 'enCamino'])->whereNumber('id');
+    Route::post('/mercado-trabajos/{id}/seguir-esperando', [\App\Http\Controllers\HorarioMercadoController::class, 'seguirEsperando'])->whereNumber('id');
+    Route::post('/mercado-trabajos/{id}/tecnico-no-llego', [\App\Http\Controllers\HorarioMercadoController::class, 'tecnicoNoLlego'])->whereNumber('id');
+    Route::post('/mercado-trabajos/{id}/reprogramar-solicitud', [\App\Http\Controllers\HorarioMercadoController::class, 'reprogramarSolicitud'])->whereNumber('id');
     // Red: acceso a la propiedad (QR y/o código). Sube el dueño; el técnico lo ve al marcar "Llegué"
     Route::get('/red/trabajos/{id}/acceso', [\App\Http\Controllers\AccesoQrRedController::class, 'index'])->whereNumber('id');
     Route::get('/red/trabajos/{id}/acceso/{slot}/imagen', [\App\Http\Controllers\AccesoQrRedController::class, 'imagen'])->where(['id' => '[0-9]+', 'slot' => '[12]']);
@@ -1276,6 +1309,9 @@ Route::middleware('auth:sanctum')->group(function () {
             'tecnico_dirigido_id' => 'nullable|integer',
             // Habilidad que necesita el trabajo (vacía = "No estoy seguro")
             'specialty_id' => 'nullable|integer|exists:specialties,id',
+            // Mercado: día y hora que pide el cliente (sin hora = a cualquier hora; urgente = hoy)
+            'fecha_deseada' => 'nullable|date_format:Y-m-d',
+            'hora_deseada' => 'nullable|date_format:H:i',
             'evidence_1' => 'nullable|file|image|max:5120',
             'evidence_2' => 'nullable|file|image|max:5120'
         ], [
@@ -1371,6 +1407,17 @@ Route::middleware('auth:sanctum')->group(function () {
             if ($elementos) {
                 \App\Services\ElementosTrabajo::adjuntar($orden, $elementos, $request->user());
             }
+            // Mercado: flujo nuevo, el horario va en la cotización (App\Services\HorarioMercado)
+            if ($publishNetwork && \App\Services\HorarioMercado::listo()) {
+                $urgente = $orden->priority === 'Urgente';
+                $orden->forceFill([
+                    'flujo_horario' => true,
+                    'fecha_deseada' => $urgente || !$request->fecha_deseada
+                        ? \App\Services\HorarioMercado::ahora()->format('Y-m-d')
+                        : $request->fecha_deseada,
+                    'hora_deseada' => $urgente ? null : ($request->hora_deseada ?: null),
+                ])->save();
+            }
             return $orden;
         });
 
@@ -1441,6 +1488,10 @@ Route::middleware('auth:sanctum')->group(function () {
             if (!empty($quote->retirada_at)) {
                 return response()->json(['success' => false, 'message' => 'El técnico retiró esta cotización.'], 422);
             }
+            // Flujo nuevo: su horario ya está muy cerca o pasó; el técnico tiene que enviar uno nuevo
+            if (\App\Services\HorarioMercado::esFlujoNuevo($ordenDeLaCotizacion) && \App\Services\HorarioMercado::estaVencida($quote)) {
+                return response()->json(['success' => false, 'message' => 'Esta cotización venció porque su horario ya está muy cerca. Le avisamos al técnico para que envíe uno nuevo.'], 422);
+            }
             // Trabajo cancelado: primero se reenvía a la red
             if ($ordenDeLaCotizacion && str_starts_with((string) $ordenDeLaCotizacion->status, 'Cancelado')) {
                 return response()->json(['success' => false, 'message' => 'Este servicio está cancelado. Reenvíalo a la red para elegir una cotización.'], 422);
@@ -1467,7 +1518,10 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Rechazar Cotización de la Red
-    Route::post('/network-quotes/{id}/reject', function ($id) {
+    Route::post('/network-quotes/{id}/reject', function (\Illuminate\Http\Request $request, $id) {
+        // El cliente explica por qué la rechaza (el técnico lo ve para mejorar su oferta)
+        $datos = $request->validate(['motivo' => 'required|string|min:3|max:500']);
+
         $quote = \App\Models\NetworkQuote::withoutGlobalScopes()->find($id);
         if (!$quote) {
             return response()->json(['message' => 'Cotización no encontrada'], 404);
@@ -1480,6 +1534,9 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         $quote->status = 'rejected';
+        if (\Illuminate\Support\Facades\Schema::hasColumn('network_quotes', 'motivo_rechazo')) {
+            $quote->motivo_rechazo = trim($datos['motivo']);
+        }
         $quote->save();
 
         if ($quote->technician) {
@@ -1649,11 +1706,31 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $request->validate([
             'price' => 'required|numeric|min:0',
-            'message' => 'nullable|string'
+            'message' => 'nullable|string',
+            'horario' => 'nullable|string|max:25',
         ]);
 
         $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with('property.client')->findOrFail($id);
         $user = auth('sanctum')->user();
+
+        // Le quitaron este trabajo por no llegar: ya no puede volver a cotizarlo
+        if (\App\Services\HorarioMercado::tecnicoNoLlego((int) $workOrder->id, (int) $user->id)) {
+            return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+        }
+
+        // Flujo nuevo: la cotización lleva la hora exacta de la visita (máximo 2 cambios respecto a la del cliente)
+        $horarioCotizacion = null;
+        if (\App\Services\HorarioMercado::esFlujoNuevo($workOrder)) {
+            $anterior = \App\Models\NetworkQuote::withoutGlobalScopes()
+                ->where('work_order_id', $workOrder->id)->where('technician_id', $user->id)->first();
+            if ($anterior && $anterior->status === 'accepted') {
+                return response()->json(['success' => false, 'message' => 'Tu cotización ya fue aceptada.'], 422);
+            }
+            $horarioCotizacion = \App\Services\HorarioMercado::validarCotizacion($workOrder, $anterior, $request->input('horario'));
+            if (isset($horarioCotizacion['error'])) {
+                return response()->json(['success' => false, 'reason' => 'horario', 'message' => $horarioCotizacion['error']], 422);
+            }
+        }
 
         $quote = \App\Models\NetworkQuote::updateOrCreate(
             [
@@ -1669,6 +1746,17 @@ Route::middleware('auth:sanctum')->group(function () {
         // Cotizar (o recotizar) la deja vigente: ya no está retirada ni pide confirmación
         if (\App\Http\Controllers\RedCancelacionController::hayColumnasNuevas()) {
             $quote->forceFill(['cotizada_at' => now(), 'retirada_at' => null, 'confirmacion_pedida_at' => null])->save();
+        }
+        // La nueva cotización ya no arrastra el motivo del rechazo anterior
+        if (!empty($quote->motivo_rechazo)) {
+            $quote->forceFill(['motivo_rechazo' => null])->save();
+        }
+        if ($horarioCotizacion) {
+            $quote->forceFill([
+                'horario_propuesto' => \App\Services\HorarioMercado::guardar($horarioCotizacion['horario']),
+                'cambios_horario' => $horarioCotizacion['cambios'],
+                'vencida_at' => null,
+            ])->save();
         }
 
         // Notificar al dueño de la orden de trabajo (el Autónomo o Cliente)
@@ -1687,7 +1775,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return response()->json([
             'success' => true,
-            'message' => 'Cotización enviada con éxito',
+            'message' => $horarioCotizacion
+                ? 'Cotización enviada con el horario del ' . \App\Services\HorarioMercado::texto($horarioCotizacion['horario']) . '.'
+                    . (($restan = max(0, \App\Services\HorarioMercado::MAX_CAMBIOS - $horarioCotizacion['cambios'])) === 1
+                        ? ' Te queda 1 cambio de horario.'
+                        : " Te quedan {$restan} cambios de horario.")
+                : 'Cotización enviada con éxito',
             'quote' => $quote
         ]);
     })->middleware('auth:sanctum');
@@ -1709,7 +1802,8 @@ Route::middleware('auth:sanctum')->group(function () {
             if (\App\Http\Controllers\MisTecnicosController::estaBloqueado((int)$workOrder->id, (int)$user->id)) {
                 return response()->json(['success' => false, 'message' => 'Este cliente ya no recibe mensajes tuyos.'], 403);
             }
-            if (\App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
+            if (\App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)
+                || \App\Services\HorarioMercado::tecnicoNoLlego((int)$workOrder->id, (int)$user->id)) {
                 return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
             }
 
@@ -1757,6 +1851,10 @@ Route::middleware('auth:sanctum')->group(function () {
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes'])->findOrFail($id);
             if (\App\Http\Controllers\MisTecnicosController::dirigidaAOtro((int)$workOrder->id, (int)$user->id)) {
                 return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible para ti.'], 403);
+            }
+            // Flujo nuevo: el horario se acordó al aceptar; solo queda 1 re-programación que el cliente aprueba
+            if (\App\Services\HorarioMercado::esFlujoNuevo($workOrder)) {
+                return \App\Http\Controllers\HorarioMercadoController::proponerReprogramacion($request, $workOrder, $user);
             }
             // Buscar la cotización aceptada o del técnico para registrar en el chat
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
@@ -1895,6 +1993,11 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             $user = auth('sanctum')->user();
             $workOrder = \App\Models\WorkOrder::withoutGlobalScopes()->with(['property.client', 'networkQuotes.technician'])->findOrFail($id);
+
+            // Flujo nuevo: aprobar (confirm) o rechazar (reschedule) la re-programación del técnico
+            if (\App\Services\HorarioMercado::esFlujoNuevo($workOrder)) {
+                return \App\Http\Controllers\HorarioMercadoController::responderReprogramacion($request, $workOrder, $user);
+            }
 
             $quote = \App\Models\NetworkQuote::withoutGlobalScopes()
                 ->where('work_order_id', $workOrder->id)

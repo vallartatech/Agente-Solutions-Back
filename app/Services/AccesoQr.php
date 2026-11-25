@@ -161,6 +161,16 @@ class AccesoQr
         return self::eliminar($qrs, $motivo);
     }
 
+    /** Borra los QRs del trabajo aunque no esté cerrado (p. ej. le quitaron el trabajo al técnico). Un lote no se toca. */
+    public static function purgarTrabajo(Model $trabajo, string $motivo): int
+    {
+        if (self::esLote($trabajo)) {
+            return 0;
+        }
+        $qrs = self::query($trabajo)->get(self::META);
+        return $qrs->isEmpty() ? 0 : self::eliminar($qrs, $motivo);
+    }
+
     /** Borra los vencidos de un alcance. */
     public static function purgarVencidos(Model $trabajo): void
     {

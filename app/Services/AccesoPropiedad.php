@@ -154,7 +154,10 @@ class AccesoPropiedad
     public static function puedeUsarChatRed(?User $user, $networkQuote): bool
     {
         if (!$user || !$networkQuote) return false;
-        if ((int) $networkQuote->technician_id === (int) $user->id) return true;
+        if ((int) $networkQuote->technician_id === (int) $user->id) {
+            // Le quitaron el trabajo por no llegar: ya no entra al chat
+            return !\App\Services\HorarioMercado::tecnicoNoLlego((int) $networkQuote->work_order_id, (int) $user->id);
+        }
         $orden = \App\Models\WorkOrder::withoutGlobalScopes()->find($networkQuote->work_order_id);
         return \App\Http\Controllers\AjusteCotizacionController::puedeResponderPorDueno($user, $orden);
     }

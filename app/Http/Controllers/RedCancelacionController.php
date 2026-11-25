@@ -173,6 +173,9 @@ class RedCancelacionController extends Controller
         if (!$orden || $orden->status !== 'Por Hacer' || $orden->tecnico_id) {
             return response()->json(['success' => false, 'message' => 'Este trabajo ya no está disponible.'], 422);
         }
+        if (\App\Services\HorarioMercado::esFlujoNuevo($orden) && \App\Services\HorarioMercado::estaVencida($quote)) {
+            return response()->json(['success' => false, 'message' => 'El horario de tu cotización ya pasó o está muy cerca. Envía tu cotización con un nuevo horario.'], 422);
+        }
 
         self::asignarCotizacion($quote, $dueno);
 
@@ -259,6 +262,13 @@ class RedCancelacionController extends Controller
         $workOrder->status = 'Asignado';
         if ($hayColumnas) $workOrder->cancelled_by_client = false;
         $workOrder->save();
+
+        // Flujo nuevo: el horario de la cotización queda como la visita confirmada
+        try {
+            \App\Services\HorarioMercado::alAceptar($quote, $workOrder);
+        } catch (\Throwable $e) {
+            Log::error("Horario Mercado al aceptar la cotización {$quote->id}: " . $e->getMessage());
+        }
 
         // Solo puede haber una esperando confirmación: las demás dejan de esperar
         if ($hayColumnas) {
