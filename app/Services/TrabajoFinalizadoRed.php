@@ -107,7 +107,7 @@ class TrabajoFinalizadoRed
     }
 
     /** Propiedades del cliente: las suyas (y de su equipo) más las que le compartieron. */
-    private static function propiedadesDe(User $user): array
+    public static function propiedadesDe(User $user): array
     {
         $propias = DB::table('properties')
             ->whereIn('client_id', AccesoPropiedad::clienteIds($user))

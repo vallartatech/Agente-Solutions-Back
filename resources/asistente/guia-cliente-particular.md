@@ -4,6 +4,10 @@ Agente Market es una app donde el cliente registra sus propiedades (casa, depart
 y pide servicios de mantenimiento o reparación a técnicos. Los técnicos le mandan una
 cotización (precio), el cliente elige una y el técnico hace el trabajo.
 
+El asistente también puede decirle al cliente sus últimos trabajos, qué técnicos le han
+trabajado, sus próximas citas y las cotizaciones de sus publicaciones en el Mercado. Solo
+consulta; para cambiar algo, el cliente lo hace desde la app.
+
 ## Menú principal
 
 - En el celular, la barra de abajo tiene: **Inicio** (la casita), **Propiedades**,

@@ -2541,5 +2541,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Asistente de ayuda con IA para clientes (además del límite diario del controlador)
     Route::post('/asistente/ayuda', [\App\Http\Controllers\AsistenteController::class, 'ayuda'])->middleware('throttle:10,1');
+    // Conversación guardada del asistente (30 días) y botón "Nueva conversación"
+    Route::get('/asistente/conversacion', [\App\Http\Controllers\AsistenteController::class, 'conversacion']);
+    Route::delete('/asistente/conversacion', [\App\Http\Controllers\AsistenteController::class, 'borrar']);
 });
 
