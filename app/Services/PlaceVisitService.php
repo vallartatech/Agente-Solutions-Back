@@ -15,13 +15,13 @@ use Illuminate\Support\Facades\Notification;
  * y avisa (push + campanita) a quienes tienen acceso al mapa en vivo de su equipo.
  *
  * Para evitar avisos repetidos por los saltos del GPS:
- * - entra a 90 m o menos, pero solo "sale" al alejarse más de 150 m;
+ * - entra a 35 m o menos, pero solo "sale" al alejarse más de 150 m;
  * - si vuelve al mismo lugar antes de 30 min de haber salido, se retoma la visita sin avisar;
  * - las lecturas con precisión peor a 100 m no cuentan.
  */
 class PlaceVisitService
 {
-    public const RADIO_ENTRADA_M = 90;
+    public const RADIO_ENTRADA_M = 35;
     public const RADIO_SALIDA_M = 150;
     private const PRECISION_MAX_M = 100;
     private const REINGRESO_MIN = 30;
