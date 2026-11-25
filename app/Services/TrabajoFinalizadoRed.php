@@ -112,7 +112,16 @@ class TrabajoFinalizadoRed
         $propias = DB::table('properties')
             ->whereIn('client_id', AccesoPropiedad::clienteIds($user))
             ->pluck('id')->map(fn ($id) => (int) $id)->all();
-        return array_values(array_unique(array_merge($propias, AccesoPropiedad::compartidasCon($user))));
+
+        // Las de su empresa (tenant), igual que su lista del Mercado y el aviso "Reporte recibido" (duenoDeOrden).
+        // Sin esto, al cliente con la propiedad ligada por tenant le llegaba el aviso pero no el botón de confirmar.
+        $tenant = (int) ($user->tenant_id ?? 0);
+        $esCliente = !in_array((int) $user->role_id, [0, 1, 2], true) && !RolesRed::esCualquierTecnico($user->role_id);
+        $deSuEmpresa = ($esCliente && $tenant > 1)
+            ? DB::table('properties')->where('tenant_id', $tenant)->pluck('id')->map(fn ($id) => (int) $id)->all()
+            : [];
+
+        return array_values(array_unique(array_merge($propias, $deSuEmpresa, AccesoPropiedad::compartidasCon($user))));
     }
 
     /** La orden es de una propiedad del cliente (o compartida con él). */

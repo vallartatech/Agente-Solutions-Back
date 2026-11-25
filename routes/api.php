@@ -212,7 +212,11 @@ Route::get('/mercado-trabajos', function (\Illuminate\Http\Request $request) {
 
         // Si se pide filtrar solo los del usuario autónomo o cliente (role_id 3, 4, 5, 7) con only_mine
         if ($request->boolean('only_mine')) {
-            $query->whereIn('status', ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico', 'Cancelado_Cliente']);
+            // con_terminados=1 (Mercado del cliente): también los terminados, para ver el reporte, confirmarlo y la cotización final
+            $query->whereIn('status', array_merge(
+                ['Por Hacer', 'Asignado', 'En Progreso', 'Cancelado_Tecnico', 'Cancelado_Cliente'],
+                $request->boolean('con_terminados') ? ['Listo', 'Por Aprobar', 'Finalizado', 'Terminado', 'Completado'] : []
+            ));
             if ($authUser && !in_array((int)$authUser->role_id, [0, 1])) { // SuperAdmin / Root puede ver todos
                 $query->where(function ($q) use ($authUser) {
                     // Dueño por user_id o correo. Antes también por "nombre parecido" al primer nombre del usuario,
