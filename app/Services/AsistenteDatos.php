@@ -43,7 +43,7 @@ class AsistenteDatos
             ],
             [
                 'name' => 'trabajos',
-                'description' => 'Trabajos (órdenes de servicio) del usuario, del más reciente al más viejo: título, especialidad, estado, fechas y técnico. Úsala para "mi último trabajo", "qué me hicieron", "cómo va mi servicio".',
+                'description' => 'Trabajos (órdenes de servicio) del usuario, del más reciente al más viejo: título, especialidad, estado, fechas, técnico y precio (monto en pesos MXN). Úsala para "mi último trabajo", "qué me hicieron", "cuánto pagué", "cómo va mi servicio".',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -69,6 +69,17 @@ class AsistenteDatos
                 ],
             ],
             [
+                'name' => 'equipos',
+                'description' => 'Inventario registrado de la propiedad (levantamiento): equipos e instalaciones por área (aire acondicionado, gas, plomería, eléctrico, electrodomésticos...) con marca, modelo, capacidad, cantidad, estado, especificaciones, observaciones, mantenimiento y foto. Úsala cuando hable de un equipo o instalación de su propiedad ("mi clima", "el tubo del gas", "el boiler").',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'propiedad_id' => $propiedad,
+                        'buscar' => ['type' => 'string', 'description' => 'Palabras para filtrar (cualquiera coincide), con sinónimos: por ejemplo "aire clima minisplit" o "gas tanque estacionario tubería". Omítelo para ver todo.'],
+                    ],
+                ],
+            ],
+            [
                 'name' => 'mercado',
                 'description' => 'Publicaciones abiertas del usuario en el Mercado y sus cotizaciones vigentes: precio, horario propuesto y técnico.',
                 'inputSchema' => ['type' => 'object'],
@@ -86,6 +97,7 @@ class AsistenteDatos
             'trabajos' => self::trabajos($propiedades, $entrada),
             'tecnicos' => self::tecnicos($propiedades, $entrada),
             'citas' => self::citas($propiedades, $entrada),
+            'equipos' => self::equipos($propiedades, $entrada),
             'mercado' => self::mercado($propiedades),
             default => throw new \InvalidArgumentException("Herramienta desconocida: {$nombre}"),
         };
@@ -194,8 +206,9 @@ class AsistenteDatos
             : $consulta->limit($limite)->get();
 
         $aceptados = self::tecnicosAceptados($filas->pluck('id')->all());
+        $precios = self::precios($filas->pluck('id')->all());
 
-        return ['trabajos' => $filas->map(function ($o) use ($aceptados) {
+        return ['trabajos' => $filas->map(function ($o) use ($aceptados, $precios) {
             $tec = self::tecnico($o->t_nombre, $o->t_apellido, $o->t_rol);
             if (!$tec && isset($aceptados[$o->id])) {
                 $a = $aceptados[$o->id];
@@ -211,8 +224,51 @@ class AsistenteDatos
                 'programado' => self::fecha($o->scheduled_at, true),
                 'terminado' => self::fechaApp($o->client_confirmed_at ?: $o->closed_at),
                 'tecnico' => $tec,
+                'precio' => $precios[$o->id] ?? null,
             ];
         })->values()->all()];
+    }
+
+    /**
+     * Precio de cada orden (en pesos), sin datos de pago (tarjeta, MercadoPago):
+     * - Mercado: cotización aceptada (su price ya trae el ajuste aceptado, si hubo).
+     * - Solutions: la cotización más reciente que no fue reemplazada, con su estado.
+     */
+    private static function precios(array $ordenIds): array
+    {
+        if (!$ordenIds) return [];
+        $precios = [];
+
+        $mercado = DB::table('network_quotes')->whereIn('work_order_id', $ordenIds)
+            ->where('status', 'accepted')->get(['id', 'work_order_id', 'price']);
+        $ajustadas = $mercado->isEmpty() ? [] : DB::table('network_quote_ajustes')
+            ->whereIn('network_quote_id', $mercado->pluck('id')->all())
+            ->where('status', 'accepted')->pluck('network_quote_id')->map(fn ($id) => (int) $id)->all();
+        foreach ($mercado as $q) {
+            if ($q->price === null) continue;
+            $precios[$q->work_order_id] = [
+                'monto' => (float) $q->price,
+                'tipo' => 'precio acordado con el técnico en el Mercado',
+                'ajustado' => in_array((int) $q->id, $ajustadas, true),
+            ];
+        }
+
+        $cotizaciones = DB::table('quotes')->whereIn('work_order_id', $ordenIds)
+            ->where('status', '!=', 'Recotizada')
+            ->orderByDesc('created_at')->orderByDesc('id')
+            ->get(['work_order_id', 'estimated_amount', 'status', 'concept']);
+        foreach ($cotizaciones as $q) {
+            if (isset($precios[$q->work_order_id]) || $q->estimated_amount === null) continue;
+            $precios[$q->work_order_id] = [
+                'monto' => (float) $q->estimated_amount,
+                'tipo' => 'cotización',
+                'concepto' => $q->concept,
+                'estado' => $q->status,
+                'pagada' => str_starts_with((string) $q->status, 'Pagado'),
+            ];
+        }
+
+        return $precios;
     }
 
     private static function tecnicos(array $propiedades, array $entrada): array
@@ -304,6 +360,103 @@ class AsistenteDatos
                 'tecnico' => $tec,
             ];
         })->values()->all()];
+    }
+
+    /** Fotos de Cloudinary (las únicas que el chat puede mostrar). */
+    public static function esFoto(?string $url): bool
+    {
+        return is_string($url) && str_starts_with($url, 'https://res.cloudinary.com/');
+    }
+
+    private static function equipos(array $propiedades, array $entrada): array
+    {
+        $propiedades = self::filtrarPropiedad($propiedades, $entrada);
+        if ($propiedades === null) return ['error' => 'Esa propiedad no es del usuario. Usa mis_propiedades para ver sus ids.'];
+        if (!$propiedades) return ['equipos' => []];
+
+        // Palabras de búsqueda (la intercalación de MySQL ignora acentos y mayúsculas)
+        $palabras = array_slice(array_values(array_filter(
+            preg_split('/[\s,]+/u', mb_substr(trim((string) ($entrada['buscar'] ?? '')), 0, 120)),
+            fn ($p) => mb_strlen($p) >= 2
+        )), 0, 8);
+        $coincide = function ($q, array $columnas) use ($palabras) {
+            if (!$palabras) return;
+            $q->where(function ($w) use ($palabras, $columnas) {
+                foreach ($palabras as $p) {
+                    foreach ($columnas as $c) {
+                        $w->orWhere($c, 'like', '%' . addcslashes($p, '%_\\') . '%');
+                    }
+                }
+            });
+        };
+
+        $areas = DB::table('property_areas')->whereIn('property_id', $propiedades)
+            ->get(['id', 'parent_id', 'name', 'property_id'])->keyBy('id');
+        $nombreArea = function ($id) use ($areas) {
+            $a = $areas[$id] ?? null;
+            if (!$a) return null;
+            $padre = $a->parent_id ? ($areas[$a->parent_id]->name ?? null) : null;
+            return $padre ? "{$padre} › {$a->name}" : $a->name;
+        };
+        $nombresProp = DB::table('properties')->whereIn('id', $propiedades)->pluck('property_name', 'id');
+
+        $consulta = DB::table('property_components as c')
+            ->join('property_areas as a', 'a.id', '=', 'c.property_area_id')
+            ->whereIn('a.property_id', $propiedades);
+        $coincide($consulta, ['c.category', 'c.sub_category', 'c.brand', 'c.model_or_color', 'c.observations', 'a.name']);
+        $componentes = $consulta->orderBy('a.property_id')->orderBy('a.name')->limit(60)->get([
+            'c.id', 'c.property_area_id', 'a.property_id', 'c.category', 'c.sub_category', 'c.brand', 'c.model_or_color',
+            'c.quantity', 'c.unit', 'c.status', 'c.specs', 'c.observations', 'c.image_path',
+        ]);
+
+        $camposMant = ['property_id', 'property_component_id', 'tipo', 'detalle', 'cantidad', 'frecuencia_meses', 'ultimo_mantenimiento', 'foto_equipo_url'];
+        // Mantenimiento de los componentes encontrados (aunque su tipo no coincida con la búsqueda)
+        $mantPorComponente = $componentes->isEmpty() ? collect() : DB::table('maintenance_equipment')
+            ->whereIn('property_id', $propiedades)->where('activo', 1)
+            ->whereIn('property_component_id', $componentes->pluck('id')->all())
+            ->get($camposMant)->keyBy('property_component_id');
+        // Equipos dados de alta solo en Mantenimiento (sin componente del levantamiento)
+        $mantenimiento = DB::table('maintenance_equipment')->whereIn('property_id', $propiedades)
+            ->where('activo', 1)->whereNull('property_component_id');
+        $coincide($mantenimiento, ['tipo', 'detalle']);
+        $mantenimiento = $mantenimiento->limit(30)->get($camposMant);
+
+        $texto = fn ($v) => ($v = trim((string) $v)) === '' ? null : $v;
+        $infoMant = fn ($m) => $m ? [
+            'cada_meses' => $m->frecuencia_meses ? (int) $m->frecuencia_meses : null,
+            'ultimo' => self::fechaApp($m->ultimo_mantenimiento),
+        ] : null;
+
+        $lista = $componentes->map(function ($c) use ($nombreArea, $nombresProp, $mantPorComponente, $texto, $infoMant) {
+            $specs = is_string($c->specs) ? json_decode($c->specs, true) : null;
+            return array_filter([
+                'propiedad' => $nombresProp[$c->property_id] ?? null,
+                'area' => $nombreArea($c->property_area_id),
+                'categoria' => $texto($c->category),
+                'tipo' => $texto($c->sub_category),
+                'marca' => $texto($c->brand),
+                'modelo' => $texto($c->model_or_color),
+                'cantidad' => $c->quantity !== null ? rtrim(rtrim((string) $c->quantity, '0'), '.') . ($c->unit ? " {$c->unit}" : '') : null,
+                'estado' => $texto($c->status),
+                'especificaciones' => $specs ?: null,
+                'observaciones' => $texto($c->observations),
+                'mantenimiento' => $infoMant($mantPorComponente[$c->id] ?? null),
+                'foto' => self::esFoto($c->image_path) ? $c->image_path : null,
+            ], fn ($v) => $v !== null);
+        })->values()->all();
+
+        foreach ($mantenimiento as $m) {
+            $lista[] = array_filter([
+                'propiedad' => $nombresProp[$m->property_id] ?? null,
+                'tipo' => $texto($m->tipo),
+                'detalle' => $texto($m->detalle),
+                'cantidad' => $m->cantidad ? (string) $m->cantidad : null,
+                'mantenimiento' => $infoMant($m),
+                'foto' => self::esFoto($m->foto_equipo_url) ? $m->foto_equipo_url : null,
+            ], fn ($v) => $v !== null);
+        }
+
+        return ['equipos' => $lista, 'nota' => $lista ? null : 'No hay equipos registrados que coincidan. Puede que la propiedad no tenga levantamiento.'];
     }
 
     private static function mercado(array $propiedades): array
