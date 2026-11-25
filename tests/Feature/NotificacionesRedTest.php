@@ -120,6 +120,9 @@ class NotificacionesRedTest extends TestCase
             $t->unsignedBigInteger('cancelled_technician_id')->nullable();
             $t->text('cancellation_reason')->nullable();
             $t->timestamp('cancelled_at')->nullable();
+            $t->timestamp('report_sent_at')->nullable();
+            $t->timestamp('client_confirmed_at')->nullable();
+            $t->unsignedBigInteger('client_confirmed_by')->nullable();
             $t->timestamps();
         });
         Schema::create('services', function (Blueprint $t) {
@@ -250,9 +253,29 @@ class NotificacionesRedTest extends TestCase
             fn ($n) => ($n->toArray($this->tecnico)['url'] ?? null) === "/galeria-reportes/work_order-{$this->orden}");
         $this->nadieMas();
 
-        // El cliente lo tiene pendiente de calificar hasta que califica al técnico
+        // Primero el cliente confirma el reporte; antes no se le pide calificar
         Sanctum::actingAs($this->cliente);
         $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()
+            ->assertJsonCount(0, 'data')
+            ->assertJsonCount(1, 'por_confirmar')
+            ->assertJsonPath('por_confirmar.0.work_order_id', $this->orden);
+
+        // Otro cliente no puede confirmarlo
+        Sanctum::actingAs($this->otroCliente);
+        $this->postJson("/api/red/trabajos/{$this->orden}/confirmar-reporte")->assertForbidden();
+
+        Notification::fake();
+        Sanctum::actingAs($this->cliente);
+        $this->postJson("/api/red/trabajos/{$this->orden}/confirmar-reporte")->assertOk()
+            ->assertJsonPath('data.tecnico.id', $this->tecnico->id);
+        $this->assertSame($this->cliente->id, (int) DB::table('work_orders')->where('id', $this->orden)->value('client_confirmed_by'));
+        Notification::assertSentTo($this->tecnico, \App\Notifications\MovimientoNotificacion::class,
+            fn ($n) => ($n->toArray($this->tecnico)['alert_type'] ?? null) === 'reporte_confirmado');
+        $this->nadieMas();
+
+        // Confirmado: ya lo tiene pendiente de calificar hasta que califica al técnico
+        $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()
+            ->assertJsonCount(0, 'por_confirmar')
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.work_order_id', $this->orden)
             ->assertJsonPath('data.0.tecnico.id', $this->tecnico->id);
@@ -262,6 +285,35 @@ class NotificacionesRedTest extends TestCase
             'created_at' => now(), 'updated_at' => now(),
         ]);
         $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public function test_el_reporte_se_confirma_solo_a_las_48_horas(): void
+    {
+        $this->cotizarYAceptar();
+        Schema::create('work_order_components', function (Blueprint $t) {
+            $t->id();
+            $t->unsignedBigInteger('work_order_id');
+        });
+        Sanctum::actingAs($this->tecnico);
+        $this->putJson("/api/work-orders/{$this->orden}/status", ['status' => 'Listo'])->assertOk();
+
+        // A las 47 horas sigue esperando la confirmación del cliente
+        $this->travel(47)->hours();
+        Sanctum::actingAs($this->cliente);
+        $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()
+            ->assertJsonCount(1, 'por_confirmar')->assertJsonCount(0, 'data');
+
+        // Pasadas las 48 horas se confirma sola (sin quién) y ya toca calificar
+        Notification::fake();
+        $this->travel(2)->hours();
+        $this->getJson('/api/red/calificaciones-tecnico/pendientes')->assertOk()
+            ->assertJsonCount(0, 'por_confirmar')->assertJsonCount(1, 'data');
+        $orden = DB::table('work_orders')->where('id', $this->orden)->first();
+        $this->assertNotNull($orden->client_confirmed_at);
+        $this->assertNull($orden->client_confirmed_by);
+        Notification::assertSentTo($this->tecnico, \App\Notifications\MovimientoNotificacion::class,
+            fn ($n) => ($n->toArray($this->tecnico)['alert_type'] ?? null) === 'reporte_confirmado');
+        $this->nadieMas();
     }
 
     public function test_programar_visita_solo_avisa_al_cliente(): void

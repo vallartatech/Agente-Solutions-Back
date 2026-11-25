@@ -822,8 +822,27 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tecnicos/{userId}/perfil-profesional', [\App\Http\Controllers\PerfilProfesionalController::class, 'publico']);
     // Calificación de clientes de la red (★ trato, ⏱ pago)
     // Agente Market: trabajos terminados que el cliente aún no califica (estrellas: calidad; relojes: puntualidad)
+    // data: confirmados por calificar; por_confirmar: reportes enviados que el cliente aún no confirma (48 h y se confirman solos)
     Route::get('/red/calificaciones-tecnico/pendientes', function (\Illuminate\Http\Request $request) {
-        return response()->json(['success' => true, 'data' => \App\Services\TrabajoFinalizadoRed::pendientesDeCalificar($request->user())]);
+        $pendientes = \App\Services\TrabajoFinalizadoRed::pendientes($request->user());
+        return response()->json([
+            'success' => true,
+            'data' => $pendientes['calificar'],
+            'por_confirmar' => $pendientes['por_confirmar'],
+            'horas_auto' => \App\Services\TrabajoFinalizadoRed::HORAS_AUTO,
+        ]);
+    });
+    // El cliente confirma que el reporte está correcto; responde con el trabajo para calificar al técnico
+    Route::post('/red/trabajos/{workOrderId}/confirmar-reporte', function (\Illuminate\Http\Request $request, $workOrderId) {
+        $orden = \App\Models\WorkOrder::withoutGlobalScopes()->find((int) $workOrderId);
+        if (!$orden || !$orden->publish_network || !\App\Services\TrabajoFinalizadoRed::esDelCliente($request->user(), $orden)) {
+            return response()->json(['error' => 'No tienes acceso a este trabajo.'], 403);
+        }
+        if (!$orden->report_sent_at) {
+            return response()->json(['error' => 'El técnico aún no envía el reporte.'], 422);
+        }
+        \App\Services\TrabajoFinalizadoRed::confirmar($orden, $request->user());
+        return response()->json(['success' => true, 'data' => \App\Services\TrabajoFinalizadoRed::resumen($orden->fresh())]);
     });
     Route::get('/tecnico/calificaciones-cliente/pendientes', [\App\Http\Controllers\CalificacionClienteController::class, 'pendientes']);
     Route::post('/tecnico/calificaciones-cliente/{workOrderId}', [\App\Http\Controllers\CalificacionClienteController::class, 'guardar']);
@@ -1278,8 +1297,10 @@ Route::middleware('auth:sanctum')->group(function () {
             }
         }
 
-        // 2. Procesar las imágenes con Cloudinary
-        $cloudinary = new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'));
+        // 2. Procesar las imágenes con Cloudinary (solo se conecta si el cliente adjuntó fotos)
+        $cloudinary = ($request->hasFile('evidence_1') || $request->hasFile('evidence_2'))
+            ? new Cloudinary(env('CLOUDINARY_URL') ?: config('cloudinary.cloud_url'))
+            : null;
 
         $path1 = null;
         if ($request->hasFile('evidence_1')) {

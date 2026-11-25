@@ -86,6 +86,15 @@ class PerfilProfesionalTest extends TestCase
         $this->existente = User::forceCreate(['role_id' => 6, 'first_name' => 'Viejo', 'email' => 'viejo@test.mx']);
 
         (require database_path('migrations/2026_11_06_100000_create_technician_professional_profiles.php'))->up();
+        // Lo que se agregó después al perfil: fecha de nacimiento, comprobante, antecedentes y consentimiento
+        (require database_path('migrations/2026_11_09_110000_asegurar_birth_date_en_users.php'))->up();
+        (require database_path('migrations/2026_11_09_120000_add_documentos_to_technician_profiles.php'))->up();
+        // (el consentimiento lo agrega 2026_11_10_100000_add_account_deletion_fields, que además toca columnas de users)
+        Schema::table('technician_profiles', function (Blueprint $t) {
+            $t->timestamp('consentimiento_datos_at')->nullable();
+        });
+        // Catálogo fijo de habilidades: "Electricidad" existe; "Paneles solares" queda como sugerencia
+        DB::table('specialties')->insert(['name' => 'Electricidad', 'created_at' => now(), 'updated_at' => now()]);
 
         Notification::fake();
         Storage::fake('local');
@@ -103,6 +112,8 @@ class PerfilProfesionalTest extends TestCase
     private function completarPerfil(User $tecnico): void
     {
         Sanctum::actingAs($tecnico);
+        // RFC, CLABE e INE solo se guardan con el consentimiento de datos aceptado
+        $this->postJson('/api/tecnico/perfil-profesional/consentimiento', ['acepto' => true])->assertOk();
         $this->postJson('/api/tecnico/perfil-profesional', [
             'emite_factura' => true,
             'rfc' => 'pepj800101ab1',
@@ -123,6 +134,13 @@ class PerfilProfesionalTest extends TestCase
             'frente' => UploadedFile::fake()->image('frente.jpg'),
             'reverso' => UploadedFile::fake()->image('reverso.jpg'),
         ], ['Accept' => 'application/json'])->assertOk();
+        foreach (['comprobante_domicilio', 'antecedentes_penales'] as $tipo) {
+            $this->post("/api/tecnico/perfil-profesional/documento/{$tipo}", [
+                'archivo' => UploadedFile::fake()->image("{$tipo}.jpg"),
+            ], ['Accept' => 'application/json'])->assertOk();
+        }
+        // La foto se sube a Cloudinary: en la prueba se pone directo, igual que la fecha de nacimiento
+        $tecnico->forceFill(['profile_picture' => 'https://res.cloudinary.com/demo/foto.jpg', 'birth_date' => '1990-05-10'])->save();
     }
 
     // ── Reglas ──

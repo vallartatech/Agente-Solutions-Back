@@ -83,6 +83,13 @@ class ElementosYMantenimientoTest extends TestCase
             $t->string('sub_category');
             $t->string('brand')->nullable();
             $t->string('model_or_color')->nullable();
+            // Datos del levantamiento que muestra el detalle de la orden
+            $t->string('image_path')->nullable();
+            $t->string('image_path_secondary')->nullable();
+            $t->string('serial_number')->nullable();
+            $t->string('status')->nullable();
+            $t->integer('quantity')->nullable();
+            $t->text('observations')->nullable();
             $t->timestamps();
         });
         Schema::create('work_orders', function (Blueprint $t) {
@@ -99,6 +106,7 @@ class ElementosYMantenimientoTest extends TestCase
             $t->string('status')->default('Por Hacer');
             $t->string('priority')->nullable();
             $t->unsignedBigInteger('tecnico_id')->nullable();
+            $t->unsignedBigInteger('tecnico_dirigido_id')->nullable();
             $t->timestamp('scheduled_at')->nullable();
             $t->boolean('publish_network')->default(0);
             $t->string('ticket_status')->nullable();
