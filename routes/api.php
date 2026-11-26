@@ -1142,6 +1142,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/network-quotes/{id}/cancelar-confirmacion', [\App\Http\Controllers\RedCancelacionController::class, 'cancelarSolicitudConfirmacion'])->whereNumber('id');
     // Red: horario en la cotización (en camino, el técnico no llegó, nadie cotizó a tiempo)
     Route::post('/mercado-trabajos/{id}/en-camino', [\App\Http\Controllers\HorarioMercadoController::class, 'enCamino'])->whereNumber('id');
+    // Red: el cliente ve en su mapa al técnico que va en camino (de "Iniciar ruta" a "Llegué al lugar")
+    Route::post('/mercado-trabajos/{id}/ubicacion', [\App\Http\Controllers\SeguimientoTecnicoController::class, 'guardar'])->whereNumber('id')->middleware('throttle:30,1');
+    Route::delete('/mercado-trabajos/{id}/ubicacion', [\App\Http\Controllers\SeguimientoTecnicoController::class, 'detener'])->whereNumber('id');
+    Route::get('/seguimiento-tecnicos', [\App\Http\Controllers\SeguimientoTecnicoController::class, 'enCaminoDelCliente']);
     Route::post('/mercado-trabajos/{id}/seguir-esperando', [\App\Http\Controllers\HorarioMercadoController::class, 'seguirEsperando'])->whereNumber('id');
     Route::post('/mercado-trabajos/{id}/tecnico-no-llego', [\App\Http\Controllers\HorarioMercadoController::class, 'tecnicoNoLlego'])->whereNumber('id');
     Route::post('/mercado-trabajos/{id}/reprogramar-solicitud', [\App\Http\Controllers\HorarioMercadoController::class, 'reprogramarSolicitud'])->whereNumber('id');
