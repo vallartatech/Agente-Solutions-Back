@@ -39,11 +39,19 @@ class OneSignalPush
             'headings' => ['en' => $title, 'es' => $title],
             'contents' => ['en' => $body, 'es' => $body],
         ];
+
+        // Íconos de la notificación web (viven en public/ del frontend):
+        // badge = silueta blanca de la barra de estado; icon = logo a color a la derecha
+        $frontend = rtrim(config('services.onesignal.frontend_url'), '/');
+        $payload['chrome_web_badge'] = $frontend . '/push-badge.png';
+        $payload['chrome_web_icon'] = $frontend . '/Logo_192.png';
+        $payload['firefox_icon'] = $frontend . '/Logo_192.png';
+
         if ($path) {
             // Rutas del frontend ("/vista-cotizaciones?filtro=Por Pagar") o URL completas
             $url = preg_match('#^https?://#i', $path)
                 ? $path
-                : rtrim(config('services.onesignal.frontend_url'), '/') . '/' . ltrim($path, '/');
+                : $frontend . '/' . ltrim($path, '/');
             $payload['url'] = str_replace(' ', '%20', $url);
         }
         if (!empty($data)) {
