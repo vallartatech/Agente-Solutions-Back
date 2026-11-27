@@ -865,17 +865,23 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     });
     // Cláusula del Mercado (la app solo conecta, sin comisiones; pagos y problemas son entre cliente y técnico).
-    // Técnicos y clientes de la red (roles 4-9) la aceptan una vez; los demás no la necesitan.
-    Route::get('/mercado/terminos', function (\Illuminate\Http\Request $request) {
+    // Técnicos y clientes de la red (roles 4-9) la aceptan; los demás no la necesitan.
+    // Cuando cambia el texto se sube $terminosVigente (y la versión de la clave en TerminosMercado.jsx):
+    // quien la aceptó antes de esa fecha la vuelve a aceptar.
+    // (hora de Mérida, igual que terminos_mercado_at; 2026-11-26: nuevo texto de responsabilidad)
+    $terminosVigente = '2026-11-26 22:15:00';
+    Route::get('/mercado/terminos', function (\Illuminate\Http\Request $request) use ($terminosVigente) {
         $user = $request->user();
         $aplica = in_array((int) $user->role_id, [4, 5, 6, 7, 8, 9], true);
         $fecha = \Illuminate\Support\Facades\DB::table('users')->where('id', $user->id)->value('terminos_mercado_at');
-        return response()->json(['aplica' => $aplica, 'aceptado' => !$aplica || (bool) $fecha, 'aceptado_at' => $fecha]);
+        $vigente = $fecha && (string) $fecha >= $terminosVigente;
+        return response()->json(['aplica' => $aplica, 'aceptado' => !$aplica || $vigente, 'aceptado_at' => $vigente ? $fecha : null]);
     });
-    Route::post('/mercado/terminos', function (\Illuminate\Http\Request $request) {
+    Route::post('/mercado/terminos', function (\Illuminate\Http\Request $request) use ($terminosVigente) {
         $request->validate(['acepto' => 'accepted'], ['acepto.accepted' => 'Debes marcar la casilla para continuar.']);
         \Illuminate\Support\Facades\DB::table('users')->where('id', $request->user()->id)
-            ->whereNull('terminos_mercado_at')->update(['terminos_mercado_at' => now()]);
+            ->where(fn ($q) => $q->whereNull('terminos_mercado_at')->orWhere('terminos_mercado_at', '<', $terminosVigente))
+            ->update(['terminos_mercado_at' => now()]);
         return response()->json(['success' => true, 'aceptado' => true]);
     });
     // El cliente confirma que el reporte está correcto; responde con el trabajo para calificar al técnico
