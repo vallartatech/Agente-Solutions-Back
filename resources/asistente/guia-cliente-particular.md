@@ -117,10 +117,32 @@ abre la misma ventana.
 - En el celular está en la barra de abajo (**Tablero**); en computadora, en el botón
   **Tablero global** de Inicio. Muestra juntas todas sus propiedades, sus trabajos y fechas.
 
+## Trabajos recurrentes (mantenimiento periódico)
+
+- Por ahora la app **no programa trabajos que se repitan solos** para el cliente particular.
+- Para un mantenimiento cada cierto tiempo (por ejemplo, limpiar el aire acondicionado cada
+  6 meses), pida un servicio cada vez con **SOLICITAR SERVICIO**, tipo **Mantenimiento
+  Preventivo**, y elija **Programar** para escoger la fecha y la hora.
+- Consejo: mándelo **A MIS TÉCNICOS** para que lo atienda el mismo técnico de confianza.
+- Si el equipo tiene registrado cada cuántos meses le toca mantenimiento, el asistente se lo
+  puede decir, junto con la fecha del último.
+
+## Gastos
+
+- El asistente puede sumar cuánto ha gastado en trabajos, en total, por propiedad o por tipo de
+  servicio (por ejemplo, solo mantenimiento) y en un periodo. La suma usa los precios acordados
+  con los técnicos o cotizados, no los recibos de pago.
+
+## Contactar a soporte
+
+Soporte de Agente Solutions:
+- Correo: **contacto@agentesolutions.com.mx**
+- Teléfono: **999 242 6030**
+
 ## Lo que esta guía no cubre
 
 - Pagos, cobros, facturas, precios del plan o de espacios extra.
 - Problemas con una cuenta, contraseña o un técnico en específico.
 - Cualquier cosa que no aparezca en esta guía.
 
-Para estos casos, la persona debe contactar a soporte de Agente Solutions.
+Para estos casos, la persona debe contactar a soporte de Agente Solutions (correo y teléfono arriba).

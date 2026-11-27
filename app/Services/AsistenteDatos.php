@@ -69,6 +69,19 @@ class AsistenteDatos
                 ],
             ],
             [
+                'name' => 'gastos',
+                'description' => 'Suma lo que el usuario ha gastado en trabajos (precio acordado o cotizado), en total, por propiedad y por tipo de servicio (Mantenimiento, Problema, Instalación, Inspección, SOS). Úsala para "cuánto he gastado", "cuánto llevo en mantenimiento este año".',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'propiedad_id' => $propiedad,
+                        'tipo' => ['type' => 'string', 'enum' => ['Mantenimiento', 'Problema', 'Instalacion', 'Inspeccion', 'SOS'], 'description' => 'Omítelo para todos los tipos'],
+                        'desde' => ['type' => 'string', 'description' => 'Fecha inicial YYYY-MM-DD (por fecha en que se pidió el trabajo)'],
+                        'hasta' => ['type' => 'string', 'description' => 'Fecha final YYYY-MM-DD'],
+                    ],
+                ],
+            ],
+            [
                 'name' => 'equipos',
                 'description' => 'Inventario registrado de la propiedad (levantamiento): equipos e instalaciones por área (aire acondicionado, gas, plomería, eléctrico, electrodomésticos...) con marca, modelo, capacidad, cantidad, estado, especificaciones, observaciones, mantenimiento y foto. Úsala cuando hable de un equipo o instalación de su propiedad ("mi clima", "el tubo del gas", "el boiler").',
                 'inputSchema' => [
@@ -98,6 +111,7 @@ class AsistenteDatos
             'tecnicos' => self::tecnicos($propiedades, $entrada),
             'citas' => self::citas($propiedades, $entrada),
             'equipos' => self::equipos($propiedades, $entrada),
+            'gastos' => self::gastos($propiedades, $entrada),
             'mercado' => self::mercado($propiedades),
             default => throw new \InvalidArgumentException("Herramienta desconocida: {$nombre}"),
         };
@@ -360,6 +374,66 @@ class AsistenteDatos
                 'tecnico' => $tec,
             ];
         })->values()->all()];
+    }
+
+    /**
+     * Gasto en trabajos: "gastado" = terminados con precio; "comprometido" = en curso con precio
+     * acordado. Los cancelados no cuentan. Sin datos de tarjetas ni MercadoPago.
+     */
+    private static function gastos(array $propiedades, array $entrada): array
+    {
+        $propiedades = self::filtrarPropiedad($propiedades, $entrada);
+        if ($propiedades === null) return ['error' => 'Esa propiedad no es del usuario. Usa mis_propiedades para ver sus ids.'];
+        if (!$propiedades) return ['total_gastado' => 0, 'trabajos_con_precio' => 0];
+
+        $tipos = ['Mantenimiento', 'Problema', 'Instalacion', 'Inspeccion', 'SOS'];
+        $fecha = fn ($v) => is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) ? $v : null;
+
+        $consulta = DB::table('work_orders as wo')
+            ->leftJoin('properties as p', 'p.id', '=', 'wo.property_id')
+            ->whereIn('wo.property_id', $propiedades);
+        if (in_array($entrada['tipo'] ?? null, $tipos, true)) {
+            $consulta->where('wo.type', $entrada['tipo']);
+        }
+        if ($d = $fecha($entrada['desde'] ?? null)) $consulta->where('wo.created_at', '>=', "{$d} 00:00:00");
+        if ($h = $fecha($entrada['hasta'] ?? null)) $consulta->where('wo.created_at', '<=', "{$h} 23:59:59");
+        $ordenes = $consulta->get(['wo.id', 'wo.type', 'wo.status', 'p.property_name']);
+
+        $precios = self::precios($ordenes->pluck('id')->all());
+        $terminado = fn ($s) => in_array(mb_strtolower((string) $s), array_map('mb_strtolower', CalificacionCliente::ESTADOS_TERMINADO), true);
+        $cancelado = fn ($s) => str_starts_with(mb_strtolower((string) $s), 'cancelad') || mb_strtolower((string) $s) === 'rechazado';
+
+        $gastado = 0.0; $comprometido = 0.0; $conPrecio = 0; $sinPrecio = 0;
+        $porPropiedad = []; $porTipo = [];
+        foreach ($ordenes as $o) {
+            if ($cancelado($o->status)) continue;
+            $monto = $precios[$o->id]['monto'] ?? null;
+            if ($monto === null) {
+                if ($terminado($o->status)) $sinPrecio++;
+                continue;
+            }
+            if ($terminado($o->status)) {
+                $gastado += $monto;
+                $conPrecio++;
+                $porPropiedad[$o->property_name ?? 'Sin nombre'] = ($porPropiedad[$o->property_name ?? 'Sin nombre'] ?? 0) + $monto;
+                $porTipo[$o->type ?: 'Sin tipo'] = ($porTipo[$o->type ?: 'Sin tipo'] ?? 0) + $monto;
+            } else {
+                $comprometido += $monto;
+            }
+        }
+        arsort($porPropiedad);
+        arsort($porTipo);
+
+        return [
+            'moneda' => 'MXN',
+            'total_gastado' => round($gastado, 2),
+            'trabajos_con_precio' => $conPrecio,
+            'por_propiedad' => $porPropiedad,
+            'por_tipo' => $porTipo,
+            'en_curso_con_precio_acordado' => round($comprometido, 2),
+            'terminados_sin_precio_registrado' => $sinPrecio,
+            'nota' => 'Precios acordados o cotizados, no recibos de pago. Los cancelados no cuentan.',
+        ];
     }
 
     /** Fotos de Cloudinary (las únicas que el chat puede mostrar). */
